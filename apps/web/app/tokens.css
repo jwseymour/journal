@@ -1,0 +1,176 @@
+/*
+ * The token set. Complete, both modes, before any component exists
+ * (`design.md` §6.1).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THIS IS THE ONE FILE PERMITTED TO CONTAIN LITERAL VALUES.
+ *
+ * Every colour, size, weight and duration in the application is defined here
+ * and nowhere else. No component may contain a literal colour, font family,
+ * font size, or spacing value — without exception (`design.md` §6.2).
+ * `scripts/check-boundary.sh` enforces that, and exempts only this file.
+ *
+ * The point is not tidiness. It is that restyling or replacing the frontend
+ * should be an afternoon's work rather than a rewrite, because the frontend is
+ * expected to be replaced (`design.md` §6, `requirements.md` §7.1).
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Day and night are declared together, in one `light-dark()` per token, rather
+ * than as a light block plus a duplicated dark block. Two blocks drift apart:
+ * someone adds a token to one and forgets the other, and the night palette
+ * quietly rots. Here a token cannot exist in one mode and not the other.
+ *
+ * Switching modes is therefore just `color-scheme`, which is what the `t` key
+ * will set in M3 (`design.md` §5.2). Until then the operating system decides.
+ */
+
+:root {
+  /* Both offered, so the OS preference chooses. `[data-theme]` overrides below. */
+  color-scheme: light dark;
+
+  /* ═══ Palette ═══════════════════════════════════════════════════════════════
+   *
+   * From `design.md` §2.3, unchanged. Warm throughout: there is no neutral
+   * grey, no pure black and no pure white anywhere in the set. The three
+   * original values — ground, ink, accent — are the same in both modes; the
+   * rest were built outward from them.
+   *
+   * Measured against ground: day — ink 12.9:1, accent 8.2:1, muted 5.2:1,
+   * danger 6.9:1. Night — ink 11.5:1, accent 7.2:1, muted 6.0:1, danger 5.2:1.
+   * All clear AA.
+   */
+
+  /* The page. Aged paper cream; deep warm brown-black at night. */
+  --ground: light-dark(#f2eadc, #1c1815);
+  /* Panels and inputs — paper on paper. */
+  --ground-raised: light-dark(#f7f1e6, #262019);
+  /* Code blocks, table banding, hover. */
+  --ground-sunken: light-dark(#eae0cf, #151210);
+
+  /* Body text. Never #000; at night a softer parchment, because full-strength
+   * cream on a dark ground glares. */
+  --ink: light-dark(#2a2320, #d9cfc0);
+  /* Dates, metadata, secondary text. */
+  --ink-muted: light-dark(#6b5f55, #a0958a);
+  /* ⚠ ~3.4:1 in both modes. Does NOT clear AA. Placeholders and disabled
+   * states only — nothing that has to be read may use it (`design.md` §2.3). */
+  --ink-faint: light-dark(#8a7c6e, #6e645a);
+
+  --rule: light-dark(#d8ccb8, #38302a);
+  --rule-strong: light-dark(#c2b4a0, #4a4038);
+
+  /* Deep green, lightened towards sage at night because saturated colours
+   * vibrate against dark grounds. There is no fourth colour (`design.md` §2.1). */
+  --accent: light-dark(#2f4a33, #8fae8b);
+  --accent-hover: light-dark(#3e5f42, #a6c2a2);
+
+  --selection: light-dark(#d9e0d3, #2c3a2c);
+
+  /* Destructive and error states, and nothing else, ever. In a system whose
+   * central fear is losing writing, "this cannot be undone" must be
+   * unmistakable and must never resemble a link (`design.md` §2.1). */
+  --danger: light-dark(#8c2f22, #cc7365);
+
+  /* ═══ Type ══════════════════════════════════════════════════════════════════
+   *
+   * Literata at every size, self-hosted, never fetched at runtime
+   * (`design.md` §3). It carries an optical-size axis, so small text thickens
+   * on its own instead of going thin and papery — which is what the analysis
+   * surfaces will need (`design.md` §5.3).
+   *
+   * One token, so replacing the face is genuinely a one-line change.
+   */
+  --font-serif: 'Literata', Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+  /* A system stack. A second webfont is not worth it for rare code blocks. */
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Two weights at most. Restraint here is part of the aesthetic
+   * (`design.md` §3). */
+  --weight-normal: 400;
+  --weight-emphasis: 600;
+
+  /* One scale, ~1.2 ratio, based at 17px. No ad-hoc sizes anywhere
+   * (`design.md` §3). In rem, so it honours the reader's own text size. */
+  --text-2xs: 0.75rem; /* 12px — analysis tables, footnotes */
+  --text-xs: 0.875rem; /* 14px — metadata */
+  --text-sm: 0.9375rem; /* 15px — secondary interface text */
+  --text-md: 1.0625rem; /* 17px — the base */
+  --text-lg: 1.25rem; /* 20px */
+  --text-xl: 1.5rem; /* 24px */
+  --text-2xl: 1.8125rem; /* 29px */
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.4;
+  --leading-normal: 1.6;
+  /* The writing and reading surfaces. Generous leading is half of what makes
+   * the page feel airy (`design.md` §1.4). */
+  --leading-relaxed: 1.75;
+
+  /* Letter-spacing, used sparingly — only to settle small caps-ish labels. */
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+
+  /* ═══ Measure ═══════════════════════════════════════════════════════════════
+   *
+   * Roughly 60–75 characters per line (`design.md` §1.4). `ch` is the advance
+   * of "0", which in a serif runs a little wider than the average lowercase
+   * letter, so 62ch lands at about 68 real characters rather than 62.
+   */
+  --measure: 62ch;
+  --measure-narrow: 48ch;
+
+  /* ═══ Space ═════════════════════════════════════════════════════════════════
+   *
+   * One scale. Generous margins are the other half of airiness — the page is
+   * calm because of its setting, not because it is empty (`design.md` §1.4).
+   */
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2.25rem;
+  --space-xl: 3.5rem;
+  --space-2xl: 5.5rem;
+  --space-3xl: 8rem;
+
+  /* ═══ Line and edge ════════════════════════════════════════════════════════
+   *
+   * Hairlines, never heavy rules (`design.md` §5.3). Radii are nearly nothing:
+   * the reference is a bound book, not a soft interface — and rounding is one
+   * of the ways "translate, don't simulate" fails in the other direction.
+   */
+  --hairline: 1px;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+
+  --focus-width: 2px;
+  --focus-offset: 2px;
+
+  /* ═══ Motion ════════════════════════════════════════════════════════════════
+   *
+   * A good notebook is unhurried and silent. Nothing celebrates, nothing
+   * announces itself (`design.md` §4). Motion exists only to keep a state
+   * change from being abrupt.
+   */
+  --motion-fast: 120ms;
+  --motion-slow: 240ms;
+  --ease: cubic-bezier(0.2, 0, 0.3, 1);
+}
+
+/* The explicit override the `t` key will set in M3. Declared now so components
+ * are built against the final mechanism rather than being retrofitted. */
+:root[data-theme='day'] {
+  color-scheme: light;
+}
+
+:root[data-theme='night'] {
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-slow: 0ms;
+  }
+}

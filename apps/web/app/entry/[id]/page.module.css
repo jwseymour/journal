@@ -1,0 +1,26 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.entry {
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  margin-bottom: var(--space-md);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.body {
+  /* Generous leading and a comfortable measure — the setting is what makes a
+   * full page feel calm (`design.md` §1.4). The measure comes from the shell. */
+  line-height: var(--leading-relaxed);
+  /* The writing keeps the shape it was written in: line breaks and blank lines
+   * survive, and nothing is reflowed. */
+  white-space: pre-wrap;
+  /* A very long unbroken token cannot push the column sideways. */
+  overflow-wrap: break-word;
+  /* Punctuation hangs into the margin, as it does in careful book setting. */
+  hanging-punctuation: first last;
+}

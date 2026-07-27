@@ -1,0 +1,64 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.list {
+  list-style: none;
+  padding: 0;
+}
+
+/* Hairlines between rows, in the ledger tradition — never a heavy rule
+ * (`design.md` §5.3). The first row has none, so the header's own rule is not
+ * doubled. */
+.list > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.item {
+  display: block;
+  /* Bled slightly past the text column so the hover reads as a band rather
+   * than a box drawn around the words. */
+  margin-inline: calc(var(--space-2xs) * -1);
+  padding: var(--space-sm) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-decoration: none;
+  transition: background-color var(--motion-fast) var(--ease);
+}
+
+.item:hover {
+  background-color: var(--ground-sunken);
+  color: var(--ink);
+}
+
+.when {
+  display: flex;
+  gap: var(--space-2xs);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.excerpt {
+  display: block;
+  margin-top: var(--space-3xs);
+  line-height: var(--leading-normal);
+}
+
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule);
+  font-size: var(--text-sm);
+}
+
+/* Keeps "Older" hard right when there is nothing to its left. */
+.pagination > :only-child {
+  margin-left: auto;
+}
+
+.empty {
+  padding-top: var(--space-md);
+  color: var(--ink-muted);
+}

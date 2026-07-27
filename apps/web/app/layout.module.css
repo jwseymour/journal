@@ -1,0 +1,51 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.shell {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+}
+
+/*
+ * A running head, as in a printed book: the title on the left, the way onward
+ * on the right, a hairline beneath, and nothing more.
+ */
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md) var(--space-sm);
+  border-bottom: var(--hairline) solid var(--rule);
+}
+
+.wordmark {
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: var(--weight-emphasis);
+  letter-spacing: var(--tracking-wide);
+  text-decoration: none;
+}
+
+.wordmark:hover {
+  color: var(--ink);
+}
+
+.nav {
+  font-size: var(--text-sm);
+}
+
+.main {
+  display: flex;
+  width: 100%;
+  max-width: var(--measure);
+  flex: 1;
+  flex-direction: column;
+  /* Generous margins are how the page is made airy — not by leaving it empty
+   * (`design.md` §1.4). */
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md) var(--space-2xl);
+}

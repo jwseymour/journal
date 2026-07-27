@@ -1,0 +1,117 @@
+/*
+ * Element defaults. Every value here references a token — there are no literals
+ * in this file (`design.md` §6.2).
+ *
+ * Deliberately small. This sets the page's typographic ground and nothing else;
+ * anything belonging to a particular surface lives in that surface's
+ * `.module.css`.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font-serif);
+  /* Automatic where the face has an opsz axis, which Literata does. Stated
+   * explicitly because it is the reason for choosing this face. */
+  font-optical-sizing: auto;
+  font-size: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--ground);
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: var(--weight-normal);
+  line-height: var(--leading-normal);
+  /* `-webkit-font-smoothing: antialiased` is deliberately not set: it thins a
+   * serif on macOS, which is the opposite of the warmth wanted here. */
+}
+
+/* Headings inherit the serif and take a weight, not a family change. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: var(--weight-emphasis);
+  line-height: var(--leading-tight);
+  font-size: inherit;
+}
+
+p,
+ul,
+ol,
+blockquote,
+pre,
+figure {
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+  /* An underline offset clear of the descenders — most of the difference
+   * between a serif link looking considered or looking cheap. */
+  text-decoration-line: underline;
+  text-decoration-thickness: var(--hairline);
+  text-underline-offset: var(--space-3xs);
+  transition: color var(--motion-fast) var(--ease);
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+hr {
+  height: 0;
+  margin: var(--space-md) 0;
+  border: 0;
+  border-top: var(--hairline) solid var(--rule);
+}
+
+::selection {
+  background-color: var(--selection);
+  /* No colour override: the ink stays legible against both selection values,
+   * which is why those two were chosen. */
+}
+
+::placeholder {
+  color: var(--ink-faint);
+  opacity: 1;
+}
+
+/* One focus treatment everywhere. Keyboard control is a primary interaction
+ * path, not an accessibility afterthought (`design.md` §5.2), so focus has to
+ * be unmistakable rather than tastefully invisible. */
+:focus-visible {
+  outline: var(--focus-width) solid var(--accent);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-sm);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
