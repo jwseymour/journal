@@ -8,6 +8,7 @@ import type {
   Entry,
   EntryPage,
   HealthResponse,
+  UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
 import { AppError, invalidRequest } from '../errors.js';
@@ -53,6 +54,29 @@ const CreateEntrySchema = z
   })
   .strict();
 
+const UpdateEntrySchema = z
+  .object({
+    body: z.string(),
+    contentHash: z.string().min(1),
+  })
+  .strict();
+
+function entryResponse(entry: {
+  id: string;
+  created: string;
+  location?: { lat: number; lon: number };
+  body: string;
+  contentHash: string;
+}): Entry {
+  return {
+    id: entry.id,
+    created: entry.created,
+    ...(entry.location ? { location: entry.location } : {}),
+    body: entry.body,
+    contentHash: entry.contentHash,
+  };
+}
+
 function errorBody(code: ApiError['error']['code'], message: string): ApiError {
   return { error: { code, message } };
 }
@@ -95,7 +119,7 @@ export function createApp(store: EntryStore, config: Config): Hono {
       // A function rather than the array form, so an unlisted origin is echoed
       // back as nothing at all rather than as a wildcard.
       origin: (origin) => (origins.has(origin) ? origin : null),
-      allowMethods: ['GET', 'POST', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Content-Type'],
       maxAge: 600,
     }),
@@ -140,6 +164,7 @@ export function createApp(store: EntryStore, config: Config): Hono {
       id: entry.id,
       created: entry.created,
       path: entry.path,
+      contentHash: entry.contentHash,
     };
     return c.json(response, 201);
   });
@@ -174,13 +199,40 @@ export function createApp(store: EntryStore, config: Config): Hono {
     if (!entry) {
       return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
     }
-    const response: Entry = {
-      id: entry.id,
-      created: entry.created,
-      ...(entry.location ? { location: entry.location } : {}),
-      body: entry.body,
-    };
+    return c.json(entryResponse(entry));
+  });
+
+  app.put('/entries/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) {
+      return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
+    }
+
+    let json: unknown;
+    try {
+      json = await c.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+
+    const parsed = UpdateEntrySchema.safeParse(json);
+    if (!parsed.success) {
+      const [issue] = parsed.error.issues;
+      const at = issue && issue.path.length > 0 ? ` at '${issue.path.join('.')}'` : '';
+      throw invalidRequest(`${issue?.message ?? 'Invalid request body.'}${at}`);
+    }
+
+    const entry = await store.update(id, parsed.data);
+    const response: UpdateEntryResponse = entryResponse(entry);
     return c.json(response);
+  });
+
+  app.delete('/entries/:id', async (c) => {
+    const id = c.req.param('id');
+    // Deleting something that was never there is not an error — see
+    // EntryStore.discardIfBlank. A malformed id is simply "nothing to do."
+    if (isUlid(id)) await store.discardIfBlank(id);
+    return c.body(null, 204);
   });
 
   app.notFound((c) => c.json(errorBody('invalid_request', 'No such endpoint.'), 404));

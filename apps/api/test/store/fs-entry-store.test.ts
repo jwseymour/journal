@@ -300,3 +300,149 @@ describe('what the store must never do', () => {
     expect(await read(entry.path)).toBe(before);
   });
 });
+
+describe('update', () => {
+  it('changes the body and nothing else', async () => {
+    const original = await store.create({
+      body: 'First draft.',
+      created: '2026-07-26T22:55:13+01:00',
+      location: { lat: 51.5072, lon: -0.1276 },
+    });
+
+    const updated = await store.update(original.id, {
+      body: 'Revised.',
+      contentHash: original.contentHash,
+    });
+
+    expect(updated.id).toBe(original.id);
+    expect(updated.created).toBe(original.created);
+    expect(updated.location).toEqual(original.location);
+    expect(updated.body).toBe('Revised.\n');
+    // The file itself agrees — id, created and location untouched on disk.
+    expect(await read(original.path)).toBe(
+      `---\nid: ${original.id}\ncreated: 2026-07-26T22:55:13+01:00\n` +
+        `location: { lat: 51.5072, lon: -0.1276 }\n---\nRevised.\n`,
+    );
+  });
+
+  it('never renames or moves the file', async () => {
+    const entry = await store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+    await store.update(entry.id, { body: 'y', contentHash: entry.contentHash });
+    // Reading it back by id still resolves to the same path.
+    const found = await store.get(entry.id);
+    expect(found?.path).toBe(entry.path);
+  });
+
+  it('returns a new contentHash that reflects the new content', async () => {
+    const entry = await store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+    const updated = await store.update(entry.id, { body: 'y', contentHash: entry.contentHash });
+    expect(updated.contentHash).not.toBe(entry.contentHash);
+
+    const reFetched = await store.get(entry.id);
+    expect(reFetched?.contentHash).toBe(updated.contentHash);
+  });
+
+  it('rejects a stale hash rather than overwriting a change it never saw', async () => {
+    const entry = await store.create({ body: 'Original.', created: '2026-07-26T22:55:13+01:00' });
+    // Someone else's write lands first.
+    await store.update(entry.id, { body: 'Someone else changed this.', contentHash: entry.contentHash });
+
+    const error = await catchError(() =>
+      store.update(entry.id, { body: 'My stale edit.', contentHash: entry.contentHash }),
+    );
+    expect(error.code).toBe('edit_conflict');
+
+    // The other write is untouched — nothing was overwritten.
+    expect((await store.get(entry.id))?.body).toBe('Someone else changed this.\n');
+  });
+
+  it('rejects a stale hash when the file was edited by hand, outside the app', async () => {
+    const entry = await store.create({ body: 'Original.', created: '2026-07-26T22:55:13+01:00' });
+    const onDisk = await read(entry.path);
+    await writeFile(join(root, entry.path), onDisk.replace('Original.', 'Edited in vim.'));
+
+    const error = await catchError(() =>
+      store.update(entry.id, { body: 'My edit, based on stale content.', contentHash: entry.contentHash }),
+    );
+    expect(error.code).toBe('edit_conflict');
+    expect((await store.get(entry.id))?.body).toBe('Edited in vim.\n');
+  });
+
+  it('rejects an update to an entry that does not exist', async () => {
+    const error = await catchError(() =>
+      store.update('01ARZ3NDEKTSV4RRFFQ69G5FAV', { body: 'x', contentHash: 'whatever' }),
+    );
+    expect(error.code).toBe('entry_not_found');
+  });
+
+  it('rejects an update to an entry deleted from underneath it', async () => {
+    const entry = await store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+    await rm(join(root, entry.path));
+
+    const error = await catchError(() =>
+      store.update(entry.id, { body: 'y', contentHash: entry.contentHash }),
+    );
+    expect(error.code).toBe('entry_not_found');
+  });
+
+  it('allows editing a body down to whitespace — editing is allowed, without exception', async () => {
+    const entry = await store.create({ body: 'Something.', created: '2026-07-26T22:55:13+01:00' });
+    const updated = await store.update(entry.id, { body: '   ', contentHash: entry.contentHash });
+    expect(updated.body.trim()).toBe('');
+    // The entry still exists — editing to blank is not the same as discarding.
+    expect(await store.get(entry.id)).not.toBeNull();
+  });
+
+  it('is atomic: the file is never left truncated or half-written', async () => {
+    const entry = await store.create({ body: 'Original content.', created: '2026-07-26T22:55:13+01:00' });
+    await store.update(entry.id, { body: 'Updated content.', contentHash: entry.contentHash });
+
+    const dir = join(root, 'journal/2026/07');
+    const names = await readdir(dir);
+    expect(names.some((n) => n.endsWith('.tmp'))).toBe(false);
+  });
+});
+
+describe('discardIfBlank', () => {
+  it('removes a whitespace-only entry entirely', async () => {
+    const entry = await store.create({ body: 'placeholder', created: '2026-07-26T22:55:13+01:00' });
+    await store.update(entry.id, { body: '   \n\n  ', contentHash: entry.contentHash });
+
+    await store.discardIfBlank(entry.id);
+
+    expect(await store.get(entry.id)).toBeNull();
+    await expect(read(entry.path)).rejects.toThrow();
+  });
+
+  it('refuses to discard an entry that has real content', async () => {
+    const entry = await store.create({ body: 'Real writing.', created: '2026-07-26T22:55:13+01:00' });
+
+    const error = await catchError(() => store.discardIfBlank(entry.id));
+    expect(error.code).toBe('invalid_request');
+    // Refused, not silently ignored: the entry is untouched.
+    expect((await store.get(entry.id))?.body).toBe('Real writing.\n');
+  });
+
+  it('is a no-op, not an error, for an entry that does not exist', async () => {
+    await expect(store.discardIfBlank('01ARZ3NDEKTSV4RRFFQ69G5FAV')).resolves.toBeUndefined();
+  });
+
+  it('is a no-op for an entry already discarded', async () => {
+    const entry = await store.create({ body: 'placeholder', created: '2026-07-26T22:55:13+01:00' });
+    await store.update(entry.id, { body: ' ', contentHash: entry.contentHash });
+    await store.discardIfBlank(entry.id);
+
+    await expect(store.discardIfBlank(entry.id)).resolves.toBeUndefined();
+  });
+
+  it('leaves other entries in the list untouched', async () => {
+    const keep = await store.create({ body: 'Keep me.', created: '2026-07-26T09:00:00+01:00' });
+    const discard = await store.create({ body: 'placeholder', created: '2026-07-26T10:00:00+01:00' });
+    await store.update(discard.id, { body: '', contentHash: discard.contentHash });
+
+    await store.discardIfBlank(discard.id);
+
+    const { entries } = await store.list({ limit: 10 });
+    expect(entries.map((e) => e.id)).toEqual([keep.id]);
+  });
+});

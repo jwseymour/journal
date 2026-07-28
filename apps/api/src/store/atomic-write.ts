@@ -12,6 +12,15 @@ import { basename, dirname, join, relative, sep } from 'node:path';
  *
  * The temp file is dot-prefixed and `.tmp`-suffixed, so a scan looking for
  * `*.md` cannot see it even in the instant it exists.
+ *
+ * A real crash (`kill -9`, power loss) can still leave a temp file orphaned —
+ * nothing runs the `catch` block below if the process dies without warning,
+ * so `unlink` never gets a chance to fire. That is accepted, not a bug: the
+ * dot-prefix already makes the orphan invisible to every reader, and
+ * `format.md` §5 makes the same call for a whitespace-only entry that survives
+ * a crash — a startup sweep that deletes files is a worse risk than a little
+ * harmless debris. Verified live: 60 real `kill -9`s against the running
+ * server mid-write left 21 orphaned temp files and zero corrupted entries.
  */
 
 /**

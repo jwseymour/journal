@@ -2,18 +2,17 @@ import { notFound } from 'next/navigation';
 import type { Entry } from '@journal/contract';
 import { Notice } from '@/components/notice';
 import { ApiRequestError, getEntry } from '@/lib/api';
-import { formatTimestamp } from '@/lib/format';
-import styles from './page.module.css';
+import { EntryView } from './entry-view';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * One entry, read only.
+ * One entry: read by default, with a minimal way to edit (`plan.md` M1, M2).
  *
  * The body is shown as the plain source it is. Rendered markdown, and the
  * `⌘⇧P` toggle between the two, arrive in M3 — until then this shows exactly
- * what is on disk, which is the more honest thing for the milestone that exists
- * to prove the record is intact (`plan.md` M1, M3).
+ * what is on disk, which is the more honest thing for the milestone that
+ * exists to prove the record is intact.
  *
  * Location is not shown. Coordinates alone are not worth reading, and turning
  * them into a place name needs a geocoder, which is deferred — the coordinates
@@ -38,13 +37,5 @@ export default async function EntryDetailPage({ params }: { params: Promise<{ id
   // turn a missing entry into an error.
   if (!entry) notFound();
 
-  return (
-    <article className={styles.entry}>
-      <header className={styles.head}>
-        <time dateTime={entry.created}>{formatTimestamp(entry.created)}</time>
-      </header>
-      {/* `pre-wrap`, so the writing keeps the shape it was written in. */}
-      <div className={styles.body}>{entry.body}</div>
-    </article>
-  );
+  return <EntryView entry={entry} />;
 }

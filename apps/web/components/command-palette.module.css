@@ -1,0 +1,94 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: var(--space-3xl);
+  background-color: var(--scrim);
+}
+
+.panel {
+  display: flex;
+  width: 100%;
+  max-width: var(--measure-narrow);
+  max-height: 70vh;
+  flex-direction: column;
+  overflow: hidden;
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  background-color: var(--ground-raised);
+  box-shadow: 0 var(--space-2xs) var(--space-lg) var(--shadow-color);
+}
+
+.input {
+  padding: var(--space-sm) var(--space-md);
+  border: 0;
+  border-bottom: var(--hairline) solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+  outline: none;
+}
+
+.list {
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-2xs);
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-2xs) var(--space-xs);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.highlighted {
+  background-color: var(--ground-sunken);
+}
+
+.label {
+  flex: 1;
+}
+
+.unavailable {
+  color: var(--ink-muted);
+}
+
+.keys {
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  white-space: nowrap;
+}
+
+.empty {
+  padding: var(--space-sm) var(--space-md);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+.note {
+  margin: 0;
+  padding: var(--space-xs) var(--space-md);
+  border-top: var(--hairline) solid var(--rule);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}

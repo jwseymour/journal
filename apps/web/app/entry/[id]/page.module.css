@@ -2,25 +2,98 @@
 
 .entry {
   display: flex;
+  flex: 1;
   flex-direction: column;
+  gap: var(--space-md);
 }
 
 .head {
-  margin-bottom: var(--space-md);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
   color: var(--ink-muted);
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-wide);
 }
 
-.body {
-  /* Generous leading and a comfortable measure — the setting is what makes a
-   * full page feel calm (`design.md` §1.4). The measure comes from the shell. */
-  line-height: var(--leading-relaxed);
-  /* The writing keeps the shape it was written in: line breaks and blank lines
-   * survive, and nothing is reflowed. */
-  white-space: pre-wrap;
-  /* A very long unbroken token cannot push the column sideways. */
-  overflow-wrap: break-word;
-  /* Punctuation hangs into the margin, as it does in careful book setting. */
-  hanging-punctuation: first last;
+.editButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-decoration: underline;
+  text-decoration-thickness: var(--hairline);
+  text-underline-offset: var(--space-3xs);
+  cursor: pointer;
+}
+
+.editButton:hover {
+  color: var(--accent);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.hint {
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+}
+
+.saveButton,
+.cancelButton {
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  background-color: var(--ground-raised);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+
+.saveButton:hover:not(:disabled),
+.cancelButton:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.saveButton:disabled,
+.cancelButton:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+
+.conflict {
+  margin-bottom: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border: var(--hairline) solid var(--danger);
+  border-radius: var(--radius-md);
+  background-color: var(--ground-raised);
+  color: var(--danger);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
 }

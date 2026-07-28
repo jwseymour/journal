@@ -5,6 +5,8 @@ import type {
   CreateEntryResponse,
   Entry,
   EntryPage,
+  UpdateEntryRequest,
+  UpdateEntryResponse,
 } from '@journal/contract';
 
 /**
@@ -64,6 +66,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiRequestError(code, message);
   }
 
+  // 204 No Content — DELETE's response. There is no body to parse.
+  if (response.status === 204) return undefined as T;
+
   return (await response.json()) as T;
 }
 
@@ -91,4 +96,26 @@ export function createEntry(entry: CreateEntryRequest): Promise<CreateEntryRespo
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(entry),
   });
+}
+
+/**
+ * Change an entry's body. Throws `ApiRequestError` with code `edit_conflict`
+ * if `input.contentHash` no longer matches what is on disk — the caller must
+ * treat that as "stop and tell the user," never retry with the same hash.
+ */
+export function updateEntry(id: string, input: UpdateEntryRequest): Promise<UpdateEntryResponse> {
+  return request<UpdateEntryResponse>(`/entries/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * The one narrow deletion the format allows: discard a draft that turned out
+ * to be whitespace-only (`format.md` §5). Never a general-purpose delete —
+ * the backend itself refuses to remove anything with real content in it.
+ */
+export async function discardEntry(id: string): Promise<void> {
+  await request<undefined>(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

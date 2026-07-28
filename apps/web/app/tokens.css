@@ -99,6 +99,8 @@
   --text-xl: 1.5rem; /* 24px */
   --text-2xl: 1.8125rem; /* 29px */
 
+  /* A single glyph centred in a small control — the theme toggle — not prose. */
+  --leading-none: 1;
   --leading-tight: 1.2;
   --leading-snug: 1.4;
   --leading-normal: 1.6;
@@ -156,6 +158,16 @@
   --motion-fast: 120ms;
   --motion-slow: 240ms;
   --ease: cubic-bezier(0.2, 0, 0.3, 1);
+
+  /* ═══ Overlay ═══════════════════════════════════════════════════════════════
+   *
+   * The command palette and the shortcut sheet (M3) are the only surfaces that
+   * sit above the page rather than in its flow. Both values are the ink colour
+   * diluted, never a separate hue, so a dimmed page still reads as the same
+   * warm paper rather than a generic dark scrim.
+   */
+  --scrim: color-mix(in srgb, var(--ink) 35%, transparent);
+  --shadow-color: color-mix(in srgb, var(--ink) 25%, transparent);
 }
 
 /* The explicit override the `t` key will set in M3. Declared now so components

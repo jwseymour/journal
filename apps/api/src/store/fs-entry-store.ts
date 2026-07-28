@@ -1,10 +1,11 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import type { EntryMetadata, EntrySummary } from '@journal/contract';
-import { invalidRequest, journalUnavailable, AppError } from '../errors.js';
+import { editConflict, entryNotFound, invalidRequest, journalUnavailable, AppError } from '../errors.js';
 import { excerpt } from '../record/excerpt.js';
 import { normaliseBody, parseEntryFile, serialiseEntryFile } from '../record/frontmatter.js';
 import { ENTRIES_DIR, ENTRY_EXTENSION, entryRelativePath } from '../record/filename.js';
+import { contentHash } from '../record/hash.js';
 import { ulid } from '../record/id.js';
 import { nowTimestamp, parseTimestamp } from '../record/time.js';
 import { writeFileAtomic } from './atomic-write.js';
@@ -16,6 +17,7 @@ import type {
   ListResult,
   StoreStats,
   StoredEntry,
+  UpdateEntryInput,
 } from './entry-store.js';
 
 /**
@@ -112,8 +114,9 @@ export class FsEntryStore implements EntryStore {
         ...(input.location ? { location: input.location } : {}),
       };
 
+      const fileText = serialiseEntryFile(metadata, body);
       try {
-        await writeFileAtomic(absPath, serialiseEntryFile(metadata, body), this.#journalRoot);
+        await writeFileAtomic(absPath, fileText, this.#journalRoot);
       } catch (cause) {
         throw journalUnavailable(`Could not write the entry to ${relPath}.`, cause);
       }
@@ -128,7 +131,7 @@ export class FsEntryStore implements EntryStore {
       };
       this.#insert(cached);
 
-      return { ...metadata, body, path: relPath };
+      return { ...metadata, body, path: relPath, contentHash: contentHash(fileText) };
     }
 
     /* c8 ignore next */
@@ -160,7 +163,95 @@ export class FsEntryStore implements EntryStore {
       return null;
     }
 
-    return { ...parsed.metadata, body: parsed.body, path: cached.relPath };
+    return { ...parsed.metadata, body: parsed.body, path: cached.relPath, contentHash: contentHash(text) };
+  }
+
+  async update(id: string, input: UpdateEntryInput): Promise<StoredEntry> {
+    await this.#refresh();
+    const cached = this.#byId.get(id);
+    if (!cached) throw entryNotFound(id);
+
+    // Read fresh — never trust the cache for the one check that exists
+    // precisely because the cache can be stale (`plan.md` M2).
+    let text: string;
+    try {
+      text = await readFile(cached.absPath, 'utf8');
+    } catch (cause) {
+      if (isNotFound(cause)) {
+        this.#invalidate();
+        throw entryNotFound(id);
+      }
+      throw journalUnavailable(`Could not read ${cached.relPath}.`, cause);
+    }
+
+    const parsed = parseEntryFile(text, cached.relPath);
+    if (parsed.metadata.id !== id) {
+      this.#invalidate();
+      throw entryNotFound(id);
+    }
+
+    if (contentHash(text) !== input.contentHash) throw editConflict();
+
+    // id, created and location never move. Editing changes what was written,
+    // never when or where it was written (`requirements.md` §4.3).
+    const fileText = serialiseEntryFile(parsed.metadata, input.body);
+    try {
+      await writeFileAtomic(cached.absPath, fileText, this.#journalRoot);
+    } catch (cause) {
+      throw journalUnavailable(`Could not write ${cached.relPath}.`, cause);
+    }
+
+    const newBody = normaliseBody(input.body);
+    this.#insert({ ...cached, excerpt: excerpt(newBody) });
+
+    return {
+      ...parsed.metadata,
+      body: newBody,
+      path: cached.relPath,
+      contentHash: contentHash(fileText),
+    };
+  }
+
+  async discardIfBlank(id: string): Promise<void> {
+    await this.#refresh();
+    const cached = this.#byId.get(id);
+    if (!cached) return; // Already gone. Nothing to discard, and that is not an error.
+
+    let text: string;
+    try {
+      text = await readFile(cached.absPath, 'utf8');
+    } catch (cause) {
+      if (isNotFound(cause)) {
+        this.#invalidate();
+        return;
+      }
+      throw journalUnavailable(`Could not read ${cached.relPath}.`, cause);
+    }
+
+    const parsed = parseEntryFile(text, cached.relPath);
+    if (parsed.metadata.id !== id) {
+      this.#invalidate();
+      return;
+    }
+
+    // The store enforces this itself, not just the caller: a file with any
+    // content in it is never deleted by the application, full stop
+    // (`format.md` §5).
+    if (parsed.body.trim().length > 0) {
+      throw invalidRequest(
+        'This entry has writing in it and will not be discarded. Only a whitespace-only entry may be removed.',
+      );
+    }
+
+    try {
+      await unlink(cached.absPath);
+    } catch (cause) {
+      if (!isNotFound(cause)) throw journalUnavailable(`Could not remove ${cached.relPath}.`, cause);
+    }
+
+    this.#byPath.delete(cached.absPath);
+    this.#byId.delete(id);
+    this.#ordered = this.#ordered.filter((entry) => entry.id !== id);
   }
 
   async list(options: ListOptions): Promise<ListResult> {
@@ -194,11 +285,21 @@ export class FsEntryStore implements EntryStore {
     this.#unreadable.clear();
   }
 
+  /**
+   * Upsert into every index. Used both for a brand-new entry and for an
+   * edited one — an edit never changes `epochMs` or `id`, so an existing
+   * entry is replaced in place rather than re-sorted.
+   */
   #insert(entry: CachedEntry): void {
     this.#byPath.set(entry.absPath, entry);
     this.#byId.set(entry.id, entry);
-    this.#ordered.push(entry);
-    this.#ordered.sort(compareDescending);
+    const existingIndex = this.#ordered.findIndex((e) => e.id === entry.id);
+    if (existingIndex === -1) {
+      this.#ordered.push(entry);
+      this.#ordered.sort(compareDescending);
+    } else {
+      this.#ordered[existingIndex] = entry;
+    }
   }
 
   /** Concurrent requests share one walk rather than each starting their own. */

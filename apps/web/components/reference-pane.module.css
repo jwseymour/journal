@@ -1,0 +1,125 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.pane {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  width: var(--measure-narrow);
+  max-width: 100vw;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: var(--space-md);
+  border-left: var(--hairline) solid var(--rule);
+  background-color: var(--ground-raised);
+  box-shadow: calc(var(--space-2xs) * -1) 0 var(--space-lg) var(--shadow-color);
+}
+
+.header {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-2xs);
+  border-bottom: var(--hairline) solid var(--rule);
+}
+
+.title {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.close {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.close:hover {
+  color: var(--accent);
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.item {
+  display: block;
+  width: 100%;
+  padding: var(--space-xs) 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.item:hover .itemExcerpt {
+  color: var(--accent);
+}
+
+.itemWhen {
+  display: block;
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.itemExcerpt {
+  display: block;
+  margin-top: var(--space-3xs);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  transition: color var(--motion-fast) var(--ease);
+}
+
+.detail {
+  font-size: var(--text-sm);
+}
+
+.back {
+  margin-bottom: var(--space-sm);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.back:hover {
+  color: var(--accent);
+}
+
+.when {
+  margin: 0 0 var(--space-sm);
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.loading,
+.error {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+.error {
+  color: var(--danger);
+}

@@ -1,0 +1,39 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+/*
+ * Text on a warm ground with as little else as possible (`design.md` §5.1).
+ * No border, no panel, no resize handle — nothing to suggest a form field.
+ */
+.input {
+  display: block;
+  width: 100%;
+  flex: 1;
+  min-height: var(--space-3xl);
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  /* A green caret on cream: the one place the accent appears while writing. */
+  caret-color: var(--accent);
+  resize: none;
+  outline: none;
+}
+
+.input:disabled {
+  color: var(--ink-muted);
+}
+
+.rendered {
+  flex: 1;
+  min-height: var(--space-3xl);
+}
+
+.empty {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: var(--text-md);
+  font-style: italic;
+}

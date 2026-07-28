@@ -29,6 +29,14 @@
   color: var(--ink);
 }
 
+/* Keyboard selection (`j` / `k`) reuses the hover background but adds a
+ * deliberate accent edge, so a `j`-then-pause moment reads as "chosen," not
+ * just "the mouse happens to be near this row." */
+.selected {
+  background-color: var(--ground-sunken);
+  box-shadow: inset var(--focus-width) 0 0 var(--accent);
+}
+
 .when {
   display: flex;
   gap: var(--space-2xs);

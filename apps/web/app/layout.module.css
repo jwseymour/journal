@@ -35,7 +35,24 @@
 }
 
 .nav {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
   font-size: var(--text-sm);
+}
+
+.themeToggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-none);
+  cursor: pointer;
+}
+
+.themeToggle:hover {
+  color: var(--accent);
 }
 
 .main {

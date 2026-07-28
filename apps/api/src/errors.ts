@@ -31,3 +31,10 @@ export const malformedEntry = (message: string, cause?: unknown): AppError =>
 
 export const journalUnavailable = (message: string, cause?: unknown): AppError =>
   new AppError('journal_unavailable', message, 503, cause === undefined ? undefined : { cause });
+
+export const editConflict = (): AppError =>
+  new AppError(
+    'edit_conflict',
+    'This entry changed since it was last read — most likely edited outside the app. Nothing was overwritten.',
+    409,
+  );

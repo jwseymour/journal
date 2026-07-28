@@ -7,26 +7,6 @@
   gap: var(--space-md);
 }
 
-/*
- * Text on a warm ground with as little else as possible (`design.md` §5.1).
- * No border, no panel, no resize handle — nothing to suggest a form field.
- */
-.input {
-  flex: 1;
-  min-height: var(--space-3xl);
-  padding: 0;
-  border: 0;
-  background-color: transparent;
-  color: var(--ink);
-  font-family: var(--font-serif);
-  font-size: var(--text-md);
-  line-height: var(--leading-relaxed);
-  /* A green caret on cream: the one place the accent appears while writing. */
-  caret-color: var(--accent);
-  resize: none;
-  outline: none;
-}
-
 .footer {
   display: flex;
   align-items: center;
@@ -77,4 +57,17 @@
 .error {
   color: var(--danger);
   font-size: var(--text-sm);
+}
+
+/* The one non-error use of danger red outside a destructive action: a write
+ * conflict means nothing is being saved right now, which carries the same
+ * weight as an error even though nothing has technically failed yet. */
+.conflict {
+  padding: var(--space-sm) var(--space-md);
+  border: var(--hairline) solid var(--danger);
+  border-radius: var(--radius-md);
+  background-color: var(--ground-raised);
+  color: var(--danger);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
 }

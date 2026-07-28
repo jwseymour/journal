@@ -2,7 +2,14 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { ApiError, CreateEntryResponse, Entry, EntryPage, HealthResponse } from '@journal/contract';
+import type {
+  ApiError,
+  CreateEntryResponse,
+  Entry,
+  EntryPage,
+  HealthResponse,
+  UpdateEntryResponse,
+} from '@journal/contract';
 import type { Config } from '../../src/config.js';
 import { createApp } from '../../src/http/app.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
@@ -193,6 +200,7 @@ describe('GET /entries/:id', () => {
       id: created.id,
       created: '2026-07-26T22:55:13+01:00',
       body: 'Line one\n\nLine two\n',
+      contentHash: created.contentHash,
     });
   });
 
@@ -202,6 +210,112 @@ describe('GET /entries/:id', () => {
       expect(response.status, id).toBe(404);
       expect((await errorOf(response)).code).toBe('entry_not_found');
     }
+  });
+});
+
+describe('PUT /entries/:id', () => {
+  function put(id: string, body: unknown) {
+    return app.request(`/entries/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('changes the body and returns the entry with a new contentHash', async () => {
+    const created = (await (
+      await post({ body: 'First draft.', created: '2026-07-26T22:55:13+01:00' })
+    ).json()) as CreateEntryResponse;
+
+    const response = await put(created.id, { body: 'Revised.', contentHash: created.contentHash });
+    expect(response.status).toBe(200);
+    const updated = (await response.json()) as UpdateEntryResponse;
+    expect(updated).toEqual<Entry>({
+      id: created.id,
+      created: created.created,
+      body: 'Revised.\n',
+      contentHash: updated.contentHash,
+    });
+    expect(updated.contentHash).not.toBe(created.contentHash);
+
+    // And it is really on disk, readable through GET.
+    const reread = (await (await app.request(`/entries/${created.id}`)).json()) as Entry;
+    expect(reread.body).toBe('Revised.\n');
+  });
+
+  it('rejects a stale contentHash with a 409 and does not touch the file', async () => {
+    const created = (await (
+      await post({ body: 'Original.', created: '2026-07-26T22:55:13+01:00' })
+    ).json()) as CreateEntryResponse;
+    await put(created.id, { body: 'First edit.', contentHash: created.contentHash });
+
+    // Retrying with the now-stale hash from the original creation.
+    const response = await put(created.id, { body: 'Conflicting edit.', contentHash: created.contentHash });
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe('edit_conflict');
+
+    const reread = (await (await app.request(`/entries/${created.id}`)).json()) as Entry;
+    expect(reread.body).toBe('First edit.\n');
+  });
+
+  it('reports a missing entry as not found', async () => {
+    const response = await put('01ARZ3NDEKTSV4RRFFQ69G5FAV', { body: 'x', contentHash: 'whatever' });
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
+  });
+
+  it('rejects a missing contentHash and a missing body', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    for (const payload of [{ body: 'y' }, { contentHash: created.contentHash }, {}]) {
+      const response = await put(created.id, payload);
+      expect(response.status, JSON.stringify(payload)).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+
+  it('rejects fields the format does not have', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const response = await put(created.id, {
+      body: 'y',
+      contentHash: created.contentHash,
+      title: 'Nope',
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('DELETE /entries/:id', () => {
+  function del(id: string) {
+    return app.request(`/entries/${id}`, { method: 'DELETE' });
+  }
+
+  it('discards a whitespace-only entry', async () => {
+    const created = (await (await post({ body: 'placeholder' })).json()) as CreateEntryResponse;
+    await app.request(`/entries/${created.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: '   ', contentHash: created.contentHash }),
+    });
+
+    const response = await del(created.id);
+    expect(response.status).toBe(204);
+
+    expect((await app.request(`/entries/${created.id}`)).status).toBe(404);
+  });
+
+  it('refuses to discard an entry with real content, and leaves it readable', async () => {
+    const created = (await (await post({ body: 'Real writing.' })).json()) as CreateEntryResponse;
+
+    const response = await del(created.id);
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+
+    expect((await app.request(`/entries/${created.id}`)).status).toBe(200);
+  });
+
+  it('is idempotent — deleting an already-gone or never-existed entry still succeeds quietly', async () => {
+    expect((await del('01ARZ3NDEKTSV4RRFFQ69G5FAV')).status).toBe(204);
   });
 });
 

@@ -59,6 +59,21 @@ export interface EntrySummary extends EntryMetadata {
 /** An entry in full. The body is exactly the bytes on disk, minus frontmatter. */
 export interface Entry extends EntryMetadata {
   body: string;
+
+  /**
+   * An opaque fingerprint of exactly what is on disk right now.
+   *
+   * Not a hash of anything the caller should interpret — just a value that
+   * changes if and only if the file's bytes change. Pass it back on
+   * `PUT /entries/:id` as a precondition: if it no longer matches what is on
+   * disk, the write is rejected with `edit_conflict` rather than silently
+   * overwriting someone else's change.
+   *
+   * This matters specifically because these files are meant to be opened in an
+   * ordinary text editor — that is a stated benefit of plain files, not an edge
+   * case (`plan.md` M2) — so the backend can never assume it is the only writer.
+   */
+  contentHash: string;
 }
 
 /**
@@ -110,7 +125,28 @@ export interface CreateEntryResponse {
   id: string;
   created: string;
   path: string;
+  /** See `Entry.contentHash`. Needed immediately: the draft lifecycle autosaves
+   * the same entry right after creating it, and that first save needs a
+   * precondition to check against. */
+  contentHash: string;
 }
+
+/**
+ * Editing an entry — body only.
+ *
+ * `id`, `created` and `location` describe the act of writing and never change
+ * after creation, edit or not (`requirements.md` §4.3). An edit changes what
+ * was written, not when or where it was written, so this is the entire
+ * request: the new text, and proof the caller has seen the current version.
+ */
+export interface UpdateEntryRequest {
+  body: string;
+  /** Must match the current `Entry.contentHash`, or the write is rejected. */
+  contentHash: string;
+}
+
+/** The entry as it stands after the edit, including its new `contentHash`. */
+export type UpdateEntryResponse = Entry;
 
 /**
  * Stable, machine-readable failure codes.
@@ -133,6 +169,12 @@ export type ApiErrorCode =
   | 'forbidden_origin'
   /** A file exists but could not be read as an entry. See `format.md` §3. */
   | 'malformed_entry'
+  /**
+   * `contentHash` on a `PUT` no longer matches what is on disk — the entry
+   * changed since the caller last read it, most likely by hand in a text
+   * editor. The write did not happen (`plan.md` M2).
+   */
+  | 'edit_conflict'
   /** The journal directory could not be read or written. */
   | 'journal_unavailable'
   /** Anything unanticipated. */

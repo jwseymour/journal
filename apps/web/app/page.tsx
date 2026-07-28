@@ -2,7 +2,7 @@ import Link from 'next/link';
 import type { EntryPage } from '@journal/contract';
 import { Notice } from '@/components/notice';
 import { ApiRequestError, listEntries } from '@/lib/api';
-import { formatDate, formatTime } from '@/lib/format';
+import { EntryList } from './entry-list';
 import styles from './page.module.css';
 
 /**
@@ -61,29 +61,10 @@ export default async function EntriesPage({
   }
 
   return (
-    <>
-      <ol className={styles.list}>
-        {page.entries.map((entry) => (
-          <li key={entry.id}>
-            <Link href={`/entry/${entry.id}`} className={styles.item}>
-              <span className={styles.when}>
-                <time dateTime={entry.created}>{formatDate(entry.created)}</time>
-                <span>{formatTime(entry.created)}</span>
-              </span>
-              <span className={styles.excerpt}>{entry.excerpt}</span>
-            </Link>
-          </li>
-        ))}
-      </ol>
-
-      {(cursor || page.nextCursor) && (
-        <div className={styles.pagination}>
-          {cursor && <Link href="/">Most recent</Link>}
-          {page.nextCursor && (
-            <Link href={`/?cursor=${encodeURIComponent(page.nextCursor)}`}>Older</Link>
-          )}
-        </div>
-      )}
-    </>
+    <EntryList
+      entries={page.entries}
+      nextCursor={page.nextCursor}
+      {...(cursor ? { cursor } : {})}
+    />
   );
 }

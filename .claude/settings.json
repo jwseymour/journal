@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run typecheck -w *)",
+      "Bash(npm test -w *)",
+      "Bash(npm run lint -w *)",
+      "Bash(npm run check)",
+      "Bash(npm run check:boundary)",
+      "Bash(./scripts/check-boundary.sh*)"
+    ]
+  }
+}

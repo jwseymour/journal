@@ -31,6 +31,12 @@ export interface StoredEntry extends Entry {
   path: string;
 }
 
+export interface UpdateEntryInput {
+  body: string;
+  /** Must match the entry's current `contentHash`, or the write is refused. */
+  contentHash: string;
+}
+
 export interface ListOptions {
   cursor?: string;
   limit: number;
@@ -53,6 +59,26 @@ export interface EntryStore {
 
   /** Fetch one entry by id, or `null` if there is no such entry. */
   get(id: string): Promise<StoredEntry | null>;
+
+  /**
+   * Change an entry's body. `id`, `created` and `location` never move —
+   * editing changes what was written, not when or where (`requirements.md`
+   * §4.3). Throws `entry_not_found` if there is no such entry, or
+   * `edit_conflict` if `input.contentHash` no longer matches what is on disk.
+   */
+  update(id: string, input: UpdateEntryInput): Promise<StoredEntry>;
+
+  /**
+   * The one narrow deletion `format.md` §5 allows: discard an entry, but only
+   * if its body is whitespace-only. Declining to commit writing that was
+   * started and then abandoned — never a general-purpose delete.
+   *
+   * A no-op, not an error, if the entry is already gone. Throws
+   * `invalid_request` if the entry has real content — the store itself
+   * enforces this, not just the caller, because nothing but the user may ever
+   * remove actual writing.
+   */
+  discardIfBlank(id: string): Promise<void>;
 
   /** One page of entries, newest first. */
   list(options: ListOptions): Promise<ListResult>;

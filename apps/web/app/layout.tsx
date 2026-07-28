@@ -1,8 +1,9 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import './tokens.css';
 import './fonts.css';
 import './globals.css';
+import { Header } from './header';
+import { Providers } from './providers';
 import styles from './layout.module.css';
 
 export const metadata: Metadata = {
@@ -12,17 +13,13 @@ export const metadata: Metadata = {
 /**
  * The shell.
  *
- * A running head and nothing else. Chrome becomes toggleable in M3, at which
- * point hidden is a first-class state rather than a reduced one
- * (`design.md` §5.1) — so this deliberately holds nothing the writing surface
- * depends on.
- *
- * Copy is plain throughout. The application does not congratulate, encourage,
- * or editorialise about the writing (`design.md` §4).
+ * A running head, toggleable, and nothing else fixed. Copy is plain
+ * throughout — the application does not congratulate, encourage, or
+ * editorialise about the writing (`design.md` §4).
  */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
         {/* Hoisted into <head> by React. The roman latin subset covers almost
             everything; the other three load only when a glyph needs them. */}
@@ -33,17 +30,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           type="font/woff2"
           crossOrigin="anonymous"
         />
-        <div className={styles.shell}>
-          <header className={styles.header}>
-            <Link href="/" className={styles.wordmark}>
-              Journal
-            </Link>
-            <nav className={styles.nav}>
-              <Link href="/entry/new">Write</Link>
-            </nav>
-          </header>
-          <main className={styles.main}>{children}</main>
-        </div>
+        <Providers>
+          <div className={styles.shell}>
+            <Header />
+            <main className={styles.main}>{children}</main>
+          </div>
+        </Providers>
       </body>
     </html>
   );
