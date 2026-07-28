@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Coordinates } from '@journal/contract';
 import { Composer } from '@/components/composer';
-import { ApiRequestError, createEntry, updateEntry } from '@/lib/api';
+import { addAttachment, ApiRequestError, createEntry, updateEntry } from '@/lib/api';
 import { nowRfc3339 } from '@/lib/format';
 import { captureLocationOnce } from '@/lib/location';
 import styles from './page.module.css';
@@ -208,6 +208,25 @@ export default function NewEntryPage() {
     })();
   }, []);
 
+  /**
+   * "Keep the audio too" — voice recording's optional, additional step
+   * (`requirements.md` §4.7). An attachment has to live beside a real entry
+   * file, so if this is the very first thing the user has done, the entry is
+   * flushed into existence first — by the time this runs the transcript is
+   * already in `bodyRef.current` (Composer inserts it before offering to keep
+   * the audio), so `flush()` has real content to create the entry from.
+   */
+  const attachAudio = useCallback(
+    async (blob: Blob, filename: string): Promise<string> => {
+      if (!entryIdRef.current) await flush();
+      const id = entryIdRef.current;
+      if (!id) throw new Error('Could not create the entry to attach audio to.');
+      const { relativeLink } = await addAttachment(id, blob, filename);
+      return relativeLink;
+    },
+    [flush],
+  );
+
   const finish = useCallback(async () => {
     if (finishing || !hasWriting || conflictRef.current) return;
     setFinishing(true);
@@ -276,6 +295,7 @@ export default function NewEntryPage() {
         onChange={onChange}
         onSave={() => void flush()}
         onFinish={() => void finish()}
+        onAttachAudio={attachAudio}
         disabled={conflict}
         autoFocus
         ariaLabel="Entry"
@@ -290,6 +310,7 @@ export default function NewEntryPage() {
           <span />
         )}
         <div className={styles.actions}>
+          <kbd className={styles.hint}>⌘⌥R voice</kbd>
           <kbd className={styles.hint}>⌘⇧P preview</kbd>
           <kbd className={styles.hint}>⌘S save</kbd>
           <kbd className={styles.hint}>⌘↩ finish</kbd>

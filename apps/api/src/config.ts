@@ -20,6 +20,13 @@ export interface Config {
   readonly port: number;
   /** Browser origins permitted to call this API. Never a wildcard. */
   readonly allowedOrigins: readonly string[];
+  /** The Hugging Face model id the local `Transcriber` loads. One config line,
+   * per `plan.md` M4 — swapping it is the entire cost of trying a bigger model. */
+  readonly whisperModel: string;
+  /** Where the (one-time) downloaded model weights are cached. Derived,
+   * regenerable, and outside the journal repository — a cache, not a record
+   * (`requirements.md` §6.4). */
+  readonly whisperCacheDir: string;
 }
 
 export const DEFAULT_PORT = 4319;
@@ -28,6 +35,10 @@ export const DEFAULT_PORT = 4319;
 const DEFAULT_HOST = '127.0.0.1';
 
 const DEFAULT_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
+/** The smallest English Whisper model — a deliberate default. Accuracy for a
+ * larger model is one env var away; nobody should have to know that on day one. */
+const DEFAULT_WHISPER_MODEL = 'Xenova/whisper-tiny.en';
 
 export class ConfigError extends Error {}
 
@@ -98,5 +109,9 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     host: env['HOST']?.trim() || DEFAULT_HOST,
     port: readPort(env['PORT']),
     allowedOrigins: readOrigins(env['WEB_ORIGIN']),
+    whisperModel: env['WHISPER_MODEL']?.trim() || DEFAULT_WHISPER_MODEL,
+    whisperCacheDir: expandHome(
+      env['WHISPER_CACHE_DIR']?.trim() || resolve(homedir(), '.cache', 'journal', 'whisper-models'),
+    ),
   };
 }

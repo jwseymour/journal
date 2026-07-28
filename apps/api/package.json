@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",
+    "@huggingface/transformers": "^3.4.0",
     "@journal/contract": "*",
     "hono": "^4.6.14",
     "yaml": "^2.6.1",

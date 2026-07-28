@@ -157,6 +157,9 @@
    */
   --motion-fast: 120ms;
   --motion-slow: 240ms;
+  /* A slow, steady breathing pulse — the recording indicator, and nothing
+   * that responds to a state change (those use fast/slow above). */
+  --motion-pulse: 1600ms;
   --ease: cubic-bezier(0.2, 0, 0.3, 1);
 
   /* ═══ Overlay ═══════════════════════════════════════════════════════════════

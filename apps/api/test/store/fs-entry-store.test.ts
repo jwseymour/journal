@@ -446,3 +446,89 @@ describe('discardIfBlank', () => {
     expect(entries.map((e) => e.id)).toEqual([keep.id]);
   });
 });
+
+describe('addAttachment', () => {
+  it('writes the file beside the entry, in a directory sharing its stem', async () => {
+    const entry = await store.create({ body: 'A photo from today.', created: '2026-07-26T22:55:13+01:00' });
+    const data = Buffer.from([0xff, 0xd8, 0xff, 0x00]); // a plausible-looking binary blob
+
+    const result = await store.addAttachment(entry.id, { filename: 'photo.jpg', data });
+
+    const stem = entry.path.split('/').pop()!.replace(/\.md$/, '');
+    expect(result.relativeLink).toBe(`${stem}/photo.jpg`);
+
+    const dir = entry.path.slice(0, entry.path.lastIndexOf('/'));
+    const onDisk = await readFile(join(root, dir, stem, 'photo.jpg'));
+    expect(onDisk).toEqual(data);
+  });
+
+  it('preserves binary content exactly, byte for byte', async () => {
+    const entry = await store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+    // All 256 byte values, including nulls and high bytes — nothing UTF-8
+    // related may touch this on the way to disk.
+    const data = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+
+    const result = await store.addAttachment(entry.id, { filename: 'data.bin', data });
+    const stem = entry.path.split('/').pop()!.replace(/\.md$/, '');
+    const dir = entry.path.slice(0, entry.path.lastIndexOf('/'));
+    const onDisk = await readFile(join(root, dir, stem, 'data.bin'));
+
+    expect(onDisk).toEqual(data);
+    expect(result.relativeLink).toBe(`${stem}/data.bin`);
+  });
+
+  it('rejects a second attachment with the same filename, and leaves the first untouched', async () => {
+    const entry = await store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+    await store.addAttachment(entry.id, { filename: 'voice.m4a', data: Buffer.from('first') });
+
+    const error = await catchError(() =>
+      store.addAttachment(entry.id, { filename: 'voice.m4a', data: Buffer.from('second') }),
+    );
+    expect(error.code).toBe('attachment_conflict');
+
+    const stem = entry.path.split('/').pop()!.replace(/\.md$/, '');
+    const dir = entry.path.slice(0, entry.path.lastIndexOf('/'));
+    const onDisk = await readFile(join(root, dir, stem, 'voice.m4a'), 'utf8');
+    expect(onDisk).toBe('first');
+  });
+
+  it('rejects a missing entry', async () => {
+    const error = await catchError(() =>
+      store.addAttachment('01ARZ3NDEKTSV4RRFFQ69G5FAV', { filename: 'x.jpg', data: Buffer.from('x') }),
+    );
+    expect(error.code).toBe('entry_not_found');
+  });
+
+  it.each([
+    ['a path traversal attempt', '../../etc/passwd'],
+    ['a nested path', 'sub/dir/file.jpg'],
+    ['a Windows-style separator', 'sub\\file.jpg'],
+    ['just a dot', '.'],
+    ['just two dots', '..'],
+    ['an empty name', ''],
+    ['a leading-dot hidden file', '.hidden.jpg'],
+  ])('rejects %s as a filename', async (_name, filename) => {
+    const entry = await store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+    const error = await catchError(() => store.addAttachment(entry.id, { filename, data: Buffer.from('x') }));
+    expect(error.code).toBe('invalid_request');
+  });
+
+  it('never touches the entry file itself', async () => {
+    const entry = await store.create({ body: 'Untouched.', created: '2026-07-26T22:55:13+01:00' });
+    const before = await read(entry.path);
+
+    await store.addAttachment(entry.id, { filename: 'photo.jpg', data: Buffer.from('binary') });
+
+    expect(await read(entry.path)).toBe(before);
+  });
+
+  it('creates the attachment directory only when an attachment actually exists', async () => {
+    const entry = await store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+    const dir = entry.path.slice(0, entry.path.lastIndexOf('/'));
+    const stem = entry.path.split('/').pop()!.replace(/\.md$/, '');
+
+    await expect(readdir(join(root, dir, stem))).rejects.toThrow();
+    await store.addAttachment(entry.id, { filename: 'photo.jpg', data: Buffer.from('x') });
+    await expect(readdir(join(root, dir, stem))).resolves.toContain('photo.jpg');
+  });
+});

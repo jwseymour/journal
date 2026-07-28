@@ -66,10 +66,15 @@ async function ensureDirectory(dir: string, root: string): Promise<void> {
  *
  * `root` is the deepest directory known to already exist — the journal root.
  * Anything between it and the target is created and made durable.
+ *
+ * `contents` takes a `Buffer` as well as a `string` — entries are UTF-8 text,
+ * but attachments (`format.md` §4) are arbitrary binary, and the atomicity
+ * guarantee is exactly the same one either way: this is the only place either
+ * kind of file is ever written.
  */
 export async function writeFileAtomic(
   targetPath: string,
-  contents: string,
+  contents: string | Buffer,
   root: string,
 ): Promise<void> {
   const dir = dirname(targetPath);
@@ -80,7 +85,11 @@ export async function writeFileAtomic(
     // 'wx' fails rather than clobbering, so two writers cannot share a temp file.
     const handle = await open(tempPath, 'wx', 0o644);
     try {
-      await handle.writeFile(contents, 'utf8');
+      if (typeof contents === 'string') {
+        await handle.writeFile(contents, 'utf8');
+      } else {
+        await handle.writeFile(contents);
+      }
       await handle.sync();
     } finally {
       await handle.close();

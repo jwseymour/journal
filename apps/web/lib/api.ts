@@ -1,10 +1,12 @@
 import type {
+  AddAttachmentResponse,
   ApiError,
   ApiErrorCode,
   CreateEntryRequest,
   CreateEntryResponse,
   Entry,
   EntryPage,
+  TranscribeResponse,
   UpdateEntryRequest,
   UpdateEntryResponse,
 } from '@journal/contract';
@@ -118,4 +120,31 @@ export function updateEntry(id: string, input: UpdateEntryRequest): Promise<Upda
  */
 export async function discardEntry(id: string): Promise<void> {
   await request<undefined>(`/entries/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
+ * Store a file alongside an entry (`format.md` §4). Resolves to the relative
+ * link fragment — inserting it into the body is the caller's job, the same
+ * way any other text lands there.
+ */
+export function addAttachment(entryId: string, file: Blob, filename: string): Promise<AddAttachmentResponse> {
+  const form = new FormData();
+  form.set('file', file, filename);
+  return request<AddAttachmentResponse>(`/entries/${encodeURIComponent(entryId)}/attachments`, {
+    method: 'POST',
+    body: form,
+  });
+}
+
+/**
+ * Transcribe raw PCM samples (`requirements.md` §4.7). Sends the samples'
+ * exact bytes, not a re-encoded copy — see `lib/recorder.ts` for why nothing
+ * arrives here in a compressed format that would need decoding.
+ */
+export function transcribe(samples: Float32Array, sampleRate: number): Promise<TranscribeResponse> {
+  return request<TranscribeResponse>(`/transcribe?sampleRate=${sampleRate}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: new Blob([samples.buffer as ArrayBuffer]),
+  });
 }

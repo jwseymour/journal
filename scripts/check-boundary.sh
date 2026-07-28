@@ -96,6 +96,13 @@ check "a literal size appears outside $TOKENS — use a token:" \
   "[0-9]+(px|pt|em)\b" \
   "$COMPONENTS"
 
+# Durations — animation/transition timings. `ms` only: this codebase writes no
+# bare-second values, and matching a plain trailing `s` reliably without
+# false-positiving on ordinary words is not worth the fragility.
+check "a literal duration appears outside $TOKENS — use a token:" \
+  "[0-9]+ms\b" \
+  "$COMPONENTS"
+
 # Only inside a declaration, so `var(--measure)` passes where `62ch` does not.
 check "a literal measure appears outside $TOKENS — use a token:" \
   "^[^/*]*:[^;]*[0-9]+(rem|ch)\b" \

@@ -149,6 +149,32 @@ export interface UpdateEntryRequest {
 export type UpdateEntryResponse = Entry;
 
 /**
+ * The result of attaching a file to an entry (`format.md` §4).
+ *
+ * `relativeLink` is meant to be written straight into the entry's own body,
+ * exactly as given — `![](2026-07-26-2255-abcde8/photo.jpg)`. Unlike
+ * `CreateEntryResponse.path`, this is not informational: it is the actual
+ * markdown link fragment, because that is the one thing a caller attaching a
+ * file needs in order to finish the job — inserting it into the text is still
+ * the user's own act, same as any other keystroke (`requirements.md` §4.4).
+ */
+export interface AddAttachmentResponse {
+  relativeLink: string;
+}
+
+/**
+ * The result of transcribing a recording (`requirements.md` §4.7).
+ *
+ * Deliberately the only field. Nothing about *which* model produced it, no
+ * confidence score, nothing that would leak provider detail across the
+ * boundary (`plan.md` standing rule 8) — a transcript is text, exactly like
+ * anything else that ends up in an entry's body.
+ */
+export interface TranscribeResponse {
+  text: string;
+}
+
+/**
  * Stable, machine-readable failure codes.
  *
  * Codes rather than bare HTTP statuses, because a future remote frontend will
@@ -177,6 +203,19 @@ export type ApiErrorCode =
   | 'edit_conflict'
   /** The journal directory could not be read or written. */
   | 'journal_unavailable'
+  /**
+   * An attachment with that filename already exists on this entry.
+   * Attachments are written once and never overwritten (`requirements.md`
+   * §7.4) — pick a different name and try again.
+   */
+  | 'attachment_conflict'
+  /**
+   * The local speech-to-text model could not produce a transcript — it may
+   * still be downloading, or the recording may be unusable. Never a reason to
+   * lose the audio; nothing about the recording itself is discarded when this
+   * happens (`requirements.md` §4.7).
+   */
+  | 'transcription_failed'
   /** Anything unanticipated. */
   | 'internal';
 

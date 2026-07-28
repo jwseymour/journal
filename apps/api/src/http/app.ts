@@ -3,17 +3,26 @@ import { cors } from 'hono/cors';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { z } from 'zod';
 import type {
+  AddAttachmentResponse,
   ApiError,
   CreateEntryResponse,
   Entry,
   EntryPage,
   HealthResponse,
+  TranscribeResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
 import { AppError, invalidRequest } from '../errors.js';
 import { isUlid } from '../record/id.js';
+import type { Transcriber } from '../transcribe/transcriber.js';
 import type { EntryStore } from './../store/entry-store.js';
+
+/** A generous ceiling, not a tuned one — big enough for a long spoken entry's
+ * worth of raw PCM, small enough that a request cannot hold the process open
+ * reading an unbounded body. */
+const MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024;
+const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 
 /**
  * The HTTP surface. **Thin — no logic** (`plan.md` repository shape).
@@ -81,7 +90,7 @@ function errorBody(code: ApiError['error']['code'], message: string): ApiError {
   return { error: { code, message } };
 }
 
-export function createApp(store: EntryStore, config: Config): Hono {
+export function createApp(store: EntryStore, config: Config, transcriber: Transcriber): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
   const hosts = allowedHosts(config);
@@ -233,6 +242,63 @@ export function createApp(store: EntryStore, config: Config): Hono {
     // EntryStore.discardIfBlank. A malformed id is simply "nothing to do."
     if (isUlid(id)) await store.discardIfBlank(id);
     return c.body(null, 204);
+  });
+
+  app.post('/entries/:id/attachments', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) {
+      return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
+    }
+
+    const contentLength = Number(c.req.header('content-length') ?? '0');
+    if (contentLength > MAX_ATTACHMENT_BYTES) {
+      throw invalidRequest(`The attachment is larger than the ${MAX_ATTACHMENT_BYTES} byte limit.`);
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.parseBody();
+    } catch {
+      throw invalidRequest('The request body is not valid multipart/form-data.');
+    }
+
+    const file = body['file'];
+    if (!(file instanceof File)) {
+      throw invalidRequest("A 'file' field carrying the attachment is required.");
+    }
+
+    const data = Buffer.from(await file.arrayBuffer());
+    const result = await store.addAttachment(id, { filename: file.name, data });
+    const response: AddAttachmentResponse = result;
+    return c.json(response, 201);
+  });
+
+  app.post('/transcribe', async (c) => {
+    const contentLength = Number(c.req.header('content-length') ?? '0');
+    if (contentLength > MAX_AUDIO_BYTES) {
+      throw invalidRequest(`The recording is larger than the ${MAX_AUDIO_BYTES} byte limit.`);
+    }
+
+    const rawSampleRate = c.req.query('sampleRate');
+    const sampleRate = Number(rawSampleRate);
+    if (!rawSampleRate || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+      throw invalidRequest("A positive 'sampleRate' query parameter is required.");
+    }
+
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await c.req.arrayBuffer();
+    } catch {
+      throw invalidRequest('Could not read the recording body.');
+    }
+    if (buffer.byteLength === 0 || buffer.byteLength % 4 !== 0) {
+      throw invalidRequest('The recording body must be raw 32-bit float PCM samples.');
+    }
+
+    const samples = new Float32Array(buffer);
+    const text = await transcriber.transcribe(samples, sampleRate);
+    const response: TranscribeResponse = { text };
+    return c.json(response);
   });
 
   app.notFound((c) => c.json(errorBody('invalid_request', 'No such endpoint.'), 404));

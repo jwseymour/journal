@@ -3,16 +3,43 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type {
+  AddAttachmentResponse,
   ApiError,
   CreateEntryResponse,
   Entry,
   EntryPage,
   HealthResponse,
+  TranscribeResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
+import { transcriptionFailed } from '../../src/errors.js';
 import { createApp } from '../../src/http/app.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
+import type { Transcriber } from '../../src/transcribe/transcriber.js';
+
+/**
+ * A `Transcriber` that never loads a real model — HTTP tests exercise the
+ * endpoint's own contract (validation, error shapes, wiring), not whether the
+ * local speech-to-text model is accurate. The real implementation is verified
+ * separately, live, against real synthetic speech — see the M4 write-up.
+ *
+ * On failure this throws the same `AppError` shape the real
+ * `LocalTranscriber` throws, not a bare `Error` — the endpoint itself does no
+ * error translation, so a fake that threw a plain `Error` here would only
+ * prove the generic `internal` handler works, not this endpoint's own
+ * `transcription_failed` mapping.
+ */
+class FakeTranscriber implements Transcriber {
+  calls: Array<{ samples: Float32Array; sampleRate: number }> = [];
+  result: string | 'FAIL' = 'fake transcript';
+
+  async transcribe(samples: Float32Array, sampleRate: number): Promise<string> {
+    this.calls.push({ samples, sampleRate });
+    if (this.result === 'FAIL') throw transcriptionFailed('model exploded');
+    return this.result;
+  }
+}
 
 /**
  * The endpoints, exercised through Hono's own request path so that middleware,
@@ -26,17 +53,21 @@ const ORIGIN = 'http://localhost:3000';
 
 let root: string;
 let app: ReturnType<typeof createApp>;
+let transcriber: FakeTranscriber;
 
 const config = (journalDir: string): Config => ({
   journalDir,
   host: '127.0.0.1',
   port: 4319,
   allowedOrigins: [ORIGIN],
+  whisperModel: 'Xenova/whisper-tiny.en',
+  whisperCacheDir: join(journalDir, '.whisper-cache-unused-in-tests'),
 });
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'journal-http-'));
-  app = createApp(new FsEntryStore(root), config(root));
+  transcriber = new FakeTranscriber();
+  app = createApp(new FsEntryStore(root), config(root), transcriber);
 });
 
 afterEach(async () => {
@@ -316,6 +347,117 @@ describe('DELETE /entries/:id', () => {
 
   it('is idempotent — deleting an already-gone or never-existed entry still succeeds quietly', async () => {
     expect((await del('01ARZ3NDEKTSV4RRFFQ69G5FAV')).status).toBe(204);
+  });
+});
+
+describe('POST /entries/:id/attachments', () => {
+  function upload(id: string, filename: string, data: Uint8Array | string, type = 'application/octet-stream') {
+    const form = new FormData();
+    form.set('file', new File([data], filename, { type }));
+    // No explicit Content-Type header: FormData needs to set its own boundary.
+    return app.request(`/entries/${id}/attachments`, { method: 'POST', body: form });
+  }
+
+  it('stores the file and returns the relative link for the body', async () => {
+    const created = (await (await post({ body: 'A photo from today.' })).json()) as CreateEntryResponse;
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+
+    const response = await upload(created.id, 'photo.jpg', bytes, 'image/jpeg');
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as AddAttachmentResponse;
+    expect(body.relativeLink).toMatch(/^[0-9a-z-]+\/photo\.jpg$/);
+    expect(body.relativeLink).not.toContain('journal/');
+  });
+
+  it('reports a missing entry as not found', async () => {
+    const response = await upload('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'x.jpg', 'x');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
+  });
+
+  it('rejects a request with no file field', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const form = new FormData();
+    form.set('notFile', 'nope');
+    const response = await app.request(`/entries/${created.id}/attachments`, { method: 'POST', body: form });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects a second attachment with the same filename', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    expect((await upload(created.id, 'voice.m4a', 'first')).status).toBe(201);
+
+    const response = await upload(created.id, 'voice.m4a', 'second');
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe('attachment_conflict');
+  });
+
+  it('rejects a filename that is a path traversal attempt', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const response = await upload(created.id, '../../etc/passwd', 'x');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('POST /transcribe', () => {
+  function transcribe(samples: Float32Array, sampleRate: number | string | undefined) {
+    const query = sampleRate === undefined ? '' : `?sampleRate=${sampleRate}`;
+    return app.request(`/transcribe${query}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: samples.buffer as ArrayBuffer,
+    });
+  }
+
+  it('transcribes and hands the samples and rate straight to the Transcriber', async () => {
+    transcriber.result = 'hello world';
+    const samples = new Float32Array([0.1, -0.2, 0.3, 0]);
+
+    const response = await transcribe(samples, 48_000);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as TranscribeResponse;
+    expect(body.text).toBe('hello world');
+
+    expect(transcriber.calls).toHaveLength(1);
+    expect(transcriber.calls[0]!.sampleRate).toBe(48_000);
+    expect(Array.from(transcriber.calls[0]!.samples)).toEqual(Array.from(samples));
+  });
+
+  it('rejects a missing or invalid sampleRate', async () => {
+    const samples = new Float32Array([0.1, 0.2]);
+    for (const rate of [undefined, '0', '-1', 'nope']) {
+      const response = await transcribe(samples, rate);
+      expect(response.status, String(rate)).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+
+  it('rejects a body whose byte length is not a multiple of 4', async () => {
+    const response = await app.request('/transcribe?sampleRate=16000', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects an empty body', async () => {
+    const response = await app.request('/transcribe?sampleRate=16000', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array([]),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('surfaces a Transcriber failure as transcription_failed', async () => {
+    transcriber.result = 'FAIL';
+    const response = await transcribe(new Float32Array([0.1]), 16_000);
+    expect(response.status).toBe(503);
+    expect((await errorOf(response)).code).toBe('transcription_failed');
   });
 });
 

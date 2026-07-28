@@ -38,3 +38,13 @@ export const editConflict = (): AppError =>
     'This entry changed since it was last read — most likely edited outside the app. Nothing was overwritten.',
     409,
   );
+
+export const attachmentConflict = (filename: string): AppError =>
+  new AppError(
+    'attachment_conflict',
+    `An attachment named '${filename}' already exists on this entry. Attachments are written once and never overwritten (\`requirements.md\` §7.4).`,
+    409,
+  );
+
+export const transcriptionFailed = (message: string, cause?: unknown): AppError =>
+  new AppError('transcription_failed', message, 503, cause === undefined ? undefined : { cause });

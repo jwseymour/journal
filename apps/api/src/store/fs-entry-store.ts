@@ -1,7 +1,14 @@
 import { readdir, readFile, stat, unlink } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import type { EntryMetadata, EntrySummary } from '@journal/contract';
-import { editConflict, entryNotFound, invalidRequest, journalUnavailable, AppError } from '../errors.js';
+import {
+  attachmentConflict,
+  editConflict,
+  entryNotFound,
+  invalidRequest,
+  journalUnavailable,
+  AppError,
+} from '../errors.js';
 import { excerpt } from '../record/excerpt.js';
 import { normaliseBody, parseEntryFile, serialiseEntryFile } from '../record/frontmatter.js';
 import { ENTRIES_DIR, ENTRY_EXTENSION, entryRelativePath } from '../record/filename.js';
@@ -11,6 +18,8 @@ import { nowTimestamp, parseTimestamp } from '../record/time.js';
 import { writeFileAtomic } from './atomic-write.js';
 import { compareDescending, decodeCursor, encodeCursor, isAfterCursor } from './cursor.js';
 import type {
+  AddAttachmentInput,
+  AddAttachmentResult,
   CreateEntryInput,
   EntryStore,
   ListOptions,
@@ -254,6 +263,39 @@ export class FsEntryStore implements EntryStore {
     this.#ordered = this.#ordered.filter((entry) => entry.id !== id);
   }
 
+  async addAttachment(id: string, input: AddAttachmentInput): Promise<AddAttachmentResult> {
+    await this.#refresh();
+    const cached = this.#byId.get(id);
+    if (!cached) throw entryNotFound(id);
+
+    if (!isValidAttachmentFilename(input.filename)) {
+      throw invalidRequest(`'${input.filename}' is not a usable attachment filename.`);
+    }
+
+    // Same stem as the entry file, sitting beside it (`format.md` §4) — the
+    // one place identity depends on the filename rather than the id, because
+    // a relative link has to resolve in a plain markdown viewer with no
+    // application involved at all.
+    const stem = basename(cached.absPath, ENTRY_EXTENSION);
+    const attachmentDir = join(dirname(cached.absPath), stem);
+    const targetPath = join(attachmentDir, input.filename);
+
+    if (await exists(targetPath)) {
+      throw attachmentConflict(input.filename);
+    }
+
+    try {
+      await writeFileAtomic(targetPath, input.data, this.#journalRoot);
+    } catch (cause) {
+      throw journalUnavailable(
+        `Could not write the attachment to ${relative(this.#journalRoot, targetPath)}.`,
+        cause,
+      );
+    }
+
+    return { relativeLink: `${stem}/${input.filename}` };
+  }
+
   async list(options: ListOptions): Promise<ListResult> {
     await this.#refresh();
     const cursor = options.cursor === undefined ? null : decodeCursor(options.cursor);
@@ -416,6 +458,20 @@ export class FsEntryStore implements EntryStore {
 
 function isNotFound(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT';
+}
+
+/**
+ * A bare filename and nothing else — no path separators, no `..`, no leading
+ * dot. Rejects path traversal outright rather than trying to sanitise it,
+ * because a filename a caller cannot use is a smaller problem than one that
+ * was silently rewritten into something else.
+ */
+function isValidAttachmentFilename(filename: string): boolean {
+  if (filename.length === 0 || filename.length > 255) return false;
+  if (filename === '.' || filename === '..') return false;
+  if (filename.includes('/') || filename.includes('\\')) return false;
+  if (filename.startsWith('.')) return false;
+  return true;
 }
 
 async function exists(path: string): Promise<boolean> {

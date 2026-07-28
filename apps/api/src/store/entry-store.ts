@@ -53,6 +53,20 @@ export interface StoreStats {
   unreadableCount: number;
 }
 
+export interface AddAttachmentInput {
+  /** A bare filename — "photo.jpg", never a path. Validated, not trusted. */
+  filename: string;
+  data: Buffer;
+}
+
+export interface AddAttachmentResult {
+  /** Relative to the entry file itself — "2026-07-26-2255-abcde8/photo.jpg" —
+   * exactly the fragment `format.md` §4 says belongs in a body link. Not
+   * journal-root-relative like `StoredEntry.path`, because this is the one
+   * value meant to be written straight into an entry's own markdown. */
+  relativeLink: string;
+}
+
 export interface EntryStore {
   /** Write a new entry. The only way anything is ever written (`requirements.md` §4.4). */
   create(input: CreateEntryInput): Promise<StoredEntry>;
@@ -79,6 +93,16 @@ export interface EntryStore {
    * remove actual writing.
    */
   discardIfBlank(id: string): Promise<void>;
+
+  /**
+   * Store a file alongside an entry, in a directory sharing the entry file's
+   * own stem (`format.md` §4). Throws `entry_not_found` if there is no such
+   * entry. Throws `invalid_request` for a filename that is not a bare name
+   * (no path separators, no `..`) or that already exists — attachments are
+   * written once and never modified (`requirements.md` §7.4), so a name
+   * collision is refused rather than silently overwritten.
+   */
+  addAttachment(entryId: string, input: AddAttachmentInput): Promise<AddAttachmentResult>;
 
   /** One page of entries, newest first. */
   list(options: ListOptions): Promise<ListResult>;

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import type { Entry } from '@journal/contract';
 import { Composer } from '@/components/composer';
 import { Markdown } from '@/components/markdown';
-import { ApiRequestError, updateEntry } from '@/lib/api';
+import { addAttachment, ApiRequestError, updateEntry } from '@/lib/api';
 import { formatTimestamp } from '@/lib/format';
 import { useGlobalKey } from '@/lib/keyboard';
 import styles from './page.module.css';
@@ -60,6 +60,11 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
     }
   };
 
+  const attachAudio = async (blob: Blob, filename: string): Promise<string> => {
+    const { relativeLink } = await addAttachment(entry.id, blob, filename);
+    return relativeLink;
+  };
+
   // `e`, outside a text field: edit the open entry (`design.md` §5.2). Only
   // claimed while there is something to switch into — editing itself is a
   // text field, so the global scheme already stops listening once it opens.
@@ -93,6 +98,7 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
         onChange={setDraft}
         onSave={() => void save()}
         onFinish={() => void save().then((ok) => ok && setEditing(false))}
+        onAttachAudio={attachAudio}
         disabled={conflict}
         autoFocus
         ariaLabel="Edit entry"
@@ -106,6 +112,7 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
           <span />
         )}
         <div className={styles.actions}>
+          <kbd className={styles.hint}>⌘⌥R voice</kbd>
           <kbd className={styles.hint}>⌘⇧P preview</kbd>
           <kbd className={styles.hint}>⌘S save</kbd>
           <kbd className={styles.hint}>⌘↩ done</kbd>
