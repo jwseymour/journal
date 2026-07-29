@@ -6,6 +6,7 @@ import type {
   CreateEntryResponse,
   Entry,
   EntryPage,
+  SearchResponse,
   TranscribeResponse,
   UpdateEntryRequest,
   UpdateEntryResponse,
@@ -134,6 +135,17 @@ export function addAttachment(entryId: string, file: Blob, filename: string): Pr
     method: 'POST',
     body: form,
   });
+}
+
+/**
+ * Search by meaning, not only by word (`requirements.md` §8, `plan.md` M6).
+ * Each hit is a passage, not merely an entry — the backend has already found
+ * the part that matched.
+ */
+export function search(query: string, limit?: number): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q: query });
+  if (limit !== undefined) params.set('limit', String(limit));
+  return request<SearchResponse>(`/search?${params.toString()}`);
 }
 
 /**

@@ -48,3 +48,6 @@ export const attachmentConflict = (filename: string): AppError =>
 
 export const transcriptionFailed = (message: string, cause?: unknown): AppError =>
   new AppError('transcription_failed', message, 503, cause === undefined ? undefined : { cause });
+
+export const searchUnavailable = (message: string, cause?: unknown): AppError =>
+  new AppError('search_unavailable', message, 503, cause === undefined ? undefined : { cause });

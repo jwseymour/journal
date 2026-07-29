@@ -25,9 +25,9 @@ import { useTheme } from './theme';
  *   the composer's own `onKeyDown`, not here, because "must work while your
  *   hands are in the text" is most directly satisfied by binding them exactly
  *   where the text is.
- * - **The plain-key scheme** — `n`, `j`, `k`, `↩`, `e`, `t`, `?`, `Esc`, and
- *   the `g` chord — only fires with focus outside a text field, checked on
- *   every keystroke rather than assumed.
+ * - **The plain-key scheme** — `n`, `/`, `j`, `k`, `↩`, `e`, `t`, `?`, `Esc`,
+ *   and the `g` chord — only fires with focus outside a text field, checked
+ *   on every keystroke rather than assumed.
  *
  * Some of these are fixed, page-independent actions (navigate, toggle theme)
  * and are handled directly below. Others depend on what is currently
@@ -128,9 +128,12 @@ export function KeyboardProvider({ children }: { children: React.ReactNode }) {
         } else if (key === 'e') {
           event.preventDefault();
           router.push('/');
+        } else if (key === 's') {
+          event.preventDefault();
+          router.push('/search');
         }
-        // `s` (search) and `a` (analysis) have no destination yet — a bare
-        // key that goes nowhere, rather than a broken link.
+        // `a` (analysis) has no destination yet — a bare key that goes
+        // nowhere, rather than a broken link.
         return;
       }
 
@@ -163,6 +166,12 @@ export function KeyboardProvider({ children }: { children: React.ReactNode }) {
 
       if (event.key === 'n') {
         router.push('/entry/new');
+        return;
+      }
+
+      if (event.key === '/') {
+        event.preventDefault();
+        router.push('/search');
         return;
       }
 

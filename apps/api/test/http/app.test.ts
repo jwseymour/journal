@@ -9,12 +9,16 @@ import type {
   Entry,
   EntryPage,
   HealthResponse,
+  SearchHit,
+  SearchResponse,
   TranscribeResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
 import { transcriptionFailed } from '../../src/errors.js';
 import { createApp } from '../../src/http/app.js';
+import { SqliteIndex } from '../../src/index/sqlite-index.js';
+import type { Searcher } from '../../src/search/searcher.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
 import type { Transcriber } from '../../src/transcribe/transcriber.js';
 
@@ -42,6 +46,22 @@ class FakeTranscriber implements Transcriber {
 }
 
 /**
+ * Same reasoning as `FakeTranscriber`: HTTP tests exercise `/search`'s own
+ * contract (validation, limit clamping, response shape), not whether BM25
+ * and vector fusion actually rank well — that is `search-index.test.ts` and
+ * `searcher.test.ts`'s job.
+ */
+class FakeSearcher implements Searcher {
+  calls: Array<{ query: string; limit: number }> = [];
+  hits: SearchHit[] = [];
+
+  async search(query: string, limit: number): Promise<SearchHit[]> {
+    this.calls.push({ query, limit });
+    return this.hits;
+  }
+}
+
+/**
  * The endpoints, exercised through Hono's own request path so that middleware,
  * status codes and error shapes are all real.
  *
@@ -54,6 +74,8 @@ const ORIGIN = 'http://localhost:3000';
 let root: string;
 let app: ReturnType<typeof createApp>;
 let transcriber: FakeTranscriber;
+let searcher: FakeSearcher;
+let index: SqliteIndex;
 
 const config = (journalDir: string): Config => ({
   journalDir,
@@ -62,15 +84,22 @@ const config = (journalDir: string): Config => ({
   allowedOrigins: [ORIGIN],
   whisperModel: 'Xenova/whisper-tiny.en',
   whisperCacheDir: join(journalDir, '.whisper-cache-unused-in-tests'),
+  indexDbPath: ':memory:',
+  embeddingModel: 'Xenova/all-MiniLM-L6-v2',
+  embeddingDimensions: 384,
+  embeddingCacheDir: join(journalDir, '.embedding-cache-unused-in-tests'),
 });
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'journal-http-'));
   transcriber = new FakeTranscriber();
-  app = createApp(new FsEntryStore(root), config(root), transcriber);
+  searcher = new FakeSearcher();
+  index = new SqliteIndex(':memory:');
+  app = createApp(new FsEntryStore(root, index), config(root), transcriber, searcher);
 });
 
 afterEach(async () => {
+  index.close();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -458,6 +487,51 @@ describe('POST /transcribe', () => {
     const response = await transcribe(new Float32Array([0.1]), 16_000);
     expect(response.status).toBe(503);
     expect((await errorOf(response)).code).toBe('transcription_failed');
+  });
+});
+
+describe('GET /search', () => {
+  it('passes the query and default limit straight to the Searcher', async () => {
+    const response = await app.request('/search?q=lighthouse');
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as SearchResponse;
+    expect(body).toEqual({ hits: [] });
+    expect(searcher.calls).toEqual([{ query: 'lighthouse', limit: 20 }]);
+  });
+
+  it('returns whatever hits the Searcher produces, unmodified', async () => {
+    const hit: SearchHit = { entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', created: '2026-07-01T09:00:00Z', passage: 'a lighthouse on the point' };
+    searcher.hits = [hit];
+
+    const response = await app.request('/search?q=lighthouse');
+    const body = (await response.json()) as SearchResponse;
+    expect(body.hits).toEqual([hit]);
+  });
+
+  it('respects a custom limit', async () => {
+    await app.request('/search?q=x&limit=5');
+    expect(searcher.calls[0]!.limit).toBe(5);
+  });
+
+  it('rejects a missing q', async () => {
+    const response = await app.request('/search');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects an empty or whitespace-only q', async () => {
+    for (const q of ['', '   ']) {
+      const response = await app.request(`/search?q=${encodeURIComponent(q)}`);
+      expect(response.status, JSON.stringify(q)).toBe(400);
+    }
+  });
+
+  it('rejects a limit outside 1..200', async () => {
+    for (const limit of ['0', '-1', '201', 'nope']) {
+      const response = await app.request(`/search?q=x&limit=${limit}`);
+      expect(response.status, limit).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
   });
 });
 

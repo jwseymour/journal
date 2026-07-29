@@ -53,8 +53,20 @@ export class LocalTranscriber implements Transcriber {
     return normaliseResult(result);
   }
 
+  /**
+   * A failed load must not poison every request after it — see
+   * `search/local-embedder.ts`'s identical `#getPipeline`, which shares this
+   * exact bug fix. Without the `.catch`, `??=` would permanently cache a
+   * *rejected* promise the first time a load failed (a transient network
+   * hiccup during the model's one-time download, say), and every later
+   * recording would fail the same way forever, even once the network or the
+   * cache is fine.
+   */
   #getPipeline(): Promise<AsrPipeline> {
-    this.#pipelinePromise ??= loadPipeline(this.#modelId, this.#cacheDir);
+    this.#pipelinePromise ??= loadPipeline(this.#modelId, this.#cacheDir).catch((error: unknown) => {
+      this.#pipelinePromise = null;
+      throw error;
+    });
     return this.#pipelinePromise;
   }
 }
@@ -67,12 +79,15 @@ const WHISPER_SAMPLE_RATE = 16_000;
 type AsrPipeline = (samples: Float32Array) => Promise<unknown>;
 
 async function loadPipeline(modelId: string, cacheDir: string): Promise<AsrPipeline> {
-  const { env, pipeline } = await import('@huggingface/transformers');
-  env.cacheDir = cacheDir;
+  const { pipeline } = await import('@huggingface/transformers');
 
   let asr: unknown;
   try {
-    asr = await pipeline('automatic-speech-recognition', modelId);
+    // `cache_dir` per call rather than the shared `env.cacheDir` global —
+    // the local embedder (`plan.md` M6) loads a model through this same
+    // library, and two lazy loaders racing to set one shared global would be
+    // a real bug, not a hypothetical one.
+    asr = await pipeline('automatic-speech-recognition', modelId, { cache_dir: cacheDir });
   } catch (cause) {
     throw transcriptionFailed(
       `Could not load the local speech-to-text model '${modelId}'. The first run needs a working ` +

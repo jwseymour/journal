@@ -9,6 +9,7 @@ import {
   journalUnavailable,
   AppError,
 } from '../errors.js';
+import type { IndexRow, SqliteIndex } from '../index/sqlite-index.js';
 import { excerpt } from '../record/excerpt.js';
 import { normaliseBody, parseEntryFile, serialiseEntryFile } from '../record/frontmatter.js';
 import { ENTRIES_DIR, ENTRY_EXTENSION, entryRelativePath } from '../record/filename.js';
@@ -16,7 +17,7 @@ import { contentHash } from '../record/hash.js';
 import { ulid } from '../record/id.js';
 import { nowTimestamp, parseTimestamp } from '../record/time.js';
 import { writeFileAtomic } from './atomic-write.js';
-import { compareDescending, decodeCursor, encodeCursor, isAfterCursor } from './cursor.js';
+import { decodeCursor, encodeCursor } from './cursor.js';
 import type {
   AddAttachmentInput,
   AddAttachmentResult,
@@ -30,65 +31,65 @@ import type {
 } from './entry-store.js';
 
 /**
- * The filesystem implementation of `EntryStore` — the markdown files, which are
- * canonical (`requirements.md` §7.3).
+ * The filesystem implementation of `EntryStore` — the markdown files, which
+ * are canonical (`requirements.md` §7.3). The lookup and listing bookkeeping
+ * lives in a persistent `SqliteIndex` (`plan.md` M5) rather than an in-memory
+ * map, so a restart never has to re-read and re-parse the whole journal
+ * before it can answer its first request.
+ *
+ * ## The index is a cache, never a source of truth for content
+ *
+ * `get`, `update` and `discardIfBlank` all read the entry file fresh from
+ * disk before doing anything else — completely unchanged from M1/M2. The
+ * index only ever answers "where is entry X" and "what belongs on a list
+ * page." Deleting `index.db` and calling `rebuild()` reproduces it exactly,
+ * because it holds nothing that cannot be re-derived from the files
+ * (`requirements.md` §6.4).
  *
  * ## Reading is deliberately forgiving
  *
  * The journal directory is expected to be touched by hand: that is a stated
- * benefit of plain files, not an edge case. So a file that cannot be read as an
- * entry is **skipped and counted**, never allowed to fail the listing. One
+ * benefit of plain files, not an edge case. So a file that cannot be read as
+ * an entry is **skipped and counted**, never allowed to fail the listing. One
  * damaged file must not put the other twenty years out of reach. The count
  * surfaces on `/health` so the damage is visible rather than silent.
  *
- * ## The id index
+ * ## Incremental scanning
  *
- * `id` → path is an in-memory map built by scanning the directory, exactly as
- * `plan.md` M1 specifies. Correct at hundreds of entries and replaced by the
- * SQLite index in M5, with the API unchanged. Refreshing compares the *set of
- * file paths* and reads only what is new, so the common case is one recursive
- * `readdir` and no file reads at all.
- *
- * One consequence, accepted for M1: a file edited in place while the server is
- * running keeps its old excerpt in the list until a restart. `get` always reads
- * the file fresh, so opening an entry never shows stale prose — and M1 has no
- * edit endpoint, so the only way to reach that state is an external editor.
- * M5 replaces this with content hashing (`plan.md` M5).
+ * A path already in the index is trusted without being re-read — the same
+ * choice M1 made, now backed by SQLite instead of a `Map`. Content hashing
+ * (`plan.md` M5: "never mtime" — mtime does not survive `cp -r` or
+ * `git checkout`, this project's own backup and restore story) is what makes
+ * `rebuild()` correct: a fresh scan from an empty index reads and hashes
+ * every file, and produces byte-for-byte the same rows a live incremental
+ * index converges to, which is the property the M5 done-when drill exists to
+ * prove.
  */
 
 /** Guards against a pathological run of id collisions rather than looping forever. */
 const MAX_ID_ATTEMPTS = 8;
 
-interface CachedEntry {
-  readonly absPath: string;
-  /** Journal-root-relative, POSIX separators. */
-  readonly relPath: string;
-  readonly metadata: EntryMetadata;
-  /** Lifted out of `metadata` so a cached entry is directly an ordering key. */
-  readonly id: string;
-  readonly epochMs: number;
-  readonly excerpt: string;
-}
-
 const toPosix = (path: string): string => (sep === '/' ? path : path.split(sep).join('/'));
 
-function summarise(entry: CachedEntry): EntrySummary {
-  return { ...entry.metadata, excerpt: entry.excerpt };
+function summarise(row: IndexRow): EntrySummary {
+  return {
+    id: row.id,
+    created: row.created,
+    ...(row.location ? { location: row.location } : {}),
+    excerpt: row.excerpt,
+  };
 }
 
 export class FsEntryStore implements EntryStore {
   readonly #journalRoot: string;
   readonly #entriesRoot: string;
-
-  #byPath = new Map<string, CachedEntry>();
-  #byId = new Map<string, CachedEntry>();
-  #ordered: CachedEntry[] = [];
-  #unreadable = new Set<string>();
+  readonly #index: SqliteIndex;
   #inFlight: Promise<void> | null = null;
 
-  constructor(journalRoot: string) {
+  constructor(journalRoot: string, index: SqliteIndex) {
     this.#journalRoot = journalRoot;
     this.#entriesRoot = join(journalRoot, ENTRIES_DIR);
+    this.#index = index;
   }
 
   async create(input: CreateEntryInput): Promise<StoredEntry> {
@@ -130,17 +131,19 @@ export class FsEntryStore implements EntryStore {
         throw journalUnavailable(`Could not write the entry to ${relPath}.`, cause);
       }
 
-      const cached: CachedEntry = {
+      const hash = contentHash(fileText);
+      this.#index.upsert({
+        id,
         absPath,
         relPath,
-        metadata,
-        id,
         epochMs: created.epochMs,
+        created: metadata.created,
+        ...(metadata.location ? { location: metadata.location } : {}),
         excerpt: excerpt(body),
-      };
-      this.#insert(cached);
+        contentHash: hash,
+      });
 
-      return { ...metadata, body, path: relPath, contentHash: contentHash(fileText) };
+      return { ...metadata, body, path: relPath, contentHash: hash };
     }
 
     /* c8 ignore next */
@@ -149,7 +152,7 @@ export class FsEntryStore implements EntryStore {
 
   async get(id: string): Promise<StoredEntry | null> {
     await this.#refresh();
-    const cached = this.#byId.get(id);
+    const cached = this.#index.getById(id);
     if (!cached) return null;
 
     // Read through rather than serving the cached copy, so an entry edited in a
@@ -159,7 +162,7 @@ export class FsEntryStore implements EntryStore {
       text = await readFile(cached.absPath, 'utf8');
     } catch (cause) {
       if (isNotFound(cause)) {
-        this.#invalidate();
+        this.#index.remove(cached.absPath);
         return null;
       }
       throw journalUnavailable(`Could not read ${cached.relPath}.`, cause);
@@ -167,17 +170,26 @@ export class FsEntryStore implements EntryStore {
 
     const parsed = parseEntryFile(text, cached.relPath);
     if (parsed.metadata.id !== id) {
-      // The file at that path is now a different entry. The map is stale.
-      this.#invalidate();
+      // The file at that path is now a different entry. The row is stale.
+      this.#index.remove(cached.absPath);
       return null;
     }
 
-    return { ...parsed.metadata, body: parsed.body, path: cached.relPath, contentHash: contentHash(text) };
+    // Opportunistic self-healing: if a hand-edit changed the file without a
+    // scan having noticed yet, the read this method already had to do is
+    // enough to bring the index back in line — no extra I/O beyond what
+    // serving this request required anyway.
+    const hash = contentHash(text);
+    if (hash !== cached.contentHash) {
+      this.#index.upsert({ ...cached, excerpt: excerpt(parsed.body), contentHash: hash });
+    }
+
+    return { ...parsed.metadata, body: parsed.body, path: cached.relPath, contentHash: hash };
   }
 
   async update(id: string, input: UpdateEntryInput): Promise<StoredEntry> {
     await this.#refresh();
-    const cached = this.#byId.get(id);
+    const cached = this.#index.getById(id);
     if (!cached) throw entryNotFound(id);
 
     // Read fresh — never trust the cache for the one check that exists
@@ -187,7 +199,7 @@ export class FsEntryStore implements EntryStore {
       text = await readFile(cached.absPath, 'utf8');
     } catch (cause) {
       if (isNotFound(cause)) {
-        this.#invalidate();
+        this.#index.remove(cached.absPath);
         throw entryNotFound(id);
       }
       throw journalUnavailable(`Could not read ${cached.relPath}.`, cause);
@@ -195,7 +207,7 @@ export class FsEntryStore implements EntryStore {
 
     const parsed = parseEntryFile(text, cached.relPath);
     if (parsed.metadata.id !== id) {
-      this.#invalidate();
+      this.#index.remove(cached.absPath);
       throw entryNotFound(id);
     }
 
@@ -211,19 +223,20 @@ export class FsEntryStore implements EntryStore {
     }
 
     const newBody = normaliseBody(input.body);
-    this.#insert({ ...cached, excerpt: excerpt(newBody) });
+    const newHash = contentHash(fileText);
+    this.#index.upsert({ ...cached, excerpt: excerpt(newBody), contentHash: newHash });
 
     return {
       ...parsed.metadata,
       body: newBody,
       path: cached.relPath,
-      contentHash: contentHash(fileText),
+      contentHash: newHash,
     };
   }
 
   async discardIfBlank(id: string): Promise<void> {
     await this.#refresh();
-    const cached = this.#byId.get(id);
+    const cached = this.#index.getById(id);
     if (!cached) return; // Already gone. Nothing to discard, and that is not an error.
 
     let text: string;
@@ -231,7 +244,7 @@ export class FsEntryStore implements EntryStore {
       text = await readFile(cached.absPath, 'utf8');
     } catch (cause) {
       if (isNotFound(cause)) {
-        this.#invalidate();
+        this.#index.remove(cached.absPath);
         return;
       }
       throw journalUnavailable(`Could not read ${cached.relPath}.`, cause);
@@ -239,7 +252,7 @@ export class FsEntryStore implements EntryStore {
 
     const parsed = parseEntryFile(text, cached.relPath);
     if (parsed.metadata.id !== id) {
-      this.#invalidate();
+      this.#index.remove(cached.absPath);
       return;
     }
 
@@ -258,14 +271,12 @@ export class FsEntryStore implements EntryStore {
       if (!isNotFound(cause)) throw journalUnavailable(`Could not remove ${cached.relPath}.`, cause);
     }
 
-    this.#byPath.delete(cached.absPath);
-    this.#byId.delete(id);
-    this.#ordered = this.#ordered.filter((entry) => entry.id !== id);
+    this.#index.remove(cached.absPath);
   }
 
   async addAttachment(id: string, input: AddAttachmentInput): Promise<AddAttachmentResult> {
     await this.#refresh();
-    const cached = this.#byId.get(id);
+    const cached = this.#index.getById(id);
     if (!cached) throw entryNotFound(id);
 
     if (!isValidAttachmentFilename(input.filename)) {
@@ -299,49 +310,31 @@ export class FsEntryStore implements EntryStore {
   async list(options: ListOptions): Promise<ListResult> {
     await this.#refresh();
     const cursor = options.cursor === undefined ? null : decodeCursor(options.cursor);
-
-    const start = cursor
-      ? this.#ordered.findIndex((entry) => isAfterCursor(entry, cursor))
-      : 0;
-    if (start === -1) return { entries: [], nextCursor: null };
-
-    const page = this.#ordered.slice(start, start + options.limit);
-    const last = page.at(-1);
-    const hasMore = last !== undefined && start + page.length < this.#ordered.length;
+    const { rows, hasMore } = this.#index.list(cursor, options.limit);
+    const last = rows.at(-1);
 
     return {
-      entries: page.map(summarise),
+      entries: rows.map(summarise),
       nextCursor: hasMore && last ? encodeCursor({ epochMs: last.epochMs, id: last.id }) : null,
     };
   }
 
   async stats(): Promise<StoreStats> {
     await this.#refresh();
-    return { entryCount: this.#ordered.length, unreadableCount: this.#unreadable.size };
-  }
-
-  #invalidate(): void {
-    this.#byPath.clear();
-    this.#byId.clear();
-    this.#ordered = [];
-    this.#unreadable.clear();
+    return this.#index.stats();
   }
 
   /**
-   * Upsert into every index. Used both for a brand-new entry and for an
-   * edited one — an edit never changes `epochMs` or `id`, so an existing
-   * entry is replaced in place rather than re-sorted.
+   * `rebuild --from-scratch` (`plan.md` M5, `requirements.md` §6.4): wipe the
+   * index and reconstruct it entirely from a fresh directory walk. Not a
+   * maintenance utility — this is the drill that proves the index is
+   * genuinely disposable, and it is exactly what a first boot against an
+   * empty index also does, one file at a time, via `#scan`.
    */
-  #insert(entry: CachedEntry): void {
-    this.#byPath.set(entry.absPath, entry);
-    this.#byId.set(entry.id, entry);
-    const existingIndex = this.#ordered.findIndex((e) => e.id === entry.id);
-    if (existingIndex === -1) {
-      this.#ordered.push(entry);
-      this.#ordered.sort(compareDescending);
-    } else {
-      this.#ordered[existingIndex] = entry;
-    }
+  async rebuild(): Promise<{ entryCount: number; unreadableCount: number }> {
+    this.#index.clear();
+    await this.#scan();
+    return this.#index.stats();
   }
 
   /** Concurrent requests share one walk rather than each starting their own. */
@@ -354,72 +347,75 @@ export class FsEntryStore implements EntryStore {
 
   async #scan(): Promise<void> {
     const found = await this.#walk(this.#entriesRoot);
+    const known = this.#index.knownPaths();
 
     // Drop anything that has vanished. A file disappearing is normal here, not
     // an error — the directory is a git working tree someone may check out.
-    for (const absPath of [...this.#byPath.keys()]) {
-      if (!found.has(absPath)) this.#byPath.delete(absPath);
-    }
-    for (const absPath of [...this.#unreadable]) {
-      if (!found.has(absPath)) this.#unreadable.delete(absPath);
+    for (const absPath of known) {
+      if (!found.has(absPath)) this.#index.remove(absPath);
     }
 
     for (const absPath of found) {
-      if (this.#byPath.has(absPath) || this.#unreadable.has(absPath)) continue;
+      // Trusted without a re-read, same as M1 — an already-known path's
+      // content is only re-verified when something else already has to read
+      // it anyway (`get`'s self-healing, above).
+      if (known.has(absPath)) continue;
+
       const relPath = toPosix(relative(this.#journalRoot, absPath));
+      let text: string;
       try {
-        const parsed = parseEntryFile(await readFile(absPath, 'utf8'), relPath);
-        this.#byPath.set(absPath, {
-          absPath,
-          relPath,
-          metadata: parsed.metadata,
-          id: parsed.metadata.id,
-          epochMs: parsed.created.epochMs,
-          excerpt: excerpt(parsed.body),
-        });
+        text = await readFile(absPath, 'utf8');
       } catch (cause) {
         if (isNotFound(cause)) continue;
+        throw journalUnavailable(`Could not read ${relPath}.`, cause);
+      }
+
+      let parsed;
+      try {
+        parsed = parseEntryFile(text, relPath);
+      } catch (cause) {
         if (cause instanceof AppError && cause.code === 'malformed_entry') {
-          this.#unreadable.add(absPath);
+          this.#index.markUnreadable(absPath);
           console.warn(`[journal] skipping unreadable entry — ${cause.message}`);
           continue;
         }
-        throw journalUnavailable(`Could not read ${relPath}.`, cause);
+        throw cause;
       }
-    }
 
-    this.#reindex();
-  }
-
-  /**
-   * Rebuild the id map and the ordering from the path map.
-   *
-   * Two files claiming the same id is possible — someone copies an entry rather
-   * than writing one. Resolved by keeping the lexically first path, so the
-   * choice is at least stable across restarts, and counting the other as
-   * unreadable so it shows up on `/health`.
-   */
-  #reindex(): void {
-    this.#byId.clear();
-    const entries = [...this.#byPath.values()].sort((a, b) =>
-      a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0,
-    );
-
-    const kept: CachedEntry[] = [];
-    for (const entry of entries) {
-      const existing = this.#byId.get(entry.id);
-      if (existing) {
-        this.#unreadable.add(entry.absPath);
-        console.warn(
-          `[journal] ${entry.relPath} repeats the id already held by ${existing.relPath}; ignoring it.`,
-        );
-        continue;
+      // Two files claiming the same id is possible — someone copies an entry
+      // rather than writing one. Resolved by keeping the lexically first
+      // path, so the choice is stable across restarts regardless of
+      // filesystem traversal order, and counting the other as unreadable so
+      // it shows up on `/health`.
+      const existing = this.#index.getById(parsed.metadata.id);
+      if (existing && existing.absPath !== absPath) {
+        const [winner, loser] =
+          relPath < existing.relPath ? [absPath, existing.absPath] : [existing.absPath, absPath];
+        if (winner === absPath) {
+          this.#index.markUnreadable(loser);
+          console.warn(
+            `[journal] ${existing.relPath} repeats the id also claimed by ${relPath}; ignoring it (kept the lexically-first path).`,
+          );
+        } else {
+          this.#index.markUnreadable(absPath);
+          console.warn(
+            `[journal] ${relPath} repeats the id already held by ${existing.relPath}; ignoring it.`,
+          );
+          continue;
+        }
       }
-      this.#byId.set(entry.id, entry);
-      kept.push(entry);
-    }
 
-    this.#ordered = kept.sort(compareDescending);
+      this.#index.upsert({
+        id: parsed.metadata.id,
+        absPath,
+        relPath,
+        epochMs: parsed.created.epochMs,
+        created: parsed.metadata.created,
+        ...(parsed.metadata.location ? { location: parsed.metadata.location } : {}),
+        excerpt: excerpt(parsed.body),
+        contentHash: contentHash(text),
+      });
+    }
   }
 
   /**

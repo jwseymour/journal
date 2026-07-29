@@ -9,12 +9,14 @@ import type {
   Entry,
   EntryPage,
   HealthResponse,
+  SearchResponse,
   TranscribeResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
 import { AppError, invalidRequest } from '../errors.js';
 import { isUlid } from '../record/id.js';
+import type { Searcher } from '../search/searcher.js';
 import type { Transcriber } from '../transcribe/transcriber.js';
 import type { EntryStore } from './../store/entry-store.js';
 
@@ -34,6 +36,7 @@ const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 200;
+const DEFAULT_SEARCH_LIMIT = 20;
 
 /**
  * Hosts this server will answer to.
@@ -90,7 +93,12 @@ function errorBody(code: ApiError['error']['code'], message: string): ApiError {
   return { error: { code, message } };
 }
 
-export function createApp(store: EntryStore, config: Config, transcriber: Transcriber): Hono {
+export function createApp(
+  store: EntryStore,
+  config: Config,
+  transcriber: Transcriber,
+  searcher: Searcher,
+): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
   const hosts = allowedHosts(config);
@@ -271,6 +279,27 @@ export function createApp(store: EntryStore, config: Config, transcriber: Transc
     const result = await store.addAttachment(id, { filename: file.name, data });
     const response: AddAttachmentResponse = result;
     return c.json(response, 201);
+  });
+
+  app.get('/search', async (c) => {
+    const q = c.req.query('q');
+    if (q === undefined || q.trim().length === 0) {
+      throw invalidRequest("A non-empty 'q' query parameter is required.");
+    }
+
+    const rawLimit = c.req.query('limit');
+    let limit = DEFAULT_SEARCH_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const hits = await searcher.search(q, limit);
+    const response: SearchResponse = { hits };
+    return c.json(response);
   });
 
   app.post('/transcribe', async (c) => {

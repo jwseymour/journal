@@ -27,6 +27,22 @@ export interface Config {
    * regenerable, and outside the journal repository — a cache, not a record
    * (`requirements.md` §6.4). */
   readonly whisperCacheDir: string;
+  /** The SQLite index (`plan.md` M5). Outside the journal repository, and
+   * deletable at any time — `rebuild --from-scratch` is what proves that in
+   * practice rather than only in principle (`requirements.md` §6.4). */
+  readonly indexDbPath: string;
+  /** The Hugging Face model id the local `Embedder` loads (`plan.md` M6). Local
+   * specifically so a full re-embed of the corpus costs time, not money. */
+  readonly embeddingModel: string;
+  /** The vector length `embeddingModel` produces. Not something boot can
+   * discover without loading the model — and boot must never wait on that
+   * (`plan.md` M4's reasoning for the transcriber, applied here too) — so a
+   * model swap means updating this alongside it. */
+  readonly embeddingDimensions: number;
+  /** Where the (one-time) downloaded embedding model weights are cached.
+   * Kept separate from `whisperCacheDir` — different model, different
+   * files — even though both are derived and regenerable the same way. */
+  readonly embeddingCacheDir: string;
 }
 
 export const DEFAULT_PORT = 4319;
@@ -39,6 +55,20 @@ const DEFAULT_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
 /** The smallest English Whisper model — a deliberate default. Accuracy for a
  * larger model is one env var away; nobody should have to know that on day one. */
 const DEFAULT_WHISPER_MODEL = 'Xenova/whisper-tiny.en';
+
+/** A small, well-established sentence-embedding model — fast enough to embed
+ * on every write without a visible pause. */
+const DEFAULT_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
+const DEFAULT_EMBEDDING_DIMENSIONS = 384;
+
+function readEmbeddingDimensions(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_EMBEDDING_DIMENSIONS;
+  const dimensions = Number(raw);
+  if (!Number.isInteger(dimensions) || dimensions < 1) {
+    throw new ConfigError(`EMBEDDING_DIMENSIONS must be a positive whole number — got '${raw}'.`);
+  }
+  return dimensions;
+}
 
 export class ConfigError extends Error {}
 
@@ -112,6 +142,14 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     whisperModel: env['WHISPER_MODEL']?.trim() || DEFAULT_WHISPER_MODEL,
     whisperCacheDir: expandHome(
       env['WHISPER_CACHE_DIR']?.trim() || resolve(homedir(), '.cache', 'journal', 'whisper-models'),
+    ),
+    indexDbPath: expandHome(
+      env['INDEX_DB_PATH']?.trim() || resolve(homedir(), '.cache', 'journal', 'index.db'),
+    ),
+    embeddingModel: env['EMBEDDING_MODEL']?.trim() || DEFAULT_EMBEDDING_MODEL,
+    embeddingDimensions: readEmbeddingDimensions(env['EMBEDDING_DIMENSIONS']),
+    embeddingCacheDir: expandHome(
+      env['EMBEDDING_CACHE_DIR']?.trim() || resolve(homedir(), '.cache', 'journal', 'embedding-models'),
     ),
   };
 }

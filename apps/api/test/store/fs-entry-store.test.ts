@@ -3,17 +3,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AppError } from '../../src/errors.js';
+import { SqliteIndex } from '../../src/index/sqlite-index.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
 
 let root: string;
+let index: SqliteIndex;
 let store: FsEntryStore;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'journal-test-'));
-  store = new FsEntryStore(root);
+  index = new SqliteIndex(':memory:');
+  store = new FsEntryStore(root, index);
 });
 
 afterEach(async () => {
+  index.close();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -283,9 +287,11 @@ describe('tolerating a directory that is edited by hand', () => {
 describe('what the store must never do', () => {
   it('does not create the journal directory itself', async () => {
     const missing = join(root, 'does-not-exist');
-    const orphan = new FsEntryStore(missing);
+    const orphanIndex = new SqliteIndex(':memory:');
+    const orphan = new FsEntryStore(missing, orphanIndex);
     expect(await orphan.list({ limit: 10 })).toEqual({ entries: [], nextCursor: null });
     await expect(readdir(missing)).rejects.toThrow();
+    orphanIndex.close();
   });
 
   it('never modifies an entry once written', async () => {
@@ -530,5 +536,76 @@ describe('addAttachment', () => {
     await expect(readdir(join(root, dir, stem))).rejects.toThrow();
     await store.addAttachment(entry.id, { filename: 'photo.jpg', data: Buffer.from('x') });
     await expect(readdir(join(root, dir, stem))).resolves.toContain('photo.jpg');
+  });
+});
+
+describe('rebuild', () => {
+  it('reproduces the same list output as the index that was built incrementally', async () => {
+    await store.create({ body: 'First', created: '2026-07-01T09:00:00Z' });
+    await store.create({ body: 'Second', created: '2026-07-02T09:00:00Z' });
+    await writeFile(join(root, 'journal/2026/07/broken.md'), 'no frontmatter');
+
+    const before = await store.list({ limit: 10 });
+    const beforeStats = await store.stats();
+
+    const result = await store.rebuild();
+
+    expect(result).toEqual(beforeStats);
+    expect(await store.list({ limit: 10 })).toEqual(before);
+  });
+
+  it('sheds stale rows for files that were deleted since the last scan', async () => {
+    const survivor = await store.create({ body: 'Stays.', created: '2026-07-01T09:00:00Z' });
+    const doomed = await store.create({ body: 'Goes.', created: '2026-07-02T09:00:00Z' });
+    // Force both into the index, then remove one from disk only.
+    await store.stats();
+    await rm(join(root, doomed.path));
+
+    await store.rebuild();
+
+    const { entries } = await store.list({ limit: 10 });
+    expect(entries.map((e) => e.id)).toEqual([survivor.id]);
+  });
+
+  it('is a real reprocess-from-scratch: an index built fresh from files matches one carried over incrementally', async () => {
+    await store.create({ body: 'A', created: '2026-07-01T09:00:00Z' });
+    await store.create({ body: 'B', created: '2026-07-02T09:00:00Z' });
+    await writeFile(join(root, 'journal/2026/07/half.md'), '---\nid: nonsense\n');
+
+    const incremental = await store.list({ limit: 10 });
+
+    // A brand new store, over an empty index, pointed at the same files on
+    // disk — exactly the "rm index.db && rebuild" drill.
+    const freshIndex = new SqliteIndex(':memory:');
+    const freshStore = new FsEntryStore(root, freshIndex);
+    const { entryCount, unreadableCount } = await freshStore.rebuild();
+
+    expect(await freshStore.list({ limit: 10 })).toEqual(incremental);
+    expect({ entryCount, unreadableCount }).toEqual(await store.stats());
+    freshIndex.close();
+  });
+
+  it('persists across a close and reopen against the same database file on disk', async () => {
+    const dbPath = join(root, 'index.db');
+    const diskIndex = new SqliteIndex(dbPath);
+    const diskStore = new FsEntryStore(root, diskIndex);
+    const entry = await diskStore.create({ body: 'Durable.', created: '2026-07-01T09:00:00Z' });
+    await diskStore.stats(); // force the scan that populates the index
+    diskIndex.close();
+
+    const reopened = new SqliteIndex(dbPath);
+    const reopenedStore = new FsEntryStore(root, reopened);
+    expect(await reopenedStore.get(entry.id)).toEqual(entry);
+    expect(await reopenedStore.stats()).toEqual({ entryCount: 1, unreadableCount: 0 });
+    reopened.close();
+  });
+
+  it('never writes to the journal files themselves', async () => {
+    const entry = await store.create({ body: 'Untouched by rebuild.', created: '2026-07-01T09:00:00Z' });
+    const before = await read(entry.path);
+
+    await store.rebuild();
+
+    expect(await read(entry.path)).toBe(before);
   });
 });

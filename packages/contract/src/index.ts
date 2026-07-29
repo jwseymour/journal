@@ -175,6 +175,27 @@ export interface TranscribeResponse {
 }
 
 /**
+ * One matching passage from a search (`plan.md` M6, `requirements.md` §8).
+ *
+ * A hit is a paragraph, not an entry — "search by meaning" means finding the
+ * part of an entry that answers the query, so `passage` is what matched, and
+ * `entryId`/`created` are enough to link back to the entry it came from
+ * without a second round trip for the common case of showing a result list.
+ */
+export interface SearchHit {
+  entryId: string;
+  created: string;
+  location?: Coordinates;
+  /** The paragraph that matched, exactly as written. */
+  passage: string;
+}
+
+/** The result of a search. Empty, not an error, when nothing matches. */
+export interface SearchResponse {
+  hits: SearchHit[];
+}
+
+/**
  * Stable, machine-readable failure codes.
  *
  * Codes rather than bare HTTP statuses, because a future remote frontend will
@@ -216,6 +237,13 @@ export type ApiErrorCode =
    * happens (`requirements.md` §4.7).
    */
   | 'transcription_failed'
+  /**
+   * The search index could not answer — most likely the local embedding
+   * model is still downloading on first use. Never a reason to lose
+   * anything; search reads the index, it never writes an entry
+   * (`requirements.md` §6.1).
+   */
+  | 'search_unavailable'
   /** Anything unanticipated. */
   | 'internal';
 
