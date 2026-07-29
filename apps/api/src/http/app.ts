@@ -9,12 +9,14 @@ import type {
   Entry,
   EntryPage,
   HealthResponse,
+  MetricsResponse,
   SearchResponse,
   TranscribeResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
 import { AppError, invalidRequest } from '../errors.js';
+import type { MetricsReader } from '../index/metrics-index.js';
 import { isUlid } from '../record/id.js';
 import type { Searcher } from '../search/searcher.js';
 import type { Transcriber } from '../transcribe/transcriber.js';
@@ -98,6 +100,7 @@ export function createApp(
   config: Config,
   transcriber: Transcriber,
   searcher: Searcher,
+  metrics: MetricsReader,
 ): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
@@ -300,6 +303,42 @@ export function createApp(
     const hits = await searcher.search(q, limit);
     const response: SearchResponse = { hits };
     return c.json(response);
+  });
+
+  app.get('/metrics', async (c) => {
+    const metric = c.req.query('metric');
+    const rawLimit = c.req.query('limit');
+
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const records = metrics.list({ limit, ...(metric ? { metric } : {}) });
+    const response: MetricsResponse = {
+      metrics: records.map((record) => ({
+        id: record.id,
+        entryId: record.entryId,
+        metric: record.metric,
+        eventTime: record.eventTime,
+        eventTimeExplicit: record.eventTimeExplicit,
+        detail: record.detail,
+      })),
+    };
+    return c.json(response);
+  });
+
+  app.delete('/metrics/:id', async (c) => {
+    const id = c.req.param('id');
+    // The same tolerance as DELETE /entries/:id: a malformed or already-gone
+    // id is simply nothing to do, not an error (`requirements.md` §6.2 —
+    // correcting a mistake should be this easy, not fussy about repeats).
+    if (isUlid(id)) metrics.remove(id);
+    return c.body(null, 204);
   });
 
   app.post('/transcribe', async (c) => {

@@ -12,7 +12,7 @@ written to disk, [`docs/design.md`](docs/design.md) covers the current frontend,
 
 ## Current state
 
-**Milestones 1–6 of 8 are complete.** An entry can be written, autosaved as you type,
+**Milestones 1–7 of 8 are complete.** An entry can be written, autosaved as you type,
 edited later, recorded by voice, and given attachments — all as plain markdown files on
 disk, with the full keyboard scheme, night mode, and rendered markdown. Listing, lookup
 and search are all backed by SQLite, entirely derived and disposable: delete the index
@@ -24,8 +24,14 @@ before and after.
 BM25 full-text and vector nearest-neighbour search run in parallel over paragraph-level
 chunks and are combined by reciprocal rank fusion (`requirements.md` §8).
 
-Not yet built: AI extraction and the remaining derived structures (reviews, lists, the
-opinion model, analysis surfaces). See [`docs/plan.md`](docs/plan.md).
+The first derived structure — simple temporal metrics (exercise, alcohol, sleep;
+`requirements.md` §5.2) — is extracted through a single provider-agnostic seam,
+`ModelClient`, via `npm run reprocess`. Every record links back to the entry it came
+from and resolves *when the thing happened*, not when the entry was written
+(`requirements.md` §6.3).
+
+Not yet built: reviews, lists of atomic items, the opinion model, metric
+suggestion/approval, and analysis surfaces. See [`docs/plan.md`](docs/plan.md).
 
 ## The journal directory
 
@@ -96,6 +102,8 @@ after that — see `WHISPER_MODEL` below).
 | `EMBEDDING_MODEL` | `Xenova/all-MiniLM-L6-v2` | The local sentence-embedding model search is built on. |
 | `EMBEDDING_DIMENSIONS` | `384` | The vector length `EMBEDDING_MODEL` produces. Not autodetected — boot must never wait on loading a model to find out (same reasoning as `WHISPER_MODEL`) — so a model swap means updating this too. |
 | `EMBEDDING_CACHE_DIR` | `~/.cache/journal/embedding-models` | Where the (one-time) downloaded embedding model weights are cached. |
+| `AI_GATEWAY_API_KEY` | *unset* | Vercel AI Gateway credential (`requirements.md` §7.6). Extraction refuses clearly if this is missing; nothing else in the application needs it or is affected by its absence. Put it in `.env` at the repository root (already `.gitignore`d) — never in a script argument, where it would sit in shell history. |
+| `EXTRACTION_MODEL` | `anthropic/claude-sonnet-5` | The `creator/model-name` string the gateway resolves. The *only* place any model or provider is named — see "The model boundary" below. |
 
 ### The API
 
@@ -124,6 +132,13 @@ curl -X POST '127.0.0.1:4319/transcribe?sampleRate=48000' \
 # search by meaning, not only by word — the matching passage comes back,
 # not merely the entry it lives in
 curl '127.0.0.1:4319/search?q=seaside+holiday'
+
+# extracted temporal metrics — populated by `npm run reprocess`, not live
+curl '127.0.0.1:4319/metrics'
+curl '127.0.0.1:4319/metrics?metric=sleep'
+
+# discard one wrong record — correction must be easy (`requirements.md` §6.2)
+curl -X DELETE 127.0.0.1:4319/metrics/<id>
 ```
 
 ## The index is a cache, not a record
@@ -177,6 +192,59 @@ happens when the journal itself has nothing indexed yet. `plan.md` M6 doesn't ca
 cutoff, and picking one is a real policy decision — worth raising if it turns out to
 matter in practice, not something to invent here.
 
+## The model boundary
+
+`apps/api/src/model/model-client.ts` is the single file in which any AI provider is
+ever named (`requirements.md` §7.6). Everything else — prompts, Zod schemas, the
+extraction pipeline — calls `ModelClient.extract()` and knows nothing about the Vercel
+AI Gateway, the AI SDK, or which of Claude, GPT, or Gemini actually answered. Changing
+model or provider is changing `EXTRACTION_MODEL`, or swapping what implements
+`ModelClient`; nothing above that seam changes shape.
+
+**The seed metric set is deliberately narrow.** `requirements.md` §5.2 names three
+examples of "simple temporal metrics" — exercise, alcohol, sleep — and §5.3 is
+absolute: the AI never creates a new metric on its own, only suggests one for approval
+or extracts against one the user has requested. No suggestion/approval mechanism exists
+yet (`plan.md` M8's job), so extraction is restricted to exactly those three named
+examples for now — already effectively requested, in the user's own canonical
+document, rather than invented at runtime. Growing the set later is additive, once M8's
+approval flow exists.
+
+**Extraction never runs live.** Unlike the free, local embedder M6 wires into every
+write, an extraction call costs real money per entry. Autosave fires on every debounced
+keystroke; a paid API call on every one of those would be both wasteful and a surprise
+on the bill. So extraction only ever runs as a deliberate, explicit batch:
+
+```sh
+JOURNAL_DIR=~/Journal npm run reprocess
+```
+
+This is `rebuild-index`'s M7 counterpart, kept as a *separate* command rather than
+folded in: `rebuild-index` stays fast, local, and free whether or not extraction is
+configured, and nothing ever spends money on your behalf just because you asked to
+rebuild the local indexes. `reprocess` re-sends every entry to the model and replaces
+every extracted record from scratch (`requirements.md` §6.4) — nothing is carried over
+from a previous run, sequentially rather than in parallel, so cost per entry stays
+predictable rather than arriving as a burst.
+
+**This is also the model-migration procedure** (`requirements.md` §7.6): run
+`reprocess` once, dump `GET /metrics`, change `EXTRACTION_MODEL`, run it again, dump
+again, diff the two. Verified live against the real gateway: `claude-sonnet-5` and
+`claude-haiku-4-5` agreed on every metric found (same three records, same entries) but
+resolved relative time expressions ("this morning", "tonight", "last night") to
+slightly different clock times and paraphrased details differently — exactly the
+"schema adherence and extraction quality differ between models even when the calling
+code is identical" `requirements.md` §7.6 names as the reason this diff has to be a
+real, exercised procedure rather than a theoretical one.
+
+**Correcting a mistake (`requirements.md` §6.2) doesn't survive a reprocess.**
+`DELETE /metrics/:id` discards one wrong record now, but running `reprocess` again — or
+even just re-saving the entry it came from, once/if extraction is ever wired into live
+writes — regenerates it from the entry fresh. That is the honest consequence of §6.4
+taken seriously: the derived layer holds nothing that isn't reproducible from the
+entries alone, and a correction that *had* to survive a full rebuild would quietly make
+the derived store a record of something, which it must never be.
+
 ## Checks
 
 ```sh
@@ -196,11 +264,13 @@ apps/
   api/            the backend, its own process
     src/record/   ids, timestamps, filenames, frontmatter — what goes on disk
     src/store/    EntryStore, the filesystem implementation of it, and the search-indexing decorator
-    src/index/    the SQLite indexes — listing/lookup and search, derived, disposable, never authoritative
+    src/index/    the SQLite indexes — listing/lookup, search, and metrics; derived, disposable, never authoritative
     src/search/   Embedder, chunking, the search index, fusion, and the query orchestrator
+    src/model/    ModelClient — the one file naming a provider — plus the extraction schema and pipeline
     src/transcribe/  the Transcriber interface, and the local Whisper implementation
     src/http/     routes, thin, no logic
-    src/rebuild.ts  `npm run rebuild-index` — reconstruct everything derived from the files alone
+    src/rebuild.ts  `npm run rebuild-index` — reconstruct the local indexes from the files alone
+    src/reprocess.ts  `npm run reprocess` — re-extract every entry's metrics via the model
   web/            the frontend, its own process, disposable
     lib/keyboard.tsx  the keyboard scheme's mechanism, designed once
     lib/recorder.ts   raw-PCM microphone capture for voice entries
@@ -243,6 +313,16 @@ packages/
   cache is fine again. Found live: a real search request failed once, and every request
   after it failed the same way even though a fresh process loaded the same model
   without issue.
+- **`ai`/`@ai-sdk/gateway`'s own `engines` field wants Node ≥22** — a warning at
+  `npm install` on the Node 20.11.1 this project is pinned to, not an error. Confirmed
+  by hand rather than trusted: both package construction and a real
+  `generateObject` call against the live gateway work correctly on 20.11.1. Worth
+  re-checking on any future `ai` upgrade, the same as every other pinned dependency
+  here.
+- **`zod` is pinned to `^3.25.76`, not the latest `3.24.1` this project shipped with
+  through M6.** `ai@7` requires `zod@^3.25.76 || ^4.1.8` as a peer dependency; the
+  minimal in-range bump was taken rather than jumping to zod 4, which would need a
+  broader migration this project doesn't otherwise need yet.
 - **`npm audit` reports high-severity findings** in `sharp` and `postcss`, both reached
   only through `next` itself, and (redundantly) through `@huggingface/transformers`'s own
   use of `sharp` for image preprocessing this project never calls. There is no fixed

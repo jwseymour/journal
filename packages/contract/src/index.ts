@@ -196,6 +196,32 @@ export interface SearchResponse {
 }
 
 /**
+ * One extracted temporal metric (`plan.md` M7, `requirements.md` §5.2) —
+ * something explicitly stated in an entry and stored against time.
+ * `entryId` is what "every derived record links back to its source entry"
+ * (`requirements.md` §3) means in practice.
+ */
+export interface TemporalMetric {
+  id: string;
+  entryId: string;
+  /** Open-ended in principle (`requirements.md` §5.2); in practice, exactly
+   * the seed set the AI is allowed to extract against today — see
+   * `apps/api/src/model/temporal-metrics.ts`. */
+  metric: string;
+  /** When the thing happened, not when the entry was written
+   * (`requirements.md` §6.3). RFC 3339 with a UTC offset. */
+  eventTime: string;
+  /** Whether the entry itself stated a time, or this was defaulted to the
+   * entry's own written time because it said nothing about when. */
+  eventTimeExplicit: boolean;
+  detail: string;
+}
+
+export interface MetricsResponse {
+  metrics: TemporalMetric[];
+}
+
+/**
  * Stable, machine-readable failure codes.
  *
  * Codes rather than bare HTTP statuses, because a future remote frontend will
@@ -244,6 +270,13 @@ export type ApiErrorCode =
    * (`requirements.md` §6.1).
    */
   | 'search_unavailable'
+  /**
+   * The AI Gateway is not configured, unreachable, or returned something
+   * that could not be validated against the extraction schema after retry.
+   * Never a reason to lose or block writing an entry — extraction only ever
+   * reads entries (`requirements.md` §6.1, §7.6).
+   */
+  | 'extraction_failed'
   /** Anything unanticipated. */
   | 'internal';
 

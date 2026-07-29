@@ -9,14 +9,17 @@ import type {
   Entry,
   EntryPage,
   HealthResponse,
+  MetricsResponse,
   SearchHit,
   SearchResponse,
+  TemporalMetric,
   TranscribeResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
 import { transcriptionFailed } from '../../src/errors.js';
 import { createApp } from '../../src/http/app.js';
+import type { ListMetricsOptions, MetricsReader, TemporalMetricRecord } from '../../src/index/metrics-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
 import type { Searcher } from '../../src/search/searcher.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
@@ -62,6 +65,28 @@ class FakeSearcher implements Searcher {
 }
 
 /**
+ * Same reasoning again: HTTP tests exercise `/metrics`'s own contract, not
+ * extraction quality or the real gateway — that is `extractor.test.ts` and
+ * a live drill's job (`plan.md` M7).
+ */
+class FakeMetricsReader implements MetricsReader {
+  listCalls: ListMetricsOptions[] = [];
+  removeCalls: string[] = [];
+  records: TemporalMetricRecord[] = [];
+
+  list(options: ListMetricsOptions): TemporalMetricRecord[] {
+    this.listCalls.push(options);
+    const filtered = options.metric ? this.records.filter((r) => r.metric === options.metric) : this.records;
+    return filtered.slice(0, options.limit);
+  }
+
+  remove(id: string): void {
+    this.removeCalls.push(id);
+    this.records = this.records.filter((r) => r.id !== id);
+  }
+}
+
+/**
  * The endpoints, exercised through Hono's own request path so that middleware,
  * status codes and error shapes are all real.
  *
@@ -75,6 +100,7 @@ let root: string;
 let app: ReturnType<typeof createApp>;
 let transcriber: FakeTranscriber;
 let searcher: FakeSearcher;
+let metrics: FakeMetricsReader;
 let index: SqliteIndex;
 
 const config = (journalDir: string): Config => ({
@@ -88,14 +114,17 @@ const config = (journalDir: string): Config => ({
   embeddingModel: 'Xenova/all-MiniLM-L6-v2',
   embeddingDimensions: 384,
   embeddingCacheDir: join(journalDir, '.embedding-cache-unused-in-tests'),
+  aiGatewayApiKey: undefined,
+  extractionModel: 'anthropic/claude-sonnet-5',
 });
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'journal-http-'));
   transcriber = new FakeTranscriber();
   searcher = new FakeSearcher();
+  metrics = new FakeMetricsReader();
   index = new SqliteIndex(':memory:');
-  app = createApp(new FsEntryStore(root, index), config(root), transcriber, searcher);
+  app = createApp(new FsEntryStore(root, index), config(root), transcriber, searcher, metrics);
 });
 
 afterEach(async () => {
@@ -532,6 +561,73 @@ describe('GET /search', () => {
       expect(response.status, limit).toBe(400);
       expect((await errorOf(response)).code).toBe('invalid_request');
     }
+  });
+});
+
+describe('GET /metrics', () => {
+  const record = (overrides: Partial<TemporalMetricRecord> = {}): TemporalMetricRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    metric: 'exercise',
+    eventTime: '2026-07-20T09:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T08:00:00Z'),
+    eventTimeExplicit: true,
+    detail: 'a 5k run',
+    extractedAt: '2026-07-20T10:00:00+01:00',
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been extracted', async () => {
+    const response = await app.request('/metrics');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as MetricsResponse).toEqual({ metrics: [] });
+  });
+
+  it('returns whatever the MetricsReader produces, without the internal-only fields', async () => {
+    metrics.records = [record()];
+    const response = await app.request('/metrics');
+    const body = (await response.json()) as MetricsResponse;
+    const expected: TemporalMetric = {
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      metric: 'exercise',
+      eventTime: '2026-07-20T09:00:00+01:00',
+      eventTimeExplicit: true,
+      detail: 'a 5k run',
+    };
+    expect(body.metrics).toEqual([expected]);
+  });
+
+  it('passes a metric filter and the default limit straight to the MetricsReader', async () => {
+    await app.request('/metrics?metric=sleep');
+    expect(metrics.listCalls).toEqual([{ metric: 'sleep', limit: 30 }]);
+  });
+
+  it('respects a custom limit', async () => {
+    await app.request('/metrics?limit=5');
+    expect(metrics.listCalls[0]).toEqual({ limit: 5 });
+  });
+
+  it('rejects a limit outside 1..200', async () => {
+    for (const limit of ['0', '-1', '201', 'nope']) {
+      const response = await app.request(`/metrics?limit=${limit}`);
+      expect(response.status, limit).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+});
+
+describe('DELETE /metrics/:id', () => {
+  it('removes the record', async () => {
+    const response = await app.request('/metrics/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(metrics.removeCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/metrics/not-a-ulid', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(metrics.removeCalls).toEqual([]);
   });
 });
 

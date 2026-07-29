@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import { ConfigError, loadConfig } from './config.js';
 import { createApp } from './http/app.js';
+import { MetricsIndex } from './index/metrics-index.js';
 import { SearchIndex } from './index/search-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
 import { LocalEmbedder } from './search/local-embedder.js';
@@ -36,7 +37,13 @@ async function main(): Promise<void> {
   const store = new SearchingEntryStore(new FsEntryStore(config.journalDir, index), indexer);
   const searcher = new HybridSearcher(searchIndex, embedder, index);
   const transcriber = new LocalTranscriber(config.whisperModel, config.whisperCacheDir);
-  const app = createApp(store, config, transcriber, searcher);
+  // No `ModelClient` is constructed here: extraction never runs live, only
+  // via `npm run reprocess` (`src/reprocess.ts`) — see that file for why
+  // (`plan.md` M7: extraction costs real money per call, unlike the free
+  // local embedder M6 wires into every write). The running server only ever
+  // reads what a past reprocess already wrote, via `GET /metrics`.
+  const metricsIndex = new MetricsIndex(config.indexDbPath);
+  const app = createApp(store, config, transcriber, searcher, metricsIndex);
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
     console.log(`[journal] api listening on http://${config.host}:${info.port}`);
@@ -45,6 +52,11 @@ async function main(): Promise<void> {
     console.log(`[journal] speech-to-text model: ${config.whisperModel} (cached at ${config.whisperCacheDir})`);
     console.log(`[journal] index: ${config.indexDbPath}`);
     console.log(`[journal] embedding model: ${config.embeddingModel} (${config.embeddingDimensions} dimensions)`);
+    console.log(
+      config.aiGatewayApiKey
+        ? `[journal] extraction model: ${config.extractionModel}`
+        : '[journal] extraction: AI_GATEWAY_API_KEY not set — GET /metrics will be empty until `npm run reprocess` is run with it configured',
+    );
   });
 }
 

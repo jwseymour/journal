@@ -1,7 +1,9 @@
+import { config as loadDotenv } from 'dotenv';
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Configuration, resolved and validated once at boot.
@@ -11,7 +13,20 @@ import { isAbsolute, resolve } from 'node:path';
  * and says why. A backend that helpfully creates an empty journal somewhere
  * unexpected is a backend that can silently write a year of entries into the
  * wrong place (`plan.md` M1).
+ *
+ * `.env`, at the repository root, is the one place a secret like
+ * `AI_GATEWAY_API_KEY` (`plan.md` M7) belongs — never in a script argument,
+ * where it would sit in shell history. Resolved from this file's own
+ * location rather than `process.cwd()`, so it loads correctly whether this
+ * runs via `npm run dev:api` from the repo root (cwd becomes `apps/api`) or
+ * directly from within `apps/api`. `.env*` is already `.gitignore`d by the
+ * Next.js default in this repo, so this was never one edit away from being
+ * committed. A module-level side effect, not something `loadConfig` does
+ * itself, so it runs exactly once regardless of how many times config is
+ * loaded — and it only ever *sets* `process.env`, never overriding a value
+ * already present, so an explicitly-exported env var still wins.
  */
+loadDotenv({ path: resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '.env'), quiet: true });
 
 export interface Config {
   /** The journal repository root — the directory holding `journal/`. */
@@ -43,6 +58,16 @@ export interface Config {
    * Kept separate from `whisperCacheDir` — different model, different
    * files — even though both are derived and regenerable the same way. */
   readonly embeddingCacheDir: string;
+  /** Vercel AI Gateway credential (`plan.md` M7, `requirements.md` §7.6).
+   * `undefined`, not a fatal boot error, when absent — extraction is a
+   * whole optional subsystem layered on a journal that must keep writing
+   * and reading without it; only the extraction routes themselves need to
+   * refuse clearly when this is missing. */
+  readonly aiGatewayApiKey: string | undefined;
+  /** The `creator/model-name` string the gateway resolves (`requirements.md`
+   * §7.6) — the *only* place any provider is named. Changing model is
+   * changing this one line, never the extraction logic or schemas around it. */
+  readonly extractionModel: string;
 }
 
 export const DEFAULT_PORT = 4319;
@@ -60,6 +85,11 @@ const DEFAULT_WHISPER_MODEL = 'Xenova/whisper-tiny.en';
  * on every write without a visible pause. */
 const DEFAULT_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 const DEFAULT_EMBEDDING_DIMENSIONS = 384;
+
+/** Confirmed by hand against the real gateway (`plan.md` M7) — not the
+ * cheapest available model, but a deliberate default rather than an
+ * arbitrary one. One env var away from anything else the gateway serves. */
+const DEFAULT_EXTRACTION_MODEL = 'anthropic/claude-sonnet-5';
 
 function readEmbeddingDimensions(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_EMBEDDING_DIMENSIONS;
@@ -151,5 +181,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     embeddingCacheDir: expandHome(
       env['EMBEDDING_CACHE_DIR']?.trim() || resolve(homedir(), '.cache', 'journal', 'embedding-models'),
     ),
+    aiGatewayApiKey: env['AI_GATEWAY_API_KEY']?.trim() || undefined,
+    extractionModel: env['EXTRACTION_MODEL']?.trim() || DEFAULT_EXTRACTION_MODEL,
   };
 }

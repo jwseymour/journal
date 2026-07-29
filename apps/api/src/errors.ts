@@ -51,3 +51,6 @@ export const transcriptionFailed = (message: string, cause?: unknown): AppError 
 
 export const searchUnavailable = (message: string, cause?: unknown): AppError =>
   new AppError('search_unavailable', message, 503, cause === undefined ? undefined : { cause });
+
+export const extractionFailed = (message: string, cause?: unknown): AppError =>
+  new AppError('extraction_failed', message, 503, cause === undefined ? undefined : { cause });

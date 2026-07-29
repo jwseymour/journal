@@ -13,6 +13,7 @@
     "dev:api": "npm run dev -w @journal/api",
     "dev:web": "npm run dev -w @journal/web",
     "rebuild-index": "npm run rebuild -w @journal/api",
+    "reprocess": "npm run reprocess -w @journal/api",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
