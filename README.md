@@ -12,26 +12,33 @@ written to disk, [`docs/design.md`](docs/design.md) covers the current frontend,
 
 ## Current state
 
-**Milestones 1–7 of 8 are complete.** An entry can be written, autosaved as you type,
-edited later, recorded by voice, and given attachments — all as plain markdown files on
-disk, with the full keyboard scheme, night mode, and rendered markdown. Listing, lookup
-and search are all backed by SQLite, entirely derived and disposable: delete the index
-and `npm run rebuild-index` reconstructs everything — listing, lookup, and every
-paragraph's embedding — from the journal files alone, with the API behaving identically
-before and after.
+**All of milestones 1–8, including the opinion model, are complete.** An entry can be
+written, autosaved as you type, edited later, recorded by voice, and given attachments,
+with the full keyboard scheme, night mode, and rendered markdown. Listing, lookup,
+search, and every derived structure are backed by SQLite, entirely derived and
+disposable: delete the index and `npm run rebuild-index` reconstructs the local
+indexes, with the API behaving identically before and after.
 
 `GET /search?q=...` finds an entry by what it means, not only by the words it uses:
 BM25 full-text and vector nearest-neighbour search run in parallel over paragraph-level
 chunks and are combined by reciprocal rank fusion (`requirements.md` §8).
 
-The first derived structure — simple temporal metrics (exercise, alcohol, sleep;
-`requirements.md` §5.2) — is extracted through a single provider-agnostic seam,
-`ModelClient`, via `npm run reprocess`. Every record links back to the entry it came
-from and resolves *when the thing happened*, not when the entry was written
-(`requirements.md` §6.3).
+Four derived structures are extracted through one provider-agnostic seam,
+`ModelClient`, via `npm run reprocess`: **simple temporal metrics** (exercise, alcohol,
+sleep, and whatever else gets approved), **reviews** (a title, medium, optional rating,
+and opinion, with every encounter its own record), **lists of atomic items** (for
+example quotes, kept verbatim), and **the opinion model** — views the writer has
+actually expressed, tracked by subject (for example philosophy, or their view of their
+future) and organised across entries rather than left scattered one-per-entry
+(`requirements.md` §5.2). Every record links back to the entry it came from and
+resolves *when the thing happened*, not when the entry was written
+(`requirements.md` §6.3). New categories for any of the four grow only by approval —
+the AI suggesting one during extraction, or a direct request via `POST /categories` —
+never invented unilaterally (`requirements.md` §5.3). The analysis surfaces
+(`design.md` §5.3) render all of it in the print information-design tradition: small
+multiples, sparklines, hairlines, no chart junk.
 
-Not yet built: reviews, lists of atomic items, the opinion model, metric
-suggestion/approval, and analysis surfaces. See [`docs/plan.md`](docs/plan.md).
+See [`docs/plan.md`](docs/plan.md) for the build order this followed.
 
 ## The journal directory
 
@@ -98,7 +105,7 @@ after that — see `WHISPER_MODEL` below).
 | `NEXT_PUBLIC_API_URL` | `http://127.0.0.1:4319` | Where the frontend looks for the backend. |
 | `WHISPER_MODEL` | `Xenova/whisper-tiny.en` | The local speech-to-text model. One config line — a bigger model for better accuracy is one env var away. |
 | `WHISPER_CACHE_DIR` | `~/.cache/journal/whisper-models` | Where the (one-time) downloaded model weights are cached. Derived, regenerable, outside the journal repository. |
-| `INDEX_DB_PATH` | `~/.cache/journal/index.db` | The SQLite index — listing, lookup, and search, derived from the journal files. Delete it any time; nothing is lost. |
+| `INDEX_DB_PATH` | `~/.cache/journal/index.db` | The SQLite index — listing, lookup, search, and every extracted structure, derived from the journal files. Delete it any time; nothing is lost except approved categories, which `reprocess` re-seeds but never invents on your behalf. |
 | `EMBEDDING_MODEL` | `Xenova/all-MiniLM-L6-v2` | The local sentence-embedding model search is built on. |
 | `EMBEDDING_DIMENSIONS` | `384` | The vector length `EMBEDDING_MODEL` produces. Not autodetected — boot must never wait on loading a model to find out (same reasoning as `WHISPER_MODEL`) — so a model swap means updating this too. |
 | `EMBEDDING_CACHE_DIR` | `~/.cache/journal/embedding-models` | Where the (one-time) downloaded embedding model weights are cached. |
@@ -137,8 +144,43 @@ curl '127.0.0.1:4319/search?q=seaside+holiday'
 curl '127.0.0.1:4319/metrics'
 curl '127.0.0.1:4319/metrics?metric=sleep'
 
-# discard one wrong record — correction must be easy (`requirements.md` §6.2)
+# reviews and atomic list items — the same shape
+curl '127.0.0.1:4319/reviews?medium=film'
+curl '127.0.0.1:4319/lists?listType=quote'
+
+# the opinion model, layer 1 — one statement per entry per subject
+curl '127.0.0.1:4319/opinions/statements?subject=philosophy'
+
+# the opinion model, layer 2 — the regenerated, cited per-subject summary;
+# never itself editable, only ever a read of what the last reprocess wrote
+curl '127.0.0.1:4319/opinions/summaries?subject=philosophy'
+
+# discard one wrong record of any of the four — correction must be easy
+# (`requirements.md` §6.2)
 curl -X DELETE 127.0.0.1:4319/metrics/<id>
+curl -X DELETE 127.0.0.1:4319/reviews/<id>
+curl -X DELETE 127.0.0.1:4319/lists/<id>
+curl -X DELETE 127.0.0.1:4319/opinions/statements/<id>
+
+# the approved category set extraction is allowed to use, per structure type
+curl '127.0.0.1:4319/categories'
+
+# request one directly — approved immediately (`requirements.md` §5.3's second route)
+curl -X POST 127.0.0.1:4319/categories \
+  -H 'Content-Type: application/json' \
+  -d '{"structureType":"metric","name":"meditation"}'
+
+# categories the AI suggested during extraction, awaiting a decision
+# (`requirements.md` §5.3's first route)
+curl '127.0.0.1:4319/categories/suggestions?status=pending'
+curl -X POST 127.0.0.1:4319/categories/suggestions/<id>/approve
+curl -X POST 127.0.0.1:4319/categories/suggestions/<id>/reject
+
+# aggregated data for the analysis surfaces — computed here, never in the
+# frontend (`requirements.md` §7.1)
+curl '127.0.0.1:4319/analysis/metrics'
+curl '127.0.0.1:4319/analysis/reviews'
+curl '127.0.0.1:4319/analysis/lists'
 ```
 
 ## The index is a cache, not a record
@@ -153,11 +195,12 @@ rm ~/.cache/journal/index.db
 JOURNAL_DIR=~/Journal npm run rebuild-index
 ```
 
-This walks the journal directory from scratch and reconstructs everything: the listing
-index (the same walk M1's in-memory store always did, just persisted since M5), and —
-since M6 — every paragraph re-chunked and re-embedded for search, nothing carried over
-from before. The application must behave identically before and after; that drill is
-repeated at the end of every milestone from here on.
+This walks the journal directory from scratch and reconstructs the listing index (the
+same walk M1's in-memory store always did, just persisted since M5) and every
+paragraph's search embedding (M6) — everything free and local. The application must
+behave identically before and after. Extraction (metrics, reviews, lists, opinions —
+M7/M8) is deliberately **not** part of this command — see `npm run reprocess` below for
+why.
 
 ### How search is built
 
@@ -195,55 +238,166 @@ matter in practice, not something to invent here.
 ## The model boundary
 
 `apps/api/src/model/model-client.ts` is the single file in which any AI provider is
-ever named (`requirements.md` §7.6). Everything else — prompts, Zod schemas, the
-extraction pipeline — calls `ModelClient.extract()` and knows nothing about the Vercel
+ever named (`requirements.md` §7.6). Everything else — prompts, Zod schemas, the four
+extraction pipelines — calls `ModelClient.extract()` and knows nothing about the Vercel
 AI Gateway, the AI SDK, or which of Claude, GPT, or Gemini actually answered. Changing
 model or provider is changing `EXTRACTION_MODEL`, or swapping what implements
 `ModelClient`; nothing above that seam changes shape.
 
-**The seed metric set is deliberately narrow.** `requirements.md` §5.2 names three
-examples of "simple temporal metrics" — exercise, alcohol, sleep — and §5.3 is
-absolute: the AI never creates a new metric on its own, only suggests one for approval
-or extracts against one the user has requested. No suggestion/approval mechanism exists
-yet (`plan.md` M8's job), so extraction is restricted to exactly those three named
-examples for now — already effectively requested, in the user's own canonical
-document, rather than invented at runtime. Growing the set later is additive, once M8's
-approval flow exists.
+**Four independent extraction pipelines, not one generic one.** Temporal metrics
+(`apps/api/src/model/temporal-metrics.ts` + `extractor.ts`), reviews (`reviews.ts` +
+`reviews-extractor.ts`), atomic list items (`lists.ts` + `lists-extractor.ts`), and
+opinion statements (`opinions.ts` + `opinions-extractor.ts`) each have their own schema,
+prompt, storage table, and extractor class, deliberately not unified behind a shared
+generic — the record shapes (a metric's `detail` vs. a review's
+`title`/`medium`/`rating`/`opinion` vs. a list item's `text`/`context` vs. an opinion
+statement's `subject`/`statement`) differ enough that a generic would mostly be
+indirection. What is genuinely identical across all four — resolving an event time and
+falling back safely when the model's own timestamp doesn't parse — is factored into one
+shared function, `model/event-time.ts`, used by all four. Adding the opinion model was
+adding one more self-contained module this same shape, never reorganising the first
+three — the property `plan.md` M8's own done-when criterion asked for.
+
+**The opinion model is two layers, not one** (`requirements.md` §5.2: "it must not
+extrapolate from what I have written... it does not infer positions I have not
+stated"):
+
+- **Layer 1 — statements** (`OpinionsExtractor`, `opinion_statements` table). One record
+  per entry per subject, same shape and correction model as the other three: a faithful,
+  unextended summary of what *that entry* said, never a conclusion the entry doesn't
+  itself state. Subjects are approved the same way as every other category — seeded with
+  `philosophy` and `future` (`requirements.md` §5.2's own examples), grown by suggestion
+  or direct request.
+- **Layer 2 — summaries** (`OpinionSummarizer`, `opinion_summary_parts` table). A
+  regenerated, per-subject summary built from every current statement on that subject —
+  run as its own pass, after every entry has been (re-)extracted, since it reads across
+  entries rather than within one. The summary is not one free paragraph: it is an array
+  of discrete parts, and **every part must cite the exact statement ids it was drawn
+  from**. `OpinionSummarizer` checks those citations against the real, currently-known
+  statements before storing anything — a citation naming an id that doesn't exist is
+  silently dropped from that part (or the whole part, if none of its citations survive),
+  never trusted blindly, the same "never trust what crosses the boundary" posture
+  `resolveEventTime`'s fallback applies to timestamps. Each part also carries the
+  entry ids its citations resolve to, computed once at generation time so a read never
+  needs a join. Never itself hand-edited (`requirements.md` §9) — a wrong part is fixed
+  by discarding the statement it cites and re-running `reprocess`, which replaces every
+  subject's summary from scratch, same as everything else derived.
+
+Verified live against the real gateway: two entries expressing the same-subject view six
+months apart — one revising the other — correctly produced two statements each (the
+model even resolved "six months ago" in the later entry's prose to its own backdated
+event time, marked explicit), and the regenerated summary split into "an earlier, stable
+view" and "this was later revised," citing both statements for the factual change and
+nothing beyond what they state. A separate entry about housing policy correctly produced
+no forced-fit `philosophy`/`future` statement and instead suggested a new subject —
+approved through `POST /categories/suggestions/:id/approve` exactly like every other
+structure type's suggestions.
+
+**Every open-ended category is approved, never invented** (`requirements.md` §5.3): a
+temporal metric's name, a review's medium, a list item's type, an opinion's subject.
+`CategoriesIndex` (`apps/api/src/index/categories-index.ts`) is the one mechanism behind
+all four — `structureType` is what tells them apart, everything else about "a name,
+approved or not, with suggestions pending a decision" is identical. Seeded once with
+exactly what `requirements.md` §5.2 itself names — exercise/alcohol/sleep,
+film/book/music, quote, philosophy/future — and grown only two ways:
+
+- **The AI suggests one** during extraction. Every extraction schema has an optional
+  `suggestedCategory: {name, reason} | null` output alongside its real records — if the
+  entry describes something that doesn't fit an approved category, the model names it
+  there instead of forcing the wrong category or leaving it unrecorded. Nothing is
+  auto-approved; `GET /categories/suggestions?status=pending` lists what's waiting, and
+  `POST /categories/suggestions/:id/approve` (or `/reject`) decides.
+- **The user requests one directly**, via `POST /categories` — approved immediately, no
+  review step.
 
 **Extraction never runs live.** Unlike the free, local embedder M6 wires into every
-write, an extraction call costs real money per entry. Autosave fires on every debounced
-keystroke; a paid API call on every one of those would be both wasteful and a surprise
-on the bill. So extraction only ever runs as a deliberate, explicit batch:
+write, an extraction call costs real money per entry, and now there are three of them
+per entry (one per structure type). Autosave fires on every debounced keystroke; paid
+API calls on every one of those would be both wasteful and a surprise on the bill. So
+extraction only ever runs as a deliberate, explicit batch:
 
 ```sh
 JOURNAL_DIR=~/Journal npm run reprocess
 ```
 
-This is `rebuild-index`'s M7 counterpart, kept as a *separate* command rather than
-folded in: `rebuild-index` stays fast, local, and free whether or not extraction is
+This is `rebuild-index`'s counterpart, kept as a *separate* command rather than folded
+in: `rebuild-index` stays fast, local, and free whether or not extraction is
 configured, and nothing ever spends money on your behalf just because you asked to
-rebuild the local indexes. `reprocess` re-sends every entry to the model and replaces
-every extracted record from scratch (`requirements.md` §6.4) — nothing is carried over
-from a previous run, sequentially rather than in parallel, so cost per entry stays
-predictable rather than arriving as a burst.
+rebuild the local indexes. `reprocess` re-sends every entry to the model, once per
+structure type, and replaces every extracted record from scratch
+(`requirements.md` §6.4) — nothing is carried over from a previous run, sequentially
+rather than in parallel, so cost per entry stays predictable rather than arriving as a
+burst. Once every entry has produced its opinion statements, a second pass regenerates
+every subject's cited summary from them — necessarily after, since it reads across
+entries rather than within one. Approved categories are the one exception: seeding is
+idempotent and never clears what a human already approved, because an approval is a
+decision, not a cache.
 
 **This is also the model-migration procedure** (`requirements.md` §7.6): run
 `reprocess` once, dump `GET /metrics`, change `EXTRACTION_MODEL`, run it again, dump
 again, diff the two. Verified live against the real gateway: `claude-sonnet-5` and
-`claude-haiku-4-5` agreed on every metric found (same three records, same entries) but
+`claude-haiku-4-5` agreed on every metric found (same records, same entries) but
 resolved relative time expressions ("this morning", "tonight", "last night") to
 slightly different clock times and paraphrased details differently — exactly the
 "schema adherence and extraction quality differ between models even when the calling
 code is identical" `requirements.md` §7.6 names as the reason this diff has to be a
-real, exercised procedure rather than a theoretical one.
+real, exercised procedure rather than a theoretical one. The suggestion mechanism was
+also verified live and unscripted: an entry about a 20-minute meditation session,
+against the seeded exercise/alcohol/sleep set, correctly produced no forced-fit metric
+record and instead suggested "meditation" with a one-sentence reason — approved through
+`POST /categories/suggestions/:id/approve`, after which it appeared in
+`GET /categories` and would be extracted against on the next `reprocess`.
 
 **Correcting a mistake (`requirements.md` §6.2) doesn't survive a reprocess.**
-`DELETE /metrics/:id` discards one wrong record now, but running `reprocess` again — or
-even just re-saving the entry it came from, once/if extraction is ever wired into live
-writes — regenerates it from the entry fresh. That is the honest consequence of §6.4
-taken seriously: the derived layer holds nothing that isn't reproducible from the
-entries alone, and a correction that *had* to survive a full rebuild would quietly make
-the derived store a record of something, which it must never be.
+`DELETE /metrics/:id` (or `/reviews/:id`, `/lists/:id`, `/opinions/statements/:id`)
+discards one wrong record now, but running `reprocess` again — or even just re-saving
+the entry it came from, once/if extraction is ever wired into live writes —
+regenerates it from the entry fresh. That is the honest consequence of §6.4 taken
+seriously: the derived layer holds nothing that isn't reproducible from the entries
+alone, and a correction that *had* to survive a full rebuild would quietly make the
+derived store a record of something, which it must never be. Category *approvals* are
+different and deliberately exempt — see above. Opinion *summaries* are never directly
+correctable at all: discarding a statement leaves any summary part citing it stale
+until the next `reprocess` regenerates it, since a summary is a derived view of the
+statements, not something with its own independent correction.
+
+## The frontend surfaces for all of this
+
+`/metrics`, `/reviews`, and `/lists` are plain lists — the same shape, each showing the
+extracted records with a **Discard** button wired to the correction endpoint.
+`/opinions` is two sections on one page: the regenerated, cited summary per subject
+(each part linking to every entry it draws from) above the same kind of plain,
+Discard-able chronological list beneath it — the summary is never itself editable, only
+the statements it was built from are. `/categories` shows the approved set per structure
+type, pending AI suggestions with Approve/Reject, and the direct-request form.
+`/analysis` (`design.md` §5.3, reached via `/analysis`, the header's "Analysis" link, or
+the `g` `a` shortcut) is the actual analysis surface: small multiples of temporal
+metrics with a 30-day sparkline per category, a hairline-ruled table of reviews by
+medium with average rating, a table of list-item counts by type, and a cross-link to
+`/opinions` — the print information-design tradition throughout, no chart junk, the same
+cream, ink, and green as everywhere else. None of `/metrics`, `/reviews`, `/lists`,
+`/opinions`, or `/categories` are in the header or the keyboard scheme; every one is
+reached only via a cross-link from `/analysis`, keeping the settled top-level surface
+(`design.md` §5.1/§5.2) exactly Search/Analysis/Write.
+
+**Every number on `/analysis` is computed behind the API, never in the frontend**
+(`requirements.md` §7.1). `GET /analysis/metrics`, `/analysis/reviews`, and
+`/analysis/lists` return pre-aggregated summaries — day-bucketed occurrence counts, a
+SQL `AVG(rating)` that correctly ignores unrated reviews rather than treating them as
+zero — and the page only ever renders what comes back. A metric or medium with zero
+occurrences still gets its own zero-filled tile or row, because
+`MetricsIndex.summarize`/`ReviewsIndex.summarize`/`ListsIndex.summarize` iterate the
+*approved category list*, not the data — a category that exists but hasn't happened yet
+is not the same as a category that doesn't exist.
+
+**A real bug this caught:** `POST /categories` originally returned `201` with an empty
+body, but the frontend's shared `request()` helper only special-cases `204` as "nothing
+to parse" — every other `201` in this API (creating an entry, an attachment) returns a
+real JSON body, so the empty-body case had never come up before. The request succeeded
+server-side every time; the frontend just tried to `.json()`-parse nothing and reported
+a false failure. Fixed by making the endpoint return `204`, matching its sibling
+`POST /categories/suggestions/:id/approve`, since neither hands back anything the
+caller doesn't already know.
 
 ## Checks
 
@@ -264,18 +418,21 @@ apps/
   api/            the backend, its own process
     src/record/   ids, timestamps, filenames, frontmatter — what goes on disk
     src/store/    EntryStore, the filesystem implementation of it, and the search-indexing decorator
-    src/index/    the SQLite indexes — listing/lookup, search, and metrics; derived, disposable, never authoritative
+    src/index/    the SQLite indexes — listing/lookup, search, metrics, reviews, lists, categories; derived, disposable, never authoritative
     src/search/   Embedder, chunking, the search index, fusion, and the query orchestrator
-    src/model/    ModelClient — the one file naming a provider — plus the extraction schema and pipeline
+    src/model/    ModelClient — the one file naming a provider — the three extraction pipelines, and the shared event-time resolver
     src/transcribe/  the Transcriber interface, and the local Whisper implementation
     src/http/     routes, thin, no logic
     src/rebuild.ts  `npm run rebuild-index` — reconstruct the local indexes from the files alone
-    src/reprocess.ts  `npm run reprocess` — re-extract every entry's metrics via the model
+    src/reprocess.ts  `npm run reprocess` — re-extract every entry against all three structures via the model
   web/            the frontend, its own process, disposable
     lib/keyboard.tsx  the keyboard scheme's mechanism, designed once
     lib/recorder.ts   raw-PCM microphone capture for voice entries
     components/composer.tsx  the shared text-editing surface
     app/search/   `/`, `⌘K`, and `g s` all land here — a query in, ranked passages out
+    app/metrics/, app/reviews/, app/lists/  plain lists of what extraction found, each with Discard
+    app/categories/  approved categories, AI suggestions with Approve/Reject, and the direct-request form
+    app/analysis/ the analysis surface — small multiples, sparklines, hairline tables (`g` `a`)
 packages/
   contract/       shared API types, and nothing else
 ```

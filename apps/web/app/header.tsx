@@ -33,6 +33,8 @@ export function Header() {
         >
           {theme === 'day' ? '●' : '○'}
         </button>
+        <Link href="/search">Search</Link>
+        <Link href="/analysis">Analysis</Link>
         <Link href="/entry/new">Write</Link>
       </nav>
     </header>

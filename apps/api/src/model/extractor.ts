@@ -1,9 +1,11 @@
+import type { CategoriesIndex } from '../index/categories-index.js';
 import type { MetricsIndex, TemporalMetricRecord } from '../index/metrics-index.js';
 import { ulid } from '../record/id.js';
-import { nowTimestamp, parseTimestamp } from '../record/time.js';
+import { nowTimestamp } from '../record/time.js';
 import type { EntryStore } from '../store/entry-store.js';
+import { resolveEventTime } from './event-time.js';
 import type { ModelClient } from './model-client.js';
-import { buildExtractionPrompt, EXTRACTION_SYSTEM_PROMPT, ExtractionResultSchema } from './temporal-metrics.js';
+import { buildExtractionPrompt, buildMetricExtractionRequest } from './temporal-metrics.js';
 
 const PAGE_SIZE = 100;
 
@@ -20,41 +22,47 @@ const PAGE_SIZE = 100;
  */
 export class Extractor {
   readonly #metricsIndex: MetricsIndex;
+  readonly #categoriesIndex: CategoriesIndex;
   readonly #modelClient: ModelClient;
 
-  constructor(metricsIndex: MetricsIndex, modelClient: ModelClient) {
+  constructor(metricsIndex: MetricsIndex, categoriesIndex: CategoriesIndex, modelClient: ModelClient) {
     this.#metricsIndex = metricsIndex;
+    this.#categoriesIndex = categoriesIndex;
     this.#modelClient = modelClient;
   }
 
   async extractEntry(entry: { id: string; created: string; body: string }): Promise<void> {
-    const result = await this.#modelClient.extract({
-      schema: ExtractionResultSchema,
-      system: EXTRACTION_SYSTEM_PROMPT,
-      prompt: buildExtractionPrompt(entry),
-    });
+    const approvedNames = this.#categoriesIndex.approvedNames('metric');
+    const { schema, system } = buildMetricExtractionRequest(approvedNames);
+    const result = await this.#modelClient.extract({ schema, system, prompt: buildExtractionPrompt(entry) });
 
     const extractedAt = nowTimestamp().canonical;
     const records: Omit<TemporalMetricRecord, 'entryId'>[] = result.metrics.map((metric) => {
-      // The model is asked to always return a valid, offset-carrying RFC 3339
-      // string, but nothing from outside this process is trusted blindly —
-      // a malformed `eventTime` falls back to the entry's own written time
-      // rather than corrupting the record or failing the whole extraction.
-      const parsed = parseTimestamp(metric.eventTime);
-      const eventTime = parsed ? parsed.canonical : entry.created;
-      const eventEpochMs = parsed ? parsed.epochMs : (parseTimestamp(entry.created)?.epochMs ?? Date.now());
+      const resolved = resolveEventTime(metric.eventTime, metric.eventTimeExplicit, entry.created);
       return {
         id: ulid(Date.now()),
         metric: metric.metric,
-        eventTime,
-        eventEpochMs,
-        eventTimeExplicit: parsed !== null && metric.eventTimeExplicit,
+        ...resolved,
         detail: metric.detail,
         extractedAt,
       };
     });
 
     this.#metricsIndex.replaceEntry(entry.id, records);
+
+    // The AI suggesting a new category (`requirements.md` §5.3's first
+    // route) — never auto-approved, just recorded for a human to decide on
+    // via `POST /categories/:id/approve`.
+    if (result.suggestedCategory) {
+      this.#categoriesIndex.suggest({
+        structureType: 'metric',
+        name: result.suggestedCategory.name,
+        reason: result.suggestedCategory.reason,
+        entryId: entry.id,
+        id: ulid(Date.now()),
+        now: extractedAt,
+      });
+    }
   }
 
   removeEntry(entryId: string): void {

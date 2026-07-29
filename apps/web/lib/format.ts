@@ -80,6 +80,18 @@ export function formatTime(created: string): string {
 }
 
 /**
+ * `★★★★☆` — a 1–5 rating as plain glyphs in the running type, not a
+ * graphical widget. The print information-design treatment
+ * (`design.md` §5.3) wants data integrated into the typography rather than
+ * boxed off from it; a row of star characters in the same serif face is
+ * exactly that, where a star-icon component would not be.
+ */
+export function formatRating(rating: number): string {
+  const rounded = Math.round(rating);
+  return '★'.repeat(rounded) + '☆'.repeat(Math.max(0, 5 - rounded));
+}
+
+/**
  * This device's clock as RFC 3339, carrying its offset.
  *
  * The client supplies `created` because only the client knows where the user

@@ -1,9 +1,19 @@
 import { serve } from '@hono/node-server';
 import { ConfigError, loadConfig } from './config.js';
 import { createApp } from './http/app.js';
+import { CategoriesIndex } from './index/categories-index.js';
+import { ListsIndex } from './index/lists-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
+import { OpinionStatementsIndex } from './index/opinion-statements-index.js';
+import { OpinionSummariesIndex } from './index/opinion-summaries-index.js';
+import { ReviewsIndex } from './index/reviews-index.js';
 import { SearchIndex } from './index/search-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
+import { LIST_TYPE_SEED_NAMES } from './model/lists.js';
+import { OPINION_SUBJECT_SEED_NAMES } from './model/opinions.js';
+import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
+import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
+import { nowTimestamp } from './record/time.js';
 import { LocalEmbedder } from './search/local-embedder.js';
 import { SearchIndexer } from './search/indexer.js';
 import { HybridSearcher } from './search/searcher.js';
@@ -41,9 +51,36 @@ async function main(): Promise<void> {
   // via `npm run reprocess` (`src/reprocess.ts`) — see that file for why
   // (`plan.md` M7: extraction costs real money per call, unlike the free
   // local embedder M6 wires into every write). The running server only ever
-  // reads what a past reprocess already wrote, via `GET /metrics`.
+  // reads what a past reprocess already wrote, via `GET /metrics` and
+  // friends.
   const metricsIndex = new MetricsIndex(config.indexDbPath);
-  const app = createApp(store, config, transcriber, searcher, metricsIndex);
+  const reviewsIndex = new ReviewsIndex(config.indexDbPath);
+  const listsIndex = new ListsIndex(config.indexDbPath);
+  const opinionStatementsIndex = new OpinionStatementsIndex(config.indexDbPath);
+  const opinionSummariesIndex = new OpinionSummariesIndex(config.indexDbPath);
+  // Seeded on every boot too, not only in `reprocess.ts` — the approved-name
+  // list has to exist before `GET /categories` can answer anything, and
+  // boot is the one place guaranteed to run before that request can arrive.
+  // `seed` is idempotent, so running it in both places is exactly as safe as
+  // running it in one.
+  const categoriesIndex = new CategoriesIndex(config.indexDbPath);
+  const seededAt = nowTimestamp().canonical;
+  categoriesIndex.seed('metric', METRIC_SEED_NAMES, seededAt);
+  categoriesIndex.seed('review_medium', REVIEW_MEDIUM_SEED_NAMES, seededAt);
+  categoriesIndex.seed('list_type', LIST_TYPE_SEED_NAMES, seededAt);
+  categoriesIndex.seed('opinion_subject', OPINION_SUBJECT_SEED_NAMES, seededAt);
+  const app = createApp(
+    store,
+    config,
+    transcriber,
+    searcher,
+    metricsIndex,
+    reviewsIndex,
+    listsIndex,
+    categoriesIndex,
+    opinionStatementsIndex,
+    opinionSummariesIndex,
+  );
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
     console.log(`[journal] api listening on http://${config.host}:${info.port}`);

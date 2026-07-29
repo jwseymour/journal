@@ -5,13 +5,25 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type {
   AddAttachmentResponse,
   ApiError,
+  CategoriesResponse,
   CreateEntryResponse,
   Entry,
   EntryPage,
   HealthResponse,
+  ListItem,
+  ListItemsResponse,
+  ListsSummaryResponse,
   MetricsResponse,
+  MetricsSummaryResponse,
+  OpinionStatementsResponse,
+  OpinionSummariesResponse,
+  Review,
+  ReviewsResponse,
+  ReviewsSummaryResponse,
   SearchHit,
   SearchResponse,
+  StructureType,
+  SuggestionsResponse,
   TemporalMetric,
   TranscribeResponse,
   UpdateEntryResponse,
@@ -19,7 +31,16 @@ import type {
 import type { Config } from '../../src/config.js';
 import { transcriptionFailed } from '../../src/errors.js';
 import { createApp } from '../../src/http/app.js';
-import type { ListMetricsOptions, MetricsReader, TemporalMetricRecord } from '../../src/index/metrics-index.js';
+import type { CategoriesReader, CategorySuggestion, SuggestionStatus } from '../../src/index/categories-index.js';
+import type { ListItemRecord, ListItemsOptions, ListItemsReader, ListTypeSummary } from '../../src/index/lists-index.js';
+import type { ListMetricsOptions, MetricsReader, MetricSummary, TemporalMetricRecord } from '../../src/index/metrics-index.js';
+import type {
+  ListOpinionStatementsOptions,
+  OpinionStatementRecord,
+  OpinionStatementsReader,
+} from '../../src/index/opinion-statements-index.js';
+import type { OpinionSummariesReader, OpinionSummaryPartRecord } from '../../src/index/opinion-summaries-index.js';
+import type { ListReviewsOptions, ReviewMediumSummary, ReviewRecord, ReviewsReader } from '../../src/index/reviews-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
 import type { Searcher } from '../../src/search/searcher.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
@@ -72,6 +93,8 @@ class FakeSearcher implements Searcher {
 class FakeMetricsReader implements MetricsReader {
   listCalls: ListMetricsOptions[] = [];
   removeCalls: string[] = [];
+  summarizeCalls: Array<{ approvedNames: readonly string[]; windowDays: number }> = [];
+  summaries: MetricSummary[] = [];
   records: TemporalMetricRecord[] = [];
 
   list(options: ListMetricsOptions): TemporalMetricRecord[] {
@@ -83,6 +106,124 @@ class FakeMetricsReader implements MetricsReader {
   remove(id: string): void {
     this.removeCalls.push(id);
     this.records = this.records.filter((r) => r.id !== id);
+  }
+
+  summarize(approvedNames: readonly string[], windowDays: number): MetricSummary[] {
+    this.summarizeCalls.push({ approvedNames, windowDays });
+    return this.summaries;
+  }
+}
+
+/** Same reasoning again, for `/reviews`. */
+class FakeReviewsReader implements ReviewsReader {
+  listCalls: ListReviewsOptions[] = [];
+  removeCalls: string[] = [];
+  summarizeCalls: Array<readonly string[]> = [];
+  summaries: ReviewMediumSummary[] = [];
+  records: ReviewRecord[] = [];
+
+  list(options: ListReviewsOptions): ReviewRecord[] {
+    this.listCalls.push(options);
+    const filtered = options.medium ? this.records.filter((r) => r.medium === options.medium) : this.records;
+    return filtered.slice(0, options.limit);
+  }
+
+  remove(id: string): void {
+    this.removeCalls.push(id);
+    this.records = this.records.filter((r) => r.id !== id);
+  }
+
+  summarize(approvedMedia: readonly string[]): ReviewMediumSummary[] {
+    this.summarizeCalls.push(approvedMedia);
+    return this.summaries;
+  }
+}
+
+/** Same reasoning again, for `/lists`. */
+class FakeListItemsReader implements ListItemsReader {
+  listCalls: ListItemsOptions[] = [];
+  removeCalls: string[] = [];
+  summarizeCalls: Array<readonly string[]> = [];
+  summaries: ListTypeSummary[] = [];
+  records: ListItemRecord[] = [];
+
+  list(options: ListItemsOptions): ListItemRecord[] {
+    this.listCalls.push(options);
+    const filtered = options.listType ? this.records.filter((r) => r.listType === options.listType) : this.records;
+    return filtered.slice(0, options.limit);
+  }
+
+  remove(id: string): void {
+    this.removeCalls.push(id);
+    this.records = this.records.filter((r) => r.id !== id);
+  }
+
+  summarize(approvedTypes: readonly string[]): ListTypeSummary[] {
+    this.summarizeCalls.push(approvedTypes);
+    return this.summaries;
+  }
+}
+
+/** Same reasoning again, for `/categories`. */
+class FakeCategoriesReader implements CategoriesReader {
+  approved: Record<StructureType, string[]> = { metric: [], review_medium: [], list_type: [], opinion_subject: [] };
+  suggestions: CategorySuggestion[] = [];
+  approveCalls: Array<{ structureType: StructureType; name: string }> = [];
+  decideCalls: Array<{ id: string; decision: 'approved' | 'rejected' }> = [];
+
+  approvedNames(structureType: StructureType): string[] {
+    return this.approved[structureType];
+  }
+
+  approveDirectly(structureType: StructureType, name: string): void {
+    this.approveCalls.push({ structureType, name });
+    if (!this.approved[structureType].includes(name)) this.approved[structureType].push(name);
+  }
+
+  listSuggestions(options: { structureType?: StructureType; status?: SuggestionStatus } = {}): CategorySuggestion[] {
+    return this.suggestions.filter(
+      (s) =>
+        (!options.structureType || s.structureType === options.structureType) &&
+        (!options.status || s.status === options.status),
+    );
+  }
+
+  decide(id: string, decision: 'approved' | 'rejected'): void {
+    this.decideCalls.push({ id, decision });
+    this.suggestions = this.suggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
+}
+
+/** Same reasoning again, for `/opinions/statements`. */
+class FakeOpinionStatementsReader implements OpinionStatementsReader {
+  listCalls: ListOpinionStatementsOptions[] = [];
+  removeCalls: string[] = [];
+  records: OpinionStatementRecord[] = [];
+
+  list(options: ListOpinionStatementsOptions): OpinionStatementRecord[] {
+    this.listCalls.push(options);
+    const filtered = options.subject ? this.records.filter((r) => r.subject === options.subject) : this.records;
+    return filtered.slice(0, options.limit);
+  }
+
+  remove(id: string): void {
+    this.removeCalls.push(id);
+    this.records = this.records.filter((r) => r.id !== id);
+  }
+}
+
+/** Same reasoning again, for `/opinions/summaries`. */
+class FakeOpinionSummariesReader implements OpinionSummariesReader {
+  listCalls: Array<string | undefined> = [];
+  parts: OpinionSummaryPartRecord[] = [];
+
+  list(subject?: string): OpinionSummaryPartRecord[] {
+    this.listCalls.push(subject);
+    return subject ? this.parts.filter((p) => p.subject === subject) : this.parts;
+  }
+
+  subjects(): string[] {
+    return [...new Set(this.parts.map((p) => p.subject))];
   }
 }
 
@@ -101,6 +242,11 @@ let app: ReturnType<typeof createApp>;
 let transcriber: FakeTranscriber;
 let searcher: FakeSearcher;
 let metrics: FakeMetricsReader;
+let reviews: FakeReviewsReader;
+let lists: FakeListItemsReader;
+let categories: FakeCategoriesReader;
+let opinionStatements: FakeOpinionStatementsReader;
+let opinionSummaries: FakeOpinionSummariesReader;
 let index: SqliteIndex;
 
 const config = (journalDir: string): Config => ({
@@ -123,8 +269,24 @@ beforeEach(async () => {
   transcriber = new FakeTranscriber();
   searcher = new FakeSearcher();
   metrics = new FakeMetricsReader();
+  reviews = new FakeReviewsReader();
+  lists = new FakeListItemsReader();
+  categories = new FakeCategoriesReader();
+  opinionStatements = new FakeOpinionStatementsReader();
+  opinionSummaries = new FakeOpinionSummariesReader();
   index = new SqliteIndex(':memory:');
-  app = createApp(new FsEntryStore(root, index), config(root), transcriber, searcher, metrics);
+  app = createApp(
+    new FsEntryStore(root, index),
+    config(root),
+    transcriber,
+    searcher,
+    metrics,
+    reviews,
+    lists,
+    categories,
+    opinionStatements,
+    opinionSummaries,
+  );
 });
 
 afterEach(async () => {
@@ -459,6 +621,51 @@ describe('POST /entries/:id/attachments', () => {
   });
 });
 
+describe('GET /analysis/metrics', () => {
+  it('passes the currently approved metric names and the window to summarize', async () => {
+    categories.approved.metric = ['exercise', 'sleep'];
+    await app.request('/analysis/metrics');
+    expect(metrics.summarizeCalls).toEqual([{ approvedNames: ['exercise', 'sleep'], windowDays: 30 }]);
+  });
+
+  it('returns whatever the MetricsReader produces, plus the window used', async () => {
+    const summary: MetricSummary = { metric: 'exercise', totalCount: 3, days: [{ date: '2026-07-20', count: 1 }] };
+    metrics.summaries = [summary];
+    const response = await app.request('/analysis/metrics');
+    expect((await response.json()) as MetricsSummaryResponse).toEqual({ summaries: [summary], windowDays: 30 });
+  });
+});
+
+describe('GET /analysis/reviews', () => {
+  it('passes the currently approved media to summarize', async () => {
+    categories.approved.review_medium = ['film', 'book'];
+    await app.request('/analysis/reviews');
+    expect(reviews.summarizeCalls).toEqual([['film', 'book']]);
+  });
+
+  it('returns whatever the ReviewsReader produces', async () => {
+    const summary: ReviewMediumSummary = { medium: 'film', count: 2, averageRating: 4.5 };
+    reviews.summaries = [summary];
+    const response = await app.request('/analysis/reviews');
+    expect((await response.json()) as ReviewsSummaryResponse).toEqual({ summaries: [summary] });
+  });
+});
+
+describe('GET /analysis/lists', () => {
+  it('passes the currently approved list types to summarize', async () => {
+    categories.approved.list_type = ['quote'];
+    await app.request('/analysis/lists');
+    expect(lists.summarizeCalls).toEqual([['quote']]);
+  });
+
+  it('returns whatever the ListItemsReader produces', async () => {
+    const summary: ListTypeSummary = { listType: 'quote', count: 5 };
+    lists.summaries = [summary];
+    const response = await app.request('/analysis/lists');
+    expect((await response.json()) as ListsSummaryResponse).toEqual({ summaries: [summary] });
+  });
+});
+
 describe('POST /transcribe', () => {
   function transcribe(samples: Float32Array, sampleRate: number | string | undefined) {
     const query = sampleRate === undefined ? '' : `?sampleRate=${sampleRate}`;
@@ -628,6 +835,347 @@ describe('DELETE /metrics/:id', () => {
     const response = await app.request('/metrics/not-a-ulid', { method: 'DELETE' });
     expect(response.status).toBe(204);
     expect(metrics.removeCalls).toEqual([]);
+  });
+});
+
+describe('GET /reviews', () => {
+  const record = (): ReviewRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    title: 'Some Film',
+    medium: 'film',
+    rating: 4,
+    opinion: 'Really enjoyed it.',
+    eventTime: '2026-07-20T20:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+    eventTimeExplicit: true,
+    extractedAt: '2026-07-20T21:00:00+01:00',
+  });
+
+  it('is empty, not an error, when nothing has been extracted', async () => {
+    const response = await app.request('/reviews');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as ReviewsResponse).toEqual({ reviews: [] });
+  });
+
+  it('returns whatever the ReviewsReader produces, without the internal-only fields', async () => {
+    reviews.records = [record()];
+    const response = await app.request('/reviews');
+    const body = (await response.json()) as ReviewsResponse;
+    const expected: Review = {
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      title: 'Some Film',
+      medium: 'film',
+      rating: 4,
+      opinion: 'Really enjoyed it.',
+      eventTime: '2026-07-20T20:00:00+01:00',
+      eventTimeExplicit: true,
+    };
+    expect(body.reviews).toEqual([expected]);
+  });
+
+  it('passes a medium filter and the default limit straight to the ReviewsReader', async () => {
+    await app.request('/reviews?medium=book');
+    expect(reviews.listCalls).toEqual([{ medium: 'book', limit: 30 }]);
+  });
+
+  it('rejects a limit outside 1..200', async () => {
+    const response = await app.request('/reviews?limit=201');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('DELETE /reviews/:id', () => {
+  it('removes the record', async () => {
+    const response = await app.request('/reviews/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(reviews.removeCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/reviews/not-a-ulid', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(reviews.removeCalls).toEqual([]);
+  });
+});
+
+describe('GET /lists', () => {
+  const record = (): ListItemRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    listType: 'quote',
+    text: '"The unexamined life is not worth living."',
+    context: 'Socrates',
+    eventTime: '2026-07-20T20:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+    eventTimeExplicit: true,
+    extractedAt: '2026-07-20T21:00:00+01:00',
+  });
+
+  it('is empty, not an error, when nothing has been extracted', async () => {
+    const response = await app.request('/lists');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as ListItemsResponse).toEqual({ items: [] });
+  });
+
+  it('returns whatever the ListItemsReader produces, without the internal-only fields', async () => {
+    lists.records = [record()];
+    const response = await app.request('/lists');
+    const body = (await response.json()) as ListItemsResponse;
+    const expected: ListItem = {
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      listType: 'quote',
+      text: '"The unexamined life is not worth living."',
+      context: 'Socrates',
+      eventTime: '2026-07-20T20:00:00+01:00',
+      eventTimeExplicit: true,
+    };
+    expect(body.items).toEqual([expected]);
+  });
+
+  it('passes a listType filter straight to the ListItemsReader', async () => {
+    await app.request('/lists?listType=quote');
+    expect(lists.listCalls).toEqual([{ listType: 'quote', limit: 30 }]);
+  });
+});
+
+describe('DELETE /lists/:id', () => {
+  it('removes the record', async () => {
+    const response = await app.request('/lists/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(lists.removeCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+});
+
+describe('GET /opinions/statements', () => {
+  const record = (overrides: Partial<OpinionStatementRecord> = {}): OpinionStatementRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    subject: 'philosophy',
+    statement: 'Believes in living deliberately.',
+    eventTime: '2026-07-20T20:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+    eventTimeExplicit: true,
+    extractedAt: '2026-07-20T21:00:00+01:00',
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been extracted', async () => {
+    const response = await app.request('/opinions/statements');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as OpinionStatementsResponse).toEqual({ statements: [] });
+  });
+
+  it('returns whatever the OpinionStatementsReader produces, without the internal-only fields', async () => {
+    opinionStatements.records = [record()];
+    const response = await app.request('/opinions/statements');
+    const body = (await response.json()) as OpinionStatementsResponse;
+    expect(body.statements).toEqual([
+      {
+        id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+        subject: 'philosophy',
+        statement: 'Believes in living deliberately.',
+        eventTime: '2026-07-20T20:00:00+01:00',
+        eventTimeExplicit: true,
+      },
+    ]);
+  });
+
+  it('passes a subject filter and the default limit straight to the OpinionStatementsReader', async () => {
+    await app.request('/opinions/statements?subject=future');
+    expect(opinionStatements.listCalls).toEqual([{ subject: 'future', limit: 30 }]);
+  });
+
+  it('respects a custom limit', async () => {
+    await app.request('/opinions/statements?limit=5');
+    expect(opinionStatements.listCalls[0]).toEqual({ limit: 5 });
+  });
+
+  it('rejects a limit outside 1..200', async () => {
+    for (const limit of ['0', '-1', '201', 'nope']) {
+      const response = await app.request(`/opinions/statements?limit=${limit}`);
+      expect(response.status, limit).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+});
+
+describe('DELETE /opinions/statements/:id', () => {
+  it('removes the record', async () => {
+    const response = await app.request('/opinions/statements/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(opinionStatements.removeCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/opinions/statements/not-a-ulid', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(opinionStatements.removeCalls).toEqual([]);
+  });
+});
+
+describe('GET /opinions/summaries', () => {
+  const part = (overrides: Partial<OpinionSummaryPartRecord> = {}): OpinionSummaryPartRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    subject: 'philosophy',
+    partIndex: 0,
+    text: 'Believes in living deliberately.',
+    sourceStatementIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAW'],
+    sourceEntryIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAX'],
+    generatedAt: '2026-07-20T21:00:00+01:00',
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been generated', async () => {
+    const response = await app.request('/opinions/summaries');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as OpinionSummariesResponse).toEqual({ summaries: [] });
+  });
+
+  it('groups parts by subject, in generation order, without the internal-only fields', async () => {
+    opinionSummaries.parts = [
+      part({ id: '1', subject: 'philosophy', partIndex: 0, text: 'Part one.' }),
+      part({ id: '2', subject: 'philosophy', partIndex: 1, text: 'Part two.' }),
+      part({ id: '3', subject: 'future', partIndex: 0, text: 'A future part.' }),
+    ];
+    const response = await app.request('/opinions/summaries');
+    const body = (await response.json()) as OpinionSummariesResponse;
+    expect(body.summaries).toEqual([
+      {
+        subject: 'philosophy',
+        generatedAt: '2026-07-20T21:00:00+01:00',
+        parts: [
+          {
+            text: 'Part one.',
+            sourceStatementIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAW'],
+            sourceEntryIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAX'],
+          },
+          {
+            text: 'Part two.',
+            sourceStatementIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAW'],
+            sourceEntryIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAX'],
+          },
+        ],
+      },
+      {
+        subject: 'future',
+        generatedAt: '2026-07-20T21:00:00+01:00',
+        parts: [
+          {
+            text: 'A future part.',
+            sourceStatementIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAW'],
+            sourceEntryIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAX'],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('passes a subject filter straight to the OpinionSummariesReader', async () => {
+    await app.request('/opinions/summaries?subject=philosophy');
+    expect(opinionSummaries.listCalls).toEqual(['philosophy']);
+  });
+});
+
+describe('GET /categories', () => {
+  it('returns the approved names for every structure type', async () => {
+    categories.approved = {
+      metric: ['exercise'],
+      review_medium: ['film'],
+      list_type: ['quote'],
+      opinion_subject: ['philosophy'],
+    };
+    const response = await app.request('/categories');
+    expect((await response.json()) as CategoriesResponse).toEqual({
+      metric: ['exercise'],
+      review_medium: ['film'],
+      list_type: ['quote'],
+      opinion_subject: ['philosophy'],
+    });
+  });
+});
+
+describe('POST /categories', () => {
+  it('approves a category directly, with no suggestion step', async () => {
+    const response = await app.request('/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'metric', name: 'meditation' }),
+    });
+    expect(response.status).toBe(204);
+    expect(categories.approveCalls).toEqual([{ structureType: 'metric', name: 'meditation' }]);
+  });
+
+  it('rejects an unknown structureType', async () => {
+    const response = await app.request('/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'nonsense', name: 'x' }),
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects a missing name', async () => {
+    const response = await app.request('/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'metric' }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('GET /categories/suggestions', () => {
+  const suggestion = (overrides: Partial<CategorySuggestion> = {}): CategorySuggestion => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    structureType: 'metric',
+    name: 'meditation',
+    reason: 'mentioned meditating',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    status: 'pending',
+    suggestedAt: '2026-07-20T09:00:00Z',
+    decidedAt: null,
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been suggested', async () => {
+    const response = await app.request('/categories/suggestions');
+    expect((await response.json()) as SuggestionsResponse).toEqual({ suggestions: [] });
+  });
+
+  it('returns whatever the CategoriesReader produces', async () => {
+    categories.suggestions = [suggestion()];
+    const response = await app.request('/categories/suggestions');
+    expect((await response.json()) as SuggestionsResponse).toEqual({ suggestions: [suggestion()] });
+  });
+
+  it('rejects an unknown structureType filter', async () => {
+    const response = await app.request('/categories/suggestions?structureType=nonsense');
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects an unknown status filter', async () => {
+    const response = await app.request('/categories/suggestions?status=nonsense');
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('POST /categories/suggestions/:id/approve and /reject', () => {
+  it('approve calls decide with "approved"', async () => {
+    const response = await app.request('/categories/suggestions/s1/approve', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(categories.decideCalls).toEqual([{ id: 's1', decision: 'approved' }]);
+  });
+
+  it('reject calls decide with "rejected"', async () => {
+    const response = await app.request('/categories/suggestions/s1/reject', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(categories.decideCalls).toEqual([{ id: 's1', decision: 'rejected' }]);
   });
 });
 

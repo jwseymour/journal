@@ -1,0 +1,86 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.list {
+  margin-top: var(--space-md);
+  list-style: none;
+  padding: 0;
+}
+
+.list > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+}
+
+.main {
+  min-width: 0;
+}
+
+.when {
+  display: flex;
+  gap: var(--space-2xs);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.metric {
+  display: inline-block;
+  margin-top: var(--space-3xs);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.detail {
+  display: block;
+  margin-top: var(--space-3xs);
+  line-height: var(--leading-normal);
+}
+
+.link {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.discard {
+  flex-shrink: 0;
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+
+.discard:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.discard:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.empty,
+.hint {
+  padding-top: var(--space-md);
+  color: var(--ink-muted);
+}
+
+.error {
+  padding-top: var(--space-md);
+  color: var(--danger);
+}

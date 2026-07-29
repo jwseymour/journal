@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { CategoriesIndex } from '../../src/index/categories-index.js';
 import { MetricsIndex } from '../../src/index/metrics-index.js';
 import { Extractor } from '../../src/model/extractor.js';
+import { METRIC_SEED_NAMES } from '../../src/model/temporal-metrics.js';
 import type { ExtractionRequest, ModelClient } from '../../src/model/model-client.js';
 import type { ExtractionResult } from '../../src/model/temporal-metrics.js';
 import type {
@@ -19,11 +21,13 @@ import type {
  * (`plan.md` M7). */
 class FakeModelClient implements ModelClient {
   calls: ExtractionRequest<unknown>[] = [];
-  result: ExtractionResult = { metrics: [] };
+  // `suggestedCategory` defaults to null so most tests, which only care
+  // about `metrics`, don't have to repeat it.
+  result: Partial<ExtractionResult> = { metrics: [] };
 
   async extract<T>(request: ExtractionRequest<T>): Promise<T> {
     this.calls.push(request as ExtractionRequest<unknown>);
-    return this.result as unknown as T;
+    return { suggestedCategory: null, ...this.result } as unknown as T;
   }
 }
 
@@ -70,13 +74,16 @@ const entry = (id: string, body: string, created = '2026-07-20T09:00:00+01:00'):
 });
 
 let metricsIndex: MetricsIndex;
+let categoriesIndex: CategoriesIndex;
 let modelClient: FakeModelClient;
 let extractor: Extractor;
 
 beforeEach(() => {
   metricsIndex = new MetricsIndex(':memory:');
+  categoriesIndex = new CategoriesIndex(':memory:');
+  categoriesIndex.seed('metric', METRIC_SEED_NAMES, '2026-01-01T00:00:00Z');
   modelClient = new FakeModelClient();
-  extractor = new Extractor(metricsIndex, modelClient);
+  extractor = new Extractor(metricsIndex, categoriesIndex, modelClient);
 });
 
 describe('extractEntry', () => {
@@ -139,6 +146,38 @@ describe('extractEntry', () => {
     const records = metricsIndex.list({ limit: 10 });
     expect(records).toHaveLength(1);
     expect(records[0]!.metric).toBe('sleep');
+  });
+
+  it('records a suggested category without inventing a metric record for it', async () => {
+    modelClient.result = {
+      metrics: [],
+      suggestedCategory: { name: 'meditation', reason: 'mentioned a 10-minute meditation' },
+    };
+    await extractor.extractEntry(entry('e1', 'Did a 10-minute meditation.'));
+
+    expect(metricsIndex.list({ limit: 10 })).toEqual([]);
+    const suggestions = categoriesIndex.listSuggestions();
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      structureType: 'metric',
+      name: 'meditation',
+      reason: 'mentioned a 10-minute meditation',
+      entryId: 'e1',
+      status: 'pending',
+    });
+  });
+
+  it('does not record a suggestion when the model returns none', async () => {
+    modelClient.result = { metrics: [] };
+    await extractor.extractEntry(entry('e1', 'Nothing notable.'));
+    expect(categoriesIndex.listSuggestions()).toEqual([]);
+  });
+
+  it('sends the currently approved category names to the model', async () => {
+    categoriesIndex.approveDirectly('metric', 'meditation', '2026-01-01T00:00:00Z');
+    await extractor.extractEntry(entry('e1', 'Did a 10-minute meditation.'));
+    expect(modelClient.calls[0]!.system).toContain('meditation');
+    expect(modelClient.calls[0]!.system).toContain('exercise');
   });
 
   it('gives every record a distinct id, even within the same extraction', async () => {

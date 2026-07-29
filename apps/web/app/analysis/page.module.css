@@ -1,0 +1,135 @@
+/* No literal values. Everything references a token (`design.md` §6.2).
+ * Print information-design throughout (`design.md` §5.3): hairlines, no
+ * gradients, no drop shadows, no chart junk — data integrated into the
+ * typography rather than boxed off from it. */
+
+.section {
+  margin-top: var(--space-lg);
+}
+
+.section:first-child {
+  margin-top: var(--space-md);
+}
+
+.headingRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--space-sm);
+}
+
+.heading {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.seeAll {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+/* Small multiples (`design.md` §5.3) — a compact grid of identical tiles,
+ * one per metric, in preference to a single large chart. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-3xl) * 2), 1fr));
+  gap: var(--space-md);
+}
+
+.tile {
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule-strong);
+}
+
+.tileHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.tileName {
+  color: var(--ink);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.tileCount {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+/* The sparkline: one hairline-bordered cell per day, filled with the accent
+ * colour only on a day something happened. Uniform size throughout — the
+ * pattern is what carries the information, not the size of any one mark. */
+.sparkline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hairline);
+  margin-top: var(--space-xs);
+}
+
+.day {
+  width: var(--space-2xs);
+  height: var(--space-2xs);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+}
+
+.dayFilled {
+  border-color: var(--accent);
+  background-color: var(--accent);
+}
+
+/* Reviews and lists: a plain table, in the statistical-yearbook tradition —
+ * hairline rules, no gridlines, no shading. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th {
+  padding-bottom: var(--space-2xs);
+  border-bottom: var(--hairline) solid var(--rule-strong);
+  color: var(--ink-muted);
+  font-weight: var(--weight-normal);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.table td {
+  padding: var(--space-2xs) 0;
+  border-bottom: var(--hairline) solid var(--rule);
+}
+
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.numeric {
+  text-align: right;
+  color: var(--ink-muted);
+}
+
+.rating {
+  text-align: right;
+  color: var(--accent);
+}
+
+.empty,
+.hint {
+  color: var(--ink-muted);
+}
+
+.error {
+  padding-top: var(--space-md);
+  color: var(--danger);
+}

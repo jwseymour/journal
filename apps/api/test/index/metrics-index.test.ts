@@ -140,3 +140,51 @@ describe('persistence', () => {
     reopened.close();
   });
 });
+
+describe('summarize', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  // A fixed "now" so the window is deterministic across test runs.
+  const NOW = Date.parse('2026-07-20T12:00:00Z');
+
+  it('gives a zero-filled tile for a category with no occurrences at all', () => {
+    const [summary] = index.summarize(['exercise'], 7, NOW);
+    expect(summary).toMatchObject({ metric: 'exercise', totalCount: 0 });
+    expect(summary!.days).toHaveLength(7);
+    expect(summary!.days.every((d) => d.count === 0)).toBe(true);
+  });
+
+  it('counts an occurrence on the correct UTC day', () => {
+    index.replaceEntry('e1', [record({ eventEpochMs: NOW })]);
+    const [summary] = index.summarize(['exercise'], 7, NOW);
+    const today = summary!.days.at(-1)!;
+    expect(today.date).toBe('2026-07-20');
+    expect(today.count).toBe(1);
+  });
+
+  it('excludes an occurrence outside the window from the days, but not from totalCount', () => {
+    index.replaceEntry('e1', [record({ eventEpochMs: NOW - 30 * DAY_MS })]);
+    const [summary] = index.summarize(['exercise'], 7, NOW);
+    expect(summary!.totalCount).toBe(1);
+    expect(summary!.days.every((d) => d.count === 0)).toBe(true);
+  });
+
+  it('orders days oldest first, ending on "now"', () => {
+    const [summary] = index.summarize(['exercise'], 3, NOW);
+    expect(summary!.days.map((d) => d.date)).toEqual(['2026-07-18', '2026-07-19', '2026-07-20']);
+  });
+
+  it('returns one summary per approved name, in the order given, even with mixed data', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', metric: 'sleep', eventEpochMs: NOW })]);
+    const summaries = index.summarize(['exercise', 'sleep'], 7, NOW);
+    expect(summaries.map((s) => s.metric)).toEqual(['exercise', 'sleep']);
+    expect(summaries[0]!.totalCount).toBe(0);
+    expect(summaries[1]!.totalCount).toBe(1);
+  });
+
+  it('sums more than one occurrence on the same day', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', eventEpochMs: NOW })]);
+    index.replaceEntry('e2', [record({ id: 'm2', eventEpochMs: NOW - 1000 })]);
+    const [summary] = index.summarize(['exercise'], 7, NOW);
+    expect(summary!.days.at(-1)!.count).toBe(2);
+  });
+});

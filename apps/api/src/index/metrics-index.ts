@@ -38,6 +38,25 @@ export interface ListMetricsOptions {
   limit: number;
 }
 
+/** One calendar day (UTC) within a summary window, and how many times a
+ * metric occurred on it — the raw material for a sparkline
+ * (`design.md` §5.3), computed here rather than in the frontend
+ * (`requirements.md` §7.1: aggregation lives behind the API). */
+export interface DayCount {
+  /** `YYYY-MM-DD`, UTC. */
+  date: string;
+  count: number;
+}
+
+export interface MetricSummary {
+  metric: string;
+  /** Every occurrence ever recorded, not only within the window. */
+  totalCount: number;
+  /** Oldest first, one entry per day in the window, zero-filled — a
+   * sparkline needs every day present, not only the days something happened. */
+  days: DayCount[];
+}
+
 /**
  * The seam `http/app.ts` depends on — same shape as `Searcher`: the route
  * knows nothing about SQLite, only that a list comes back and a record can
@@ -49,6 +68,7 @@ export interface ListMetricsOptions {
 export interface MetricsReader {
   list(options: ListMetricsOptions): TemporalMetricRecord[];
   remove(id: string): void;
+  summarize(approvedNames: readonly string[], windowDays: number, now?: number): MetricSummary[];
 }
 
 export class MetricsIndex implements MetricsReader {
@@ -140,6 +160,40 @@ export class MetricsIndex implements MetricsReader {
     return rows.map(fromRaw);
   }
 
+  /**
+   * The aggregation an analysis surface needs (`plan.md` M8, `design.md`
+   * §5.3) — computed here, not in the frontend (`requirements.md` §7.1).
+   * One `MetricSummary` per approved name, in the order given, so a metric
+   * with zero occurrences still gets its own zero-filled tile rather than
+   * silently disappearing.
+   */
+  summarize(approvedNames: readonly string[], windowDays: number, now: number = Date.now()): MetricSummary[] {
+    const windowStart = now - windowDays * 24 * 60 * 60 * 1000;
+    const totalStmt = this.#db.prepare('SELECT COUNT(*) AS n FROM temporal_metrics WHERE metric = ?');
+    const windowStmt = this.#db.prepare(
+      'SELECT event_epoch_ms FROM temporal_metrics WHERE metric = ? AND event_epoch_ms >= ?',
+    );
+
+    return approvedNames.map((metric) => {
+      const totalCount = (totalStmt.get(metric) as { n: number }).n;
+      const rows = windowStmt.all(metric, windowStart) as { event_epoch_ms: number }[];
+
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        const day = toUtcDate(row.event_epoch_ms);
+        counts.set(day, (counts.get(day) ?? 0) + 1);
+      }
+
+      const days: DayCount[] = [];
+      for (let offset = windowDays - 1; offset >= 0; offset -= 1) {
+        const date = toUtcDate(now - offset * 24 * 60 * 60 * 1000);
+        days.push({ date, count: counts.get(date) ?? 0 });
+      }
+
+      return { metric, totalCount, days };
+    });
+  }
+
   stats(): { metricCount: number } {
     const metricCount = (
       this.#db.prepare('SELECT COUNT(*) AS n FROM temporal_metrics').get() as { n: number }
@@ -180,4 +234,11 @@ function fromRaw(row: RawRow): TemporalMetricRecord {
     detail: row.detail,
     extractedAt: row.extracted_at,
   };
+}
+
+/** `YYYY-MM-DD`, UTC — a fixed, deterministic day boundary rather than the
+ * server's local timezone, so a sparkline's day buckets never shift
+ * depending on where this process happens to run. */
+function toUtcDate(epochMs: number): string {
+  return new Date(epochMs).toISOString().slice(0, 10);
 }

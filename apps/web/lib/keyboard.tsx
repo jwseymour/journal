@@ -131,9 +131,10 @@ export function KeyboardProvider({ children }: { children: React.ReactNode }) {
         } else if (key === 's') {
           event.preventDefault();
           router.push('/search');
+        } else if (key === 'a') {
+          event.preventDefault();
+          router.push('/analysis');
         }
-        // `a` (analysis) has no destination yet — a bare key that goes
-        // nowhere, rather than a broken link.
         return;
       }
 

@@ -6,11 +6,10 @@
  * the two ever disagreeing, because they read the same table.
  *
  * `available` distinguishes a command with somewhere to go right now from one
- * that documents where the scheme is *heading* — analysis is a real key in
- * the design but its feature is a later milestone (M8). Listing it
- * un-actionable, rather than leaving the key silently dead, is what keeps
- * `⌘K` and `?` an honest description of the whole scheme rather than only the
- * part that happens to work today.
+ * that documents where the scheme is *heading*. Every command is live as of
+ * M8; the field stays in the shape so a future key reserved ahead of its
+ * feature (the way `go-analysis` was through M7) has somewhere to land
+ * without `⌘K` or `?` ever describing a key that goes nowhere.
  */
 
 export type CommandGroup = 'typing' | 'global';
@@ -46,7 +45,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'go-writing', keys: 'g then h', label: 'Go to writing', group: 'global', available: true },
   { id: 'go-entries', keys: 'g then e', label: 'Go to entries', group: 'global', available: true },
   { id: 'go-search', keys: 'g then s', label: 'Go to search', group: 'global', available: true },
-  { id: 'go-analysis', keys: 'g then a', label: 'Go to analysis', group: 'global', available: false },
+  { id: 'go-analysis', keys: 'g then a', label: 'Go to analysis', group: 'global', available: true },
   { id: 'shortcuts', keys: '?', label: 'Shortcut sheet', group: 'global', available: true },
   { id: 'back', keys: 'Esc', label: 'Step back one level', group: 'global', available: true },
 ];

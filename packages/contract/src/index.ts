@@ -222,6 +222,197 @@ export interface MetricsResponse {
 }
 
 /**
+ * One extracted review (`plan.md` M8, `requirements.md` §5.2) — "more like
+ * a table with various fields" than a temporal metric. Every encounter with
+ * the same title is its own record — a rewatch is a second `Review`, never
+ * an edit to the first.
+ */
+export interface Review {
+  id: string;
+  entryId: string;
+  title: string;
+  /** Open-ended in principle; in practice the currently-approved seed set —
+   * see `apps/api/src/model/reviews.ts`. */
+  medium: string;
+  /** 1–5, or `null` if the entry gave no rating — never inferred from tone. */
+  rating: number | null;
+  opinion: string;
+  /** When the thing was encountered, not when the entry was written
+   * (`requirements.md` §6.3). RFC 3339 with a UTC offset. */
+  eventTime: string;
+  eventTimeExplicit: boolean;
+}
+
+export interface ReviewsResponse {
+  reviews: Review[];
+}
+
+/**
+ * One extracted atomic list item (`plan.md` M8, `requirements.md` §5.2) —
+ * for example a quote. `text` is the item itself, verbatim, not a summary.
+ */
+export interface ListItem {
+  id: string;
+  entryId: string;
+  /** Open-ended in principle; in practice the currently-approved seed set —
+   * see `apps/api/src/model/lists.ts`. */
+  listType: string;
+  text: string;
+  context: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+}
+
+export interface ListItemsResponse {
+  items: ListItem[];
+}
+
+/**
+ * A model of opinions (`plan.md` M8, `requirements.md` §5.2) — two layers.
+ *
+ * **Layer 1 — a statement.** One entry's expression of a view on a subject,
+ * exactly like the other structures: extracted per entry, linked to it,
+ * corrected by discarding. `statement` is a faithful summary of what *this
+ * entry* said, never extended beyond it.
+ */
+export interface OpinionStatement {
+  id: string;
+  entryId: string;
+  /** Open-ended in principle; in practice the currently-approved seed set —
+   * see `apps/api/src/model/opinions.ts`. */
+  subject: string;
+  statement: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+}
+
+export interface OpinionStatementsResponse {
+  statements: OpinionStatement[];
+}
+
+/**
+ * **Layer 2 — a summary.** Regenerated per subject from every current
+ * statement on it (`apps/api/src/model/opinion-summarizer.ts`) — "organised
+ * in one location, see how it changes over time" (`requirements.md` §5.2).
+ * Never hand-edited (§9); if a part is wrong, the fix is correcting or
+ * discarding the statement it cites and reprocessing.
+ *
+ * Every part names the exact `OpinionStatement` ids it draws from — checked
+ * against the real statements before being stored, never trusted blindly —
+ * so nothing here can read as a position you never actually stated without
+ * a citation attached that a reader can go check.
+ */
+export interface OpinionSummaryPart {
+  text: string;
+  sourceStatementIds: string[];
+  /** The entries those statements came from — resolved here so the frontend
+   * never has to cross-reference a statement id to find out
+   * (`requirements.md` §7.1). */
+  sourceEntryIds: string[];
+}
+
+export interface OpinionSummary {
+  subject: string;
+  generatedAt: string;
+  parts: OpinionSummaryPart[];
+}
+
+export interface OpinionSummariesResponse {
+  summaries: OpinionSummary[];
+}
+
+/**
+ * The open-ended category field every structure type above has (`metric`,
+ * `medium`, `listType`, `subject`) — kept to an approved set the AI may
+ * extract against, grown only by approval (`plan.md` M8, `requirements.md`
+ * §5.3: "the AI does not autonomously create new metrics").
+ */
+export type StructureType = 'metric' | 'review_medium' | 'list_type' | 'opinion_subject';
+
+/** The names currently approved for each structure type. */
+export interface CategoriesResponse {
+  metric: string[];
+  review_medium: string[];
+  list_type: string[];
+  opinion_subject: string[];
+}
+
+/**
+ * A category the AI proposed but a human has not yet decided on
+ * (`requirements.md` §5.3's first route: "the AI suggests a new metric, and
+ * the user approves it"). `entryId` is the entry that prompted it, so the
+ * reasoning can be checked against the actual prose.
+ */
+export interface CategorySuggestion {
+  id: string;
+  structureType: StructureType;
+  name: string;
+  reason: string;
+  entryId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface SuggestionsResponse {
+  suggestions: CategorySuggestion[];
+}
+
+/** The user requesting a category directly (`requirements.md` §5.3's second
+ * route) — approved immediately, no suggestion or review step. */
+export interface ApproveCategoryRequest {
+  structureType: StructureType;
+  name: string;
+}
+
+/**
+ * Aggregated data for the analysis surfaces (`plan.md` M8, `design.md`
+ * §5.3) — computed behind the API, never in the frontend
+ * (`requirements.md` §7.1). A small multiple's raw material: one
+ * `MetricSummary` per approved metric, zero-filled so a metric with no
+ * occurrences still has its own tile rather than silently vanishing.
+ */
+export interface DayCount {
+  /** `YYYY-MM-DD`, UTC. */
+  date: string;
+  count: number;
+}
+
+export interface MetricSummary {
+  metric: string;
+  /** Every occurrence ever recorded, not only within the window. */
+  totalCount: number;
+  /** Oldest first, one entry per day in the window. */
+  days: DayCount[];
+}
+
+export interface MetricsSummaryResponse {
+  summaries: MetricSummary[];
+  windowDays: number;
+}
+
+/** `averageRating` is `null` when nothing in the medium has a rating — never
+ * coerced to 0, which would read as "rated zero" rather than "no ratings
+ * given." */
+export interface ReviewMediumSummary {
+  medium: string;
+  count: number;
+  averageRating: number | null;
+}
+
+export interface ReviewsSummaryResponse {
+  summaries: ReviewMediumSummary[];
+}
+
+export interface ListTypeSummary {
+  listType: string;
+  count: number;
+}
+
+export interface ListsSummaryResponse {
+  summaries: ListTypeSummary[];
+}
+
+/**
  * Stable, machine-readable failure codes.
  *
  * Codes rather than bare HTTP statuses, because a future remote frontend will

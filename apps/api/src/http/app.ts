@@ -5,22 +5,41 @@ import { z } from 'zod';
 import type {
   AddAttachmentResponse,
   ApiError,
+  ApproveCategoryRequest,
+  CategoriesResponse,
   CreateEntryResponse,
   Entry,
   EntryPage,
   HealthResponse,
+  ListItemsResponse,
+  ListsSummaryResponse,
   MetricsResponse,
+  MetricsSummaryResponse,
+  OpinionStatementsResponse,
+  OpinionSummariesResponse,
+  ReviewsResponse,
+  ReviewsSummaryResponse,
   SearchResponse,
+  StructureType,
+  SuggestionsResponse,
   TranscribeResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
 import { AppError, invalidRequest } from '../errors.js';
+import type { CategoriesReader } from '../index/categories-index.js';
+import type { ListItemsReader } from '../index/lists-index.js';
 import type { MetricsReader } from '../index/metrics-index.js';
+import type { OpinionStatementsReader } from '../index/opinion-statements-index.js';
+import type { OpinionSummariesReader } from '../index/opinion-summaries-index.js';
+import type { ReviewsReader } from '../index/reviews-index.js';
 import { isUlid } from '../record/id.js';
+import { nowTimestamp } from '../record/time.js';
 import type { Searcher } from '../search/searcher.js';
 import type { Transcriber } from '../transcribe/transcriber.js';
 import type { EntryStore } from './../store/entry-store.js';
+
+const STRUCTURE_TYPES: readonly StructureType[] = ['metric', 'review_medium', 'list_type', 'opinion_subject'];
 
 /** A generous ceiling, not a tuned one — big enough for a long spoken entry's
  * worth of raw PCM, small enough that a request cannot hold the process open
@@ -39,6 +58,9 @@ const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 200;
 const DEFAULT_SEARCH_LIMIT = 20;
+/** A month is enough for a small-multiples sparkline (`design.md` §5.3) to
+ * show a real pattern without asking the browser to render a year of tiles. */
+const METRICS_SUMMARY_WINDOW_DAYS = 30;
 
 /**
  * Hosts this server will answer to.
@@ -75,6 +97,13 @@ const UpdateEntrySchema = z
   })
   .strict();
 
+const ApproveCategorySchema = z
+  .object({
+    structureType: z.enum(['metric', 'review_medium', 'list_type']),
+    name: z.string().min(1),
+  })
+  .strict();
+
 function entryResponse(entry: {
   id: string;
   created: string;
@@ -101,6 +130,11 @@ export function createApp(
   transcriber: Transcriber,
   searcher: Searcher,
   metrics: MetricsReader,
+  reviews: ReviewsReader,
+  lists: ListItemsReader,
+  categories: CategoriesReader,
+  opinionStatements: OpinionStatementsReader,
+  opinionSummaries: OpinionSummariesReader,
 ): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
@@ -339,6 +373,223 @@ export function createApp(
     // correcting a mistake should be this easy, not fussy about repeats).
     if (isUlid(id)) metrics.remove(id);
     return c.body(null, 204);
+  });
+
+  app.get('/reviews', async (c) => {
+    const medium = c.req.query('medium');
+    const rawLimit = c.req.query('limit');
+
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const records = reviews.list({ limit, ...(medium ? { medium } : {}) });
+    const response: ReviewsResponse = {
+      reviews: records.map((record) => ({
+        id: record.id,
+        entryId: record.entryId,
+        title: record.title,
+        medium: record.medium,
+        rating: record.rating,
+        opinion: record.opinion,
+        eventTime: record.eventTime,
+        eventTimeExplicit: record.eventTimeExplicit,
+      })),
+    };
+    return c.json(response);
+  });
+
+  app.delete('/reviews/:id', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) reviews.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.get('/lists', async (c) => {
+    const listType = c.req.query('listType');
+    const rawLimit = c.req.query('limit');
+
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const records = lists.list({ limit, ...(listType ? { listType } : {}) });
+    const response: ListItemsResponse = {
+      items: records.map((record) => ({
+        id: record.id,
+        entryId: record.entryId,
+        listType: record.listType,
+        text: record.text,
+        context: record.context,
+        eventTime: record.eventTime,
+        eventTimeExplicit: record.eventTimeExplicit,
+      })),
+    };
+    return c.json(response);
+  });
+
+  app.delete('/lists/:id', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) lists.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.get('/opinions/statements', async (c) => {
+    const subject = c.req.query('subject');
+    const rawLimit = c.req.query('limit');
+
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const records = opinionStatements.list({ limit, ...(subject ? { subject } : {}) });
+    const response: OpinionStatementsResponse = {
+      statements: records.map((record) => ({
+        id: record.id,
+        entryId: record.entryId,
+        subject: record.subject,
+        statement: record.statement,
+        eventTime: record.eventTime,
+        eventTimeExplicit: record.eventTimeExplicit,
+      })),
+    };
+    return c.json(response);
+  });
+
+  app.delete('/opinions/statements/:id', async (c) => {
+    const id = c.req.param('id');
+    // The same tolerance as every other correction endpoint
+    // (`requirements.md` §6.2).
+    if (isUlid(id)) opinionStatements.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.get('/opinions/summaries', async (c) => {
+    const subject = c.req.query('subject');
+    const parts = opinionSummaries.list(subject);
+
+    // Grouped by subject, in generation order — a summary is meaningless
+    // split across entries, unlike every other list endpoint here.
+    const bySubject = new Map<string, typeof parts>();
+    for (const part of parts) {
+      const existing = bySubject.get(part.subject);
+      if (existing) existing.push(part);
+      else bySubject.set(part.subject, [part]);
+    }
+
+    const response: OpinionSummariesResponse = {
+      summaries: [...bySubject.entries()].map(([subjectName, subjectParts]) => ({
+        subject: subjectName,
+        generatedAt: subjectParts[0]?.generatedAt ?? '',
+        parts: subjectParts.map((part) => ({
+          text: part.text,
+          sourceStatementIds: part.sourceStatementIds,
+          sourceEntryIds: part.sourceEntryIds,
+        })),
+      })),
+    };
+    return c.json(response);
+  });
+
+  app.get('/categories', async (c) => {
+    const response: CategoriesResponse = {
+      metric: categories.approvedNames('metric'),
+      review_medium: categories.approvedNames('review_medium'),
+      list_type: categories.approvedNames('list_type'),
+      opinion_subject: categories.approvedNames('opinion_subject'),
+    };
+    return c.json(response);
+  });
+
+  app.post('/categories', async (c) => {
+    let json: unknown;
+    try {
+      json = await c.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+
+    const parsed = ApproveCategorySchema.safeParse(json);
+    if (!parsed.success) {
+      const [issue] = parsed.error.issues;
+      const at = issue && issue.path.length > 0 ? ` at '${issue.path.join('.')}'` : '';
+      throw invalidRequest(`${issue?.message ?? 'Invalid request body.'}${at}`);
+    }
+
+    // The user requesting a category directly (`requirements.md` §5.3's
+    // second route) — approved immediately, no suggestion or review step.
+    // 204, not 201: there is no server-generated representation to hand
+    // back (unlike an entry's id and hash) — the caller already knows
+    // exactly what it asked to approve, the same reasoning that makes
+    // `POST /categories/suggestions/:id/approve` a 204 too.
+    const { structureType, name } = parsed.data satisfies ApproveCategoryRequest;
+    categories.approveDirectly(structureType, name, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/categories/suggestions', async (c) => {
+    const rawStructureType = c.req.query('structureType');
+    if (rawStructureType !== undefined && !STRUCTURE_TYPES.includes(rawStructureType as StructureType)) {
+      throw invalidRequest(`'structureType' must be one of: ${STRUCTURE_TYPES.join(', ')}.`);
+    }
+    const rawStatus = c.req.query('status');
+    if (rawStatus !== undefined && !['pending', 'approved', 'rejected'].includes(rawStatus)) {
+      throw invalidRequest("'status' must be one of: pending, approved, rejected.");
+    }
+
+    const suggestions = categories.listSuggestions({
+      ...(rawStructureType ? { structureType: rawStructureType as StructureType } : {}),
+      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' } : {}),
+    });
+    const response: SuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/categories/suggestions/:id/approve', async (c) => {
+    categories.decide(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/categories/suggestions/:id/reject', async (c) => {
+    categories.decide(c.req.param('id'), 'rejected', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  // Aggregated, not raw — the analysis surfaces' own material
+  // (`plan.md` M8, `design.md` §5.3). Computed here, never in the frontend
+  // (`requirements.md` §7.1).
+  app.get('/analysis/metrics', async (c) => {
+    const approvedNames = categories.approvedNames('metric');
+    const summaries = metrics.summarize(approvedNames, METRICS_SUMMARY_WINDOW_DAYS);
+    const response: MetricsSummaryResponse = { summaries, windowDays: METRICS_SUMMARY_WINDOW_DAYS };
+    return c.json(response);
+  });
+
+  app.get('/analysis/reviews', async (c) => {
+    const approvedMedia = categories.approvedNames('review_medium');
+    const response: ReviewsSummaryResponse = { summaries: reviews.summarize(approvedMedia) };
+    return c.json(response);
+  });
+
+  app.get('/analysis/lists', async (c) => {
+    const approvedTypes = categories.approvedNames('list_type');
+    const response: ListsSummaryResponse = { summaries: lists.summarize(approvedTypes) };
+    return c.json(response);
   });
 
   app.post('/transcribe', async (c) => {
