@@ -39,6 +39,7 @@ export class ListsExtractor {
         listType: item.listType,
         text: item.text,
         context: item.context,
+        importance: item.importance,
         ...resolved,
         extractedAt,
       };

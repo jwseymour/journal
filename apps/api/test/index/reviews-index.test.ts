@@ -12,6 +12,7 @@ const record = (overrides: Partial<Omit<ReviewRecord, 'entryId'>> = {}): Omit<Re
   title: 'Some Film',
   medium: 'film',
   rating: 4,
+  progress: 100,
   opinion: 'Really enjoyed it.',
   eventTime: '2026-07-20T20:00:00+01:00',
   eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
@@ -29,6 +30,16 @@ describe('replaceEntry / list', () => {
   it('stores a null rating faithfully — never defaulted to a number', () => {
     index.replaceEntry('e1', [record({ rating: null })]);
     expect(index.list({ limit: 10 })[0]!.rating).toBeNull();
+  });
+
+  it('stores a null progress faithfully — never defaulted to a number', () => {
+    index.replaceEntry('e1', [record({ progress: null })]);
+    expect(index.list({ limit: 10 })[0]!.progress).toBeNull();
+  });
+
+  it('stores a partial progress value', () => {
+    index.replaceEntry('e1', [record({ progress: 50 })]);
+    expect(index.list({ limit: 10 })[0]!.progress).toBe(50);
   });
 
   it('is empty, not an error, when nothing has been extracted', () => {

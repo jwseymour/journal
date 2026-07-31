@@ -35,6 +35,7 @@ export function Header() {
         </button>
         <Link href="/search">Search</Link>
         <Link href="/analysis">Analysis</Link>
+        <Link href="/chat">Chat</Link>
         <Link href="/entry/new">Write</Link>
       </nav>
     </header>

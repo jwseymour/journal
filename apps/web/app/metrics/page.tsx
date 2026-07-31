@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import type { TemporalMetric } from '@journal/contract';
+import type { MetricFieldDefinition, TemporalMetric } from '@journal/contract';
 import { formatDate, formatTime } from '@/lib/format';
-import { ApiRequestError, deleteMetric, listMetrics } from '@/lib/api';
+import { ApiRequestError, deleteMetric, listMetricFields, listMetrics } from '@/lib/api';
 import styles from './page.module.css';
 
 const LIMIT = 100;
@@ -17,15 +17,24 @@ const LIMIT = 100;
  * This exists so the data extraction M7 built is actually visible, and so
  * a wrong record can be discarded (`requirements.md` §6.2) without a
  * `curl` command.
+ *
+ * Structured field values (`plan.md` M9) render alongside `detail`, using
+ * the field definitions' own labels and units — a display lookup, not a
+ * computation; the values themselves are exactly what the last reprocess
+ * wrote.
  */
 export default function MetricsPage() {
   const [metrics, setMetrics] = useState<TemporalMetric[] | null>(null);
+  const [fields, setFields] = useState<MetricFieldDefinition[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
 
   useEffect(() => {
-    listMetrics({ limit: LIMIT })
-      .then((response) => setMetrics(response.metrics))
+    Promise.all([listMetrics({ limit: LIMIT }), listMetricFields()])
+      .then(([metricsResponse, fieldsResponse]) => {
+        setMetrics(metricsResponse.metrics);
+        setFields(fieldsResponse.fields);
+      })
       .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not load metrics.'));
   }, []);
 
@@ -38,7 +47,7 @@ export default function MetricsPage() {
   };
 
   if (error) return <p className={styles.error}>{error}</p>;
-  if (metrics === null) return <p className={styles.hint}>Loading…</p>;
+  if (metrics === null || fields === null) return <p className={styles.hint}>Loading…</p>;
   if (metrics.length === 0) {
     return (
       <p className={styles.empty}>
@@ -47,6 +56,17 @@ export default function MetricsPage() {
       </p>
     );
   }
+
+  const fieldValues = (metric: TemporalMetric): string[] => {
+    return Object.entries(metric.fields)
+      .filter(([, value]) => value !== null)
+      .map(([fieldKey, value]) => {
+        const definition = fields.find((f) => f.metric === metric.metric && f.fieldKey === fieldKey);
+        const label = definition?.label ?? fieldKey;
+        const unit = definition?.unit;
+        return unit ? `${label}: ${value} ${unit}` : `${label}: ${value}`;
+      });
+  };
 
   return (
     <ol className={styles.list}>
@@ -60,6 +80,9 @@ export default function MetricsPage() {
             </span>
             <span className={styles.metric}>{metric.metric}</span>
             {metric.detail && <span className={styles.detail}>{metric.detail}</span>}
+            {fieldValues(metric).length > 0 && (
+              <span className={styles.fields}>{fieldValues(metric).join(' · ')}</span>
+            )}
             <Link href={`/entry/${metric.entryId}`} className={styles.link}>
               Source entry
             </Link>

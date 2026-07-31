@@ -60,6 +60,7 @@ export default function ReviewsPage() {
             <span className={styles.title}>
               {review.title}
               {review.rating !== null && <span className={styles.rating}>{formatRating(review.rating)}</span>}
+              {review.progress !== null && <span className={styles.progress}>{review.progress}%</span>}
             </span>
             {review.opinion && <span className={styles.opinion}>{review.opinion}</span>}
             <Link href={`/entry/${review.entryId}`} className={styles.link}>

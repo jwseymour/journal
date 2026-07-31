@@ -1,4 +1,5 @@
 import type { CategoriesIndex } from '../index/categories-index.js';
+import type { MetricFieldDefinition, MetricFieldsIndex } from '../index/metric-fields-index.js';
 import type { MetricsIndex, TemporalMetricRecord } from '../index/metrics-index.js';
 import { ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
@@ -22,18 +23,37 @@ const PAGE_SIZE = 100;
  */
 export class Extractor {
   readonly #metricsIndex: MetricsIndex;
+  readonly #metricFieldsIndex: MetricFieldsIndex;
   readonly #categoriesIndex: CategoriesIndex;
   readonly #modelClient: ModelClient;
 
-  constructor(metricsIndex: MetricsIndex, categoriesIndex: CategoriesIndex, modelClient: ModelClient) {
+  constructor(metricsIndex: MetricsIndex, metricFieldsIndex: MetricFieldsIndex, categoriesIndex: CategoriesIndex, modelClient: ModelClient) {
     this.#metricsIndex = metricsIndex;
+    this.#metricFieldsIndex = metricFieldsIndex;
     this.#categoriesIndex = categoriesIndex;
     this.#modelClient = modelClient;
   }
 
   async extractEntry(entry: { id: string; created: string; body: string }): Promise<void> {
     const approvedNames = this.#categoriesIndex.approvedNames('metric');
-    const { schema, system } = buildMetricExtractionRequest(approvedNames);
+
+    const fieldsByMetric = new Map<string, MetricFieldDefinition[]>();
+    const enumValuesByFieldId = new Map<string, readonly string[]>();
+    // Also indexed by (metric, fieldKey) — what validating `suggestedFieldValue`
+    // against the real, currently-known enum fields needs below.
+    const enumFieldsByMetricAndKey = new Map<string, MetricFieldDefinition>();
+    for (const name of approvedNames) {
+      const fields = this.#metricFieldsIndex.listForMetric(name);
+      fieldsByMetric.set(name, fields);
+      for (const field of fields) {
+        if (field.fieldType === 'enum') {
+          enumValuesByFieldId.set(field.id, this.#categoriesIndex.approvedNames(`metric_field:${field.metric}:${field.fieldKey}`));
+          enumFieldsByMetricAndKey.set(`${field.metric}:${field.fieldKey}`, field);
+        }
+      }
+    }
+
+    const { schema, system } = buildMetricExtractionRequest(approvedNames, fieldsByMetric, enumValuesByFieldId);
     const result = await this.#modelClient.extract({ schema, system, prompt: buildExtractionPrompt(entry) });
 
     const extractedAt = nowTimestamp().canonical;
@@ -44,6 +64,7 @@ export class Extractor {
         metric: metric.metric,
         ...resolved,
         detail: metric.detail,
+        fields: metric.fields ?? {},
         extractedAt,
       };
     });
@@ -62,6 +83,46 @@ export class Extractor {
         id: ulid(Date.now()),
         now: extractedAt,
       });
+    }
+
+    // The AI suggesting a new field for an existing metric — same route,
+    // extended one level (`plan.md` M9): never auto-approved, just recorded
+    // for a human to decide on via the same shape of endpoint.
+    if (result.suggestedField) {
+      this.#metricFieldsIndex.suggest({
+        metric: result.suggestedField.metric,
+        fieldKey: result.suggestedField.fieldKey,
+        label: result.suggestedField.label,
+        fieldType: result.suggestedField.fieldType,
+        unit: result.suggestedField.unit,
+        scoreMin: null,
+        scoreMax: null,
+        description: result.suggestedField.description,
+        reason: result.suggestedField.reason,
+        entryId: entry.id,
+        id: ulid(Date.now()),
+        now: extractedAt,
+      });
+    }
+
+    // The AI suggesting a new value for an existing enum field — never
+    // trusted blindly: `fieldKey` is a free string in the schema (see
+    // `buildSuggestedFieldValueSchema`'s own comment), so it is checked
+    // against the real, currently-known enum fields before ever reaching
+    // `CategoriesIndex.suggest`, the same "never trust what crosses the
+    // boundary" posture `OpinionSummarizer` applies to cited statement ids.
+    if (result.suggestedFieldValue) {
+      const field = enumFieldsByMetricAndKey.get(`${result.suggestedFieldValue.metric}:${result.suggestedFieldValue.fieldKey}`);
+      if (field) {
+        this.#categoriesIndex.suggest({
+          structureType: `metric_field:${field.metric}:${field.fieldKey}`,
+          name: result.suggestedFieldValue.value,
+          reason: result.suggestedFieldValue.reason,
+          entryId: entry.id,
+          id: ulid(Date.now()),
+          now: extractedAt,
+        });
+      }
     }
   }
 

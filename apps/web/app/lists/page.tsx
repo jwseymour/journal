@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { ListItem } from '@journal/contract';
-import { formatDate, formatTime } from '@/lib/format';
+import { formatDate, formatRating, formatTime } from '@/lib/format';
 import { ApiRequestError, deleteListItem, listListItems } from '@/lib/api';
 import styles from './page.module.css';
 
@@ -55,7 +55,10 @@ export default function ListsPage() {
               {!item.eventTimeExplicit && <span>(from the entry’s own time)</span>}
             </span>
             <span className={styles.type}>{item.listType}</span>
-            <span className={styles.text}>{item.text}</span>
+            <span className={styles.text}>
+              {item.text}
+              {item.importance !== null && <span className={styles.importance}>{formatRating(item.importance)}</span>}
+            </span>
             {item.context && <span className={styles.context}>{item.context}</span>}
             <Link href={`/entry/${item.entryId}`} className={styles.link}>
               Source entry

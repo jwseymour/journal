@@ -54,3 +54,6 @@ export const searchUnavailable = (message: string, cause?: unknown): AppError =>
 
 export const extractionFailed = (message: string, cause?: unknown): AppError =>
   new AppError('extraction_failed', message, 503, cause === undefined ? undefined : { cause });
+
+export const chatFailed = (message: string, cause?: unknown): AppError =>
+  new AppError('chat_failed', message, 503, cause === undefined ? undefined : { cause });

@@ -3,6 +3,22 @@
  * gradients, no drop shadows, no chart junk — data integrated into the
  * typography rather than boxed off from it. */
 
+/* Dense analytical material, not prose — set far wider than the shared
+ * `--measure` `layout.module.css` gives every other route (`design.md`
+ * §5.3). `.breakout` escapes that container's centred, prose-width box out
+ * to the true viewport; `.frame` then re-centres within it, capped at
+ * `--measure-wide` rather than left unbounded on an ultra-wide monitor. */
+.breakout {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+}
+
+.frame {
+  max-width: var(--measure-wide);
+  margin: 0 auto;
+  padding: 0 var(--space-md);
+}
+
 .section {
   margin-top: var(--space-lg);
 }
@@ -31,17 +47,19 @@
   font-size: var(--text-xs);
 }
 
-/* Small multiples (`design.md` §5.3) — a compact grid of identical tiles,
- * one per metric, in preference to a single large chart. */
-.tiles {
+/* Small multiples (`design.md` §5.3) — a wide grid of tiles, sized for the
+ * denser chart shapes in `components/analysis-charts.tsx` (a calendar
+ * needs room for several week-columns; a scatter wants to be roughly
+ * square) rather than the narrower row a plain bar or dot-row needed. */
+.wideTiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-3xl) * 2), 1fr));
-  gap: var(--space-md);
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-3xl) * 3), 1fr));
+  gap: var(--space-lg);
+  margin-top: var(--space-md);
 }
 
-.tile {
-  padding-top: var(--space-sm);
-  border-top: var(--hairline) solid var(--rule-strong);
+.wideTiles + .wideTiles {
+  margin-top: var(--space-lg);
 }
 
 .tileHeading {
@@ -58,32 +76,98 @@
   text-transform: uppercase;
 }
 
-.tileCount {
+/* Field breakdowns — a numeric field's total split by a sibling enum field's
+ * approved values, e.g. distance by sport. Plain horizontal bars, flat
+ * fill, no gradients (`design.md` §5.3). Sits in the same `.wideTiles` grid
+ * as the calendar/line/scatter tiles, so a page of small multiples reads as
+ * one continuous almanac rather than several disconnected grids. */
+.breakdown {
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule-strong);
+}
+
+.breakdownRow {
+  display: grid;
+  grid-template-columns: minmax(0, var(--space-3xl)) 1fr auto;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-2xs);
+  font-size: var(--text-sm);
+}
+
+.breakdownLabel {
+  overflow: hidden;
   color: var(--ink-muted);
-  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* The sparkline: one hairline-bordered cell per day, filled with the accent
- * colour only on a day something happened. Uniform size throughout — the
- * pattern is what carries the information, not the size of any one mark. */
-.sparkline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--hairline);
-  margin-top: var(--space-xs);
-}
-
-.day {
-  width: var(--space-2xs);
+.breakdownBarTrack {
+  display: block;
   height: var(--space-2xs);
   border: var(--hairline) solid var(--rule);
-  border-radius: var(--radius-sm);
-  background-color: transparent;
 }
 
-.dayFilled {
-  border-color: var(--accent);
+.breakdownBarFill {
+  display: block;
+  height: 100%;
   background-color: var(--accent);
+}
+
+.breakdownValue {
+  color: var(--ink-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The almanac row — Reviews, Lists, Opinions, Questions side by side on a
+ * wide page rather than stacked full-width, the way a yearbook's back
+ * matter runs several short tables across a spread. Falls back to one
+ * column as the viewport narrows. */
+.almanac {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-3xl) * 2.5), 1fr));
+  gap: var(--space-lg) var(--space-xl);
+  margin-top: var(--space-lg);
+}
+
+/* A short feed of raw records — the analysis surface showing actual recent
+ * items rather than only an aggregate count, same row rhythm as the
+ * dedicated `/questions` list. */
+.feed {
+  margin-top: var(--space-sm);
+  list-style: none;
+  padding: 0;
+}
+
+.feed > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.feedRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) 0;
+}
+
+.feedWhen {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.feedText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.link {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 /* Reviews and lists: a plain table, in the statistical-yearbook tradition —
@@ -132,4 +216,14 @@
 .error {
   padding-top: var(--space-md);
   color: var(--danger);
+}
+
+/* Overrides for `.section` when it sits inside `.almanac` as a grid item
+ * rather than stacked full-width — the grid's own `gap` sets the rhythm
+ * there, so the standalone stacking margin would only double it up. Placed
+ * last so it wins the tie against `.section`/`.section:first-child` above,
+ * which share its specificity. */
+.almanac > .section,
+.almanac > .section:first-child {
+  margin-top: 0;
 }

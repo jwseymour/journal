@@ -164,6 +164,52 @@
   cursor: default;
 }
 
+.fieldList {
+  list-style: none;
+  padding: 0;
+}
+
+.fieldList > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.fieldRow {
+  padding: var(--space-sm) 0;
+}
+
+.fieldMain {
+  min-width: 0;
+}
+
+.fieldLabel {
+  font-weight: var(--weight-emphasis);
+}
+
+.fieldMeta {
+  margin-left: var(--space-2xs);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.fieldValues {
+  margin-top: var(--space-xs);
+  padding-left: var(--space-sm);
+  border-left: var(--hairline) solid var(--rule);
+}
+
+.fieldForm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+  margin-top: var(--space-sm);
+}
+
+.fieldForm .input {
+  flex: 1;
+}
+
 .empty,
 .hint {
   color: var(--ink-muted);

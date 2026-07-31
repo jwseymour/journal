@@ -1,9 +1,11 @@
 import { ConfigError, loadConfig } from './config.js';
 import { CategoriesIndex } from './index/categories-index.js';
 import { ListsIndex } from './index/lists-index.js';
+import { MetricFieldsIndex } from './index/metric-fields-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
 import { OpinionStatementsIndex } from './index/opinion-statements-index.js';
 import { OpinionSummariesIndex } from './index/opinion-summaries-index.js';
+import { QuestionsIndex } from './index/questions-index.js';
 import { ReviewsIndex } from './index/reviews-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
 import { GatewayModelClient } from './model/gateway-model-client.js';
@@ -13,6 +15,7 @@ import { LIST_TYPE_SEED_NAMES } from './model/lists.js';
 import { OpinionSummarizer } from './model/opinion-summarizer.js';
 import { OpinionsExtractor } from './model/opinions-extractor.js';
 import { OPINION_SUBJECT_SEED_NAMES } from './model/opinions.js';
+import { QuestionsExtractor } from './model/questions-extractor.js';
 import { ReviewsExtractor } from './model/reviews-extractor.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
 import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
@@ -68,7 +71,8 @@ async function main(): Promise<void> {
   categoriesIndex.seed('opinion_subject', OPINION_SUBJECT_SEED_NAMES, now);
 
   const metricsIndex = new MetricsIndex(config.indexDbPath);
-  const extractor = new Extractor(metricsIndex, categoriesIndex, modelClient);
+  const metricFieldsIndex = new MetricFieldsIndex(config.indexDbPath);
+  const extractor = new Extractor(metricsIndex, metricFieldsIndex, categoriesIndex, modelClient);
 
   const reviewsIndex = new ReviewsIndex(config.indexDbPath);
   const reviewsExtractor = new ReviewsExtractor(reviewsIndex, categoriesIndex, modelClient);
@@ -81,6 +85,9 @@ async function main(): Promise<void> {
   const opinionSummariesIndex = new OpinionSummariesIndex(config.indexDbPath);
   const opinionSummarizer = new OpinionSummarizer(opinionSummariesIndex, opinionStatementsIndex, modelClient);
 
+  const questionsIndex = new QuestionsIndex(config.indexDbPath);
+  const questionsExtractor = new QuestionsExtractor(questionsIndex, modelClient);
+
   const before = Date.now();
   const { entryCount, metricCount } = await extractor.reprocessAll(store);
   const { reviewCount } = await reviewsExtractor.reprocessAll(store);
@@ -90,18 +97,27 @@ async function main(): Promise<void> {
   // statements — this pass is per-subject, not per-entry, and reads the
   // statements the pass above just wrote.
   const { subjectCount, partCount } = await opinionSummarizer.summarizeAll();
+  // Questions are their own pass, not folded into the loop above: unlike
+  // every other extractor, this one needs entries in chronological order
+  // (see `QuestionsExtractor.reprocessAll`), so it walks the corpus on its
+  // own terms rather than sharing an entry loop with siblings that don't
+  // care about order.
+  const { questionCount, openCount, resolvedCount } = await questionsExtractor.reprocessAll(store);
   const elapsedMs = Date.now() - before;
 
   console.log(
     `[journal] reprocessed in ${elapsedMs}ms: ${entryCount} entries — ` +
       `${metricCount} metrics, ${reviewCount} reviews, ${itemCount} list items, ` +
-      `${statementCount} opinion statements (${subjectCount} subjects, ${partCount} summary parts)`,
+      `${statementCount} opinion statements (${subjectCount} subjects, ${partCount} summary parts), ` +
+      `${questionCount} questions (${openCount} open, ${resolvedCount} resolved)`,
   );
 
+  questionsIndex.close();
   opinionSummariesIndex.close();
   opinionStatementsIndex.close();
   listsIndex.close();
   reviewsIndex.close();
+  metricFieldsIndex.close();
   metricsIndex.close();
   categoriesIndex.close();
   index.close();

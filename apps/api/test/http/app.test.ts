@@ -6,6 +6,8 @@ import type {
   AddAttachmentResponse,
   ApiError,
   CategoriesResponse,
+  ChatMessage,
+  ChatResponse,
   CreateEntryResponse,
   Entry,
   EntryPage,
@@ -17,6 +19,9 @@ import type {
   MetricsSummaryResponse,
   OpinionStatementsResponse,
   OpinionSummariesResponse,
+  OpenQuestion,
+  QuestionsResponse,
+  QuestionsSummaryResponse,
   Review,
   ReviewsResponse,
   ReviewsSummaryResponse,
@@ -29,19 +34,33 @@ import type {
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
-import { transcriptionFailed } from '../../src/errors.js';
+import { chatFailed, transcriptionFailed } from '../../src/errors.js';
 import { createApp } from '../../src/http/app.js';
 import type { CategoriesReader, CategorySuggestion, SuggestionStatus } from '../../src/index/categories-index.js';
 import type { ListItemRecord, ListItemsOptions, ListItemsReader, ListTypeSummary } from '../../src/index/lists-index.js';
-import type { ListMetricsOptions, MetricsReader, MetricSummary, TemporalMetricRecord } from '../../src/index/metrics-index.js';
+import type { MetricFieldDefinition, MetricFieldSuggestion, MetricFieldsReader } from '../../src/index/metric-fields-index.js';
+import type {
+  ListMetricsOptions,
+  MetricFieldSummary,
+  MetricsReader,
+  MetricSummary,
+  TemporalMetricRecord,
+} from '../../src/index/metrics-index.js';
 import type {
   ListOpinionStatementsOptions,
   OpinionStatementRecord,
   OpinionStatementsReader,
 } from '../../src/index/opinion-statements-index.js';
 import type { OpinionSummariesReader, OpinionSummaryPartRecord } from '../../src/index/opinion-summaries-index.js';
+import type {
+  ListQuestionsOptions,
+  QuestionRecord,
+  QuestionsReader,
+  QuestionsSummary,
+} from '../../src/index/questions-index.js';
 import type { ListReviewsOptions, ReviewMediumSummary, ReviewRecord, ReviewsReader } from '../../src/index/reviews-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
+import type { ChatAnswerer } from '../../src/model/chat-orchestrator.js';
 import type { Searcher } from '../../src/search/searcher.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
 import type { Transcriber } from '../../src/transcribe/transcriber.js';
@@ -112,6 +131,78 @@ class FakeMetricsReader implements MetricsReader {
     this.summarizeCalls.push({ approvedNames, windowDays });
     return this.summaries;
   }
+
+  sumByFieldCalls: Array<{ metric: string; fieldKey: string; windowDays: number; filter?: { field: string; value: string } }> = [];
+  fieldSummary: MetricFieldSummary = { total: 0, average: 0, count: 0, days: [] };
+
+  sumByField(
+    metric: string,
+    fieldKey: string,
+    windowDays: number,
+    filter?: { field: string; value: string },
+  ): MetricFieldSummary {
+    this.sumByFieldCalls.push({ metric, fieldKey, windowDays, ...(filter ? { filter } : {}) });
+    return this.fieldSummary;
+  }
+}
+
+/** Same reasoning again, for `/metrics/fields`. */
+class FakeMetricFieldsReader implements MetricFieldsReader {
+  listForMetricCalls: string[] = [];
+  listSuggestionsCalls: Array<{ metric?: string; status?: string }> = [];
+  defineCalls: Array<{ id: string; metric: string; fieldKey: string; now: string }> = [];
+  removeCalls: string[] = [];
+  decideCalls: Array<{ id: string; decision: 'approved' | 'rejected' }> = [];
+  fields: MetricFieldDefinition[] = [];
+  suggestions: MetricFieldSuggestion[] = [];
+
+  listForMetric(metric: string): MetricFieldDefinition[] {
+    this.listForMetricCalls.push(metric);
+    return this.fields.filter((f) => f.metric === metric);
+  }
+
+  listAll(): MetricFieldDefinition[] {
+    return this.fields;
+  }
+
+  get(id: string): MetricFieldDefinition | null {
+    return this.fields.find((f) => f.id === id) ?? null;
+  }
+
+  define(input: { id: string; metric: string; fieldKey: string; label: string; fieldType: MetricFieldDefinition['fieldType']; unit: string | null; scoreMin: number | null; scoreMax: number | null; description: string; now: string }): void {
+    this.defineCalls.push({ id: input.id, metric: input.metric, fieldKey: input.fieldKey, now: input.now });
+    if (!this.fields.some((f) => f.metric === input.metric && f.fieldKey === input.fieldKey)) {
+      this.fields.push({
+        id: input.id,
+        metric: input.metric,
+        fieldKey: input.fieldKey,
+        label: input.label,
+        fieldType: input.fieldType,
+        unit: input.unit,
+        scoreMin: input.scoreMin,
+        scoreMax: input.scoreMax,
+        description: input.description,
+        createdAt: input.now,
+      });
+    }
+  }
+
+  remove(id: string): void {
+    this.removeCalls.push(id);
+    this.fields = this.fields.filter((f) => f.id !== id);
+  }
+
+  listSuggestions(options: { metric?: string; status?: MetricFieldSuggestion['status'] } = {}): MetricFieldSuggestion[] {
+    this.listSuggestionsCalls.push(options);
+    return this.suggestions.filter(
+      (s) => (!options.metric || s.metric === options.metric) && (!options.status || s.status === options.status),
+    );
+  }
+
+  decide(id: string, decision: 'approved' | 'rejected'): void {
+    this.decideCalls.push({ id, decision });
+    this.suggestions = this.suggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
 }
 
 /** Same reasoning again, for `/reviews`. */
@@ -166,18 +257,19 @@ class FakeListItemsReader implements ListItemsReader {
 
 /** Same reasoning again, for `/categories`. */
 class FakeCategoriesReader implements CategoriesReader {
-  approved: Record<StructureType, string[]> = { metric: [], review_medium: [], list_type: [], opinion_subject: [] };
+  approved: Partial<Record<StructureType, string[]>> = { metric: [], review_medium: [], list_type: [], opinion_subject: [] };
   suggestions: CategorySuggestion[] = [];
   approveCalls: Array<{ structureType: StructureType; name: string }> = [];
   decideCalls: Array<{ id: string; decision: 'approved' | 'rejected' }> = [];
 
   approvedNames(structureType: StructureType): string[] {
-    return this.approved[structureType];
+    return this.approved[structureType] ?? [];
   }
 
   approveDirectly(structureType: StructureType, name: string): void {
     this.approveCalls.push({ structureType, name });
-    if (!this.approved[structureType].includes(name)) this.approved[structureType].push(name);
+    const current = this.approved[structureType] ?? [];
+    if (!current.includes(name)) this.approved[structureType] = [...current, name];
   }
 
   listSuggestions(options: { structureType?: StructureType; status?: SuggestionStatus } = {}): CategorySuggestion[] {
@@ -227,6 +319,51 @@ class FakeOpinionSummariesReader implements OpinionSummariesReader {
   }
 }
 
+/** Same reasoning again, for `/questions`. */
+class FakeQuestionsReader implements QuestionsReader {
+  listCalls: ListQuestionsOptions[] = [];
+  removeCalls: string[] = [];
+  reopenCalls: string[] = [];
+  summary: QuestionsSummary = { openCount: 0, resolvedCount: 0 };
+  records: QuestionRecord[] = [];
+
+  list(options: ListQuestionsOptions): QuestionRecord[] {
+    this.listCalls.push(options);
+    const filtered = options.status ? this.records.filter((r) => r.status === options.status) : this.records;
+    return filtered.slice(0, options.limit);
+  }
+
+  remove(id: string): void {
+    this.removeCalls.push(id);
+    this.records = this.records.filter((r) => r.id !== id);
+  }
+
+  reopen(id: string): void {
+    this.reopenCalls.push(id);
+    this.records = this.records.map((r) =>
+      r.id === id ? { ...r, status: 'open', resolvedEntryId: null, resolution: null, resolvedAt: null } : r,
+    );
+  }
+
+  summarize(): QuestionsSummary {
+    return this.summary;
+  }
+}
+
+/** Records calls and returns a canned response — these tests exercise the
+ * route's own contract (validation, status codes, passthrough), never the
+ * model's judgement (that is `chat-orchestrator.test.ts`'s job). */
+class FakeChatAnswerer implements ChatAnswerer {
+  calls: ChatMessage[][] = [];
+  response: ChatResponse | 'FAIL' = { answer: '', charts: [], citedEntryIds: [] };
+
+  async answer(messages: ChatMessage[]): Promise<ChatResponse> {
+    this.calls.push(messages);
+    if (this.response === 'FAIL') throw chatFailed('the gateway is not configured');
+    return this.response;
+  }
+}
+
 /**
  * The endpoints, exercised through Hono's own request path so that middleware,
  * status codes and error shapes are all real.
@@ -242,11 +379,14 @@ let app: ReturnType<typeof createApp>;
 let transcriber: FakeTranscriber;
 let searcher: FakeSearcher;
 let metrics: FakeMetricsReader;
+let metricFields: FakeMetricFieldsReader;
 let reviews: FakeReviewsReader;
 let lists: FakeListItemsReader;
 let categories: FakeCategoriesReader;
 let opinionStatements: FakeOpinionStatementsReader;
 let opinionSummaries: FakeOpinionSummariesReader;
+let questions: FakeQuestionsReader;
+let chat: FakeChatAnswerer;
 let index: SqliteIndex;
 
 const config = (journalDir: string): Config => ({
@@ -262,6 +402,7 @@ const config = (journalDir: string): Config => ({
   embeddingCacheDir: join(journalDir, '.embedding-cache-unused-in-tests'),
   aiGatewayApiKey: undefined,
   extractionModel: 'anthropic/claude-sonnet-5',
+  chatModel: 'anthropic/claude-sonnet-5',
 });
 
 beforeEach(async () => {
@@ -269,11 +410,14 @@ beforeEach(async () => {
   transcriber = new FakeTranscriber();
   searcher = new FakeSearcher();
   metrics = new FakeMetricsReader();
+  metricFields = new FakeMetricFieldsReader();
   reviews = new FakeReviewsReader();
   lists = new FakeListItemsReader();
   categories = new FakeCategoriesReader();
   opinionStatements = new FakeOpinionStatementsReader();
   opinionSummaries = new FakeOpinionSummariesReader();
+  questions = new FakeQuestionsReader();
+  chat = new FakeChatAnswerer();
   index = new SqliteIndex(':memory:');
   app = createApp(
     new FsEntryStore(root, index),
@@ -281,11 +425,14 @@ beforeEach(async () => {
     transcriber,
     searcher,
     metrics,
+    metricFields,
     reviews,
     lists,
     categories,
     opinionStatements,
     opinionSummaries,
+    questions,
+    chat,
   );
 });
 
@@ -636,6 +783,80 @@ describe('GET /analysis/metrics', () => {
   });
 });
 
+describe('GET /analysis/metrics/:metric/fields/:fieldKey', () => {
+  const numericField = (overrides: Partial<MetricFieldDefinition> = {}): MetricFieldDefinition => ({
+    id: 'f1',
+    metric: 'exercise',
+    fieldKey: 'distance_km',
+    label: 'Distance',
+    fieldType: 'numeric',
+    unit: 'km',
+    scoreMin: null,
+    scoreMax: null,
+    description: 'How far.',
+    createdAt: '2026-07-20T09:00:00Z',
+    ...overrides,
+  });
+
+  it('rejects a field that does not exist', async () => {
+    const response = await app.request('/analysis/metrics/exercise/fields/distance_km');
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects a text or enum field — only numeric or score can be summed', async () => {
+    metricFields.fields = [numericField({ fieldType: 'enum', unit: null })];
+    const response = await app.request('/analysis/metrics/exercise/fields/distance_km');
+    expect(response.status).toBe(400);
+  });
+
+  it('passes the metric, fieldKey, and default window to sumByField', async () => {
+    metricFields.fields = [numericField()];
+    await app.request('/analysis/metrics/exercise/fields/distance_km');
+    expect(metrics.sumByFieldCalls).toEqual([{ metric: 'exercise', fieldKey: 'distance_km', windowDays: 30 }]);
+  });
+
+  it('parses a filter query param into field and value', async () => {
+    metricFields.fields = [numericField()];
+    await app.request('/analysis/metrics/exercise/fields/distance_km?filter=sport:rowing');
+    expect(metrics.sumByFieldCalls[0]!.filter).toEqual({ field: 'sport', value: 'rowing' });
+  });
+
+  it('rejects a malformed filter', async () => {
+    metricFields.fields = [numericField()];
+    const response = await app.request('/analysis/metrics/exercise/fields/distance_km?filter=nocolon');
+    expect(response.status).toBe(400);
+  });
+
+  it('respects a custom windowDays', async () => {
+    metricFields.fields = [numericField()];
+    await app.request('/analysis/metrics/exercise/fields/distance_km?windowDays=90');
+    expect(metrics.sumByFieldCalls[0]!.windowDays).toBe(90);
+  });
+
+  it('rejects an out-of-range windowDays', async () => {
+    metricFields.fields = [numericField()];
+    const response = await app.request('/analysis/metrics/exercise/fields/distance_km?windowDays=0');
+    expect(response.status).toBe(400);
+  });
+
+  it('returns the unit from the field definition and whatever the MetricsReader produces', async () => {
+    metricFields.fields = [numericField()];
+    metrics.fieldSummary = { total: 20, average: 10, count: 2, days: [{ date: '2026-07-20', value: 8 }] };
+    const response = await app.request('/analysis/metrics/exercise/fields/distance_km?filter=sport:rowing&windowDays=90');
+    expect(await response.json()).toEqual({
+      metric: 'exercise',
+      fieldKey: 'distance_km',
+      unit: 'km',
+      filter: { field: 'sport', value: 'rowing' },
+      total: 20,
+      average: 10,
+      count: 2,
+      windowDays: 90,
+      days: [{ date: '2026-07-20', value: 8 }],
+    });
+  });
+});
+
 describe('GET /analysis/reviews', () => {
   it('passes the currently approved media to summarize', async () => {
     categories.approved.review_medium = ['film', 'book'];
@@ -663,6 +884,77 @@ describe('GET /analysis/lists', () => {
     lists.summaries = [summary];
     const response = await app.request('/analysis/lists');
     expect((await response.json()) as ListsSummaryResponse).toEqual({ summaries: [summary] });
+  });
+});
+
+describe('GET /analysis/questions', () => {
+  it('returns whatever the QuestionsReader produces', async () => {
+    questions.summary = { openCount: 3, resolvedCount: 2 };
+    const response = await app.request('/analysis/questions');
+    expect((await response.json()) as QuestionsSummaryResponse).toEqual({ openCount: 3, resolvedCount: 2 });
+  });
+});
+
+describe('POST /chat', () => {
+  const post = (body: unknown) =>
+    app.request('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('passes the conversation through and returns whatever ChatAnswerer produces', async () => {
+    const canned: ChatResponse = {
+      answer: 'You logged exercise 4 times this week.',
+      charts: [{ type: 'stat_tile', label: 'Exercise', value: 4, unit: null }],
+      citedEntryIds: ['01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+    };
+    chat.response = canned;
+
+    const response = await post({ messages: [{ role: 'user', content: 'How much have I exercised?' }] });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(canned);
+    expect(chat.calls).toEqual([[{ role: 'user', content: 'How much have I exercised?' }]]);
+  });
+
+  it('rejects an empty messages array', async () => {
+    const response = await post({ messages: [] });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects a conversation not ending in a user message', async () => {
+    const response = await post({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello' },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects more than the message cap', async () => {
+    const messages: ChatMessage[] = Array.from({ length: 41 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `message ${i}`,
+    }));
+    const response = await post({ messages });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects a malformed role', async () => {
+    const response = await post({ messages: [{ role: 'system', content: 'hi' }] });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('surfaces chat_failed via the generic error handling, same as any other AppError', async () => {
+    chat.response = 'FAIL';
+    const response = await post({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(response.status).toBe(503);
+    expect((await errorOf(response)).code).toBe('chat_failed');
   });
 });
 
@@ -780,6 +1072,7 @@ describe('GET /metrics', () => {
     eventEpochMs: Date.parse('2026-07-20T08:00:00Z'),
     eventTimeExplicit: true,
     detail: 'a 5k run',
+    fields: {},
     extractedAt: '2026-07-20T10:00:00+01:00',
     ...overrides,
   });
@@ -791,7 +1084,7 @@ describe('GET /metrics', () => {
   });
 
   it('returns whatever the MetricsReader produces, without the internal-only fields', async () => {
-    metrics.records = [record()];
+    metrics.records = [record({ fields: { distance_km: 5 } })];
     const response = await app.request('/metrics');
     const body = (await response.json()) as MetricsResponse;
     const expected: TemporalMetric = {
@@ -801,6 +1094,7 @@ describe('GET /metrics', () => {
       eventTime: '2026-07-20T09:00:00+01:00',
       eventTimeExplicit: true,
       detail: 'a 5k run',
+      fields: { distance_km: 5 },
     };
     expect(body.metrics).toEqual([expected]);
   });
@@ -838,6 +1132,271 @@ describe('DELETE /metrics/:id', () => {
   });
 });
 
+describe('GET /metrics/fields', () => {
+  const field = (overrides: Partial<MetricFieldDefinition> = {}): MetricFieldDefinition => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    metric: 'exercise',
+    fieldKey: 'distance_km',
+    label: 'Distance',
+    fieldType: 'numeric',
+    unit: 'km',
+    scoreMin: null,
+    scoreMax: null,
+    description: 'How far, in km.',
+    createdAt: '2026-07-20T09:00:00Z',
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been defined', async () => {
+    const response = await app.request('/metrics/fields');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ fields: [] });
+  });
+
+  it('returns every definition when no metric filter is given', async () => {
+    metricFields.fields = [field(), field({ id: 'f2', metric: 'alcohol', fieldKey: 'units', label: 'Units', unit: 'units' })];
+    const response = await app.request('/metrics/fields');
+    const body = (await response.json()) as { fields: unknown[] };
+    expect(body.fields).toHaveLength(2);
+  });
+
+  it('filters by metric', async () => {
+    metricFields.fields = [field()];
+    await app.request('/metrics/fields?metric=exercise');
+    expect(metricFields.listForMetricCalls).toEqual(['exercise']);
+  });
+});
+
+describe('POST /metrics/fields', () => {
+  it('defines a field directly, with no suggestion step', async () => {
+    const response = await app.request('/metrics/fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        metric: 'exercise',
+        fieldKey: 'distance_km',
+        label: 'Distance',
+        fieldType: 'numeric',
+        unit: 'km',
+        description: 'How far, in km.',
+      }),
+    });
+    expect(response.status).toBe(204);
+    expect(metricFields.defineCalls).toHaveLength(1);
+    expect(metricFields.defineCalls[0]).toMatchObject({ metric: 'exercise', fieldKey: 'distance_km' });
+  });
+
+  it('rejects an unknown fieldType', async () => {
+    const response = await app.request('/metrics/fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ metric: 'exercise', fieldKey: 'x', label: 'X', fieldType: 'nonsense', description: 'x' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects a missing description', async () => {
+    const response = await app.request('/metrics/fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ metric: 'exercise', fieldKey: 'x', label: 'X', fieldType: 'numeric' }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('DELETE /metrics/fields/:id', () => {
+  it('removes the definition', async () => {
+    const response = await app.request('/metrics/fields/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(metricFields.removeCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/metrics/fields/not-a-ulid', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(metricFields.removeCalls).toEqual([]);
+  });
+});
+
+describe('GET /metrics/fields/suggestions', () => {
+  const suggestion = (overrides: Partial<MetricFieldSuggestion> = {}): MetricFieldSuggestion => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    metric: 'exercise',
+    fieldKey: 'pace_min_per_km',
+    label: 'Pace',
+    fieldType: 'numeric',
+    unit: 'min/km',
+    scoreMin: null,
+    scoreMax: null,
+    description: 'How fast.',
+    reason: 'pace mentioned repeatedly',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    status: 'pending',
+    suggestedAt: '2026-07-20T09:00:00Z',
+    decidedAt: null,
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been suggested', async () => {
+    const response = await app.request('/metrics/fields/suggestions');
+    expect((await response.json()) as { suggestions: unknown[] }).toEqual({ suggestions: [] });
+  });
+
+  it('returns whatever the MetricFieldsReader produces', async () => {
+    metricFields.suggestions = [suggestion()];
+    const response = await app.request('/metrics/fields/suggestions');
+    expect((await response.json()) as { suggestions: unknown[] }).toEqual({ suggestions: [suggestion()] });
+  });
+
+  it('rejects an unknown status filter', async () => {
+    const response = await app.request('/metrics/fields/suggestions?status=nonsense');
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('POST /metrics/fields/suggestions/:id/approve and /reject', () => {
+  it('approve calls decide with "approved"', async () => {
+    const response = await app.request('/metrics/fields/suggestions/s1/approve', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(metricFields.decideCalls).toEqual([{ id: 's1', decision: 'approved' }]);
+  });
+
+  it('reject calls decide with "rejected"', async () => {
+    const response = await app.request('/metrics/fields/suggestions/s1/reject', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(metricFields.decideCalls).toEqual([{ id: 's1', decision: 'rejected' }]);
+  });
+});
+
+describe('GET /metrics/fields/:id/values', () => {
+  it('delegates to CategoriesIndex under the metric_field structure type', async () => {
+    metricFields.fields = [
+      {
+        id: 'f1',
+        metric: 'exercise',
+        fieldKey: 'sport',
+        label: 'Sport',
+        fieldType: 'enum',
+        unit: null,
+        scoreMin: null,
+        scoreMax: null,
+        description: 'Which sport.',
+        createdAt: '2026-07-20T09:00:00Z',
+      },
+    ];
+    categories.approved['metric_field:exercise:sport'] = ['rowing', 'running'];
+
+    const response = await app.request('/metrics/fields/f1/values');
+    expect((await response.json()) as { values: string[] }).toEqual({ values: ['rowing', 'running'] });
+  });
+
+  it('is empty, not an error, for a field that does not exist', async () => {
+    const response = await app.request('/metrics/fields/never-existed/values');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ values: [] });
+  });
+});
+
+describe('POST /metrics/fields/:id/values', () => {
+  it('approves a value directly for an enum field', async () => {
+    metricFields.fields = [
+      {
+        id: 'f1',
+        metric: 'exercise',
+        fieldKey: 'sport',
+        label: 'Sport',
+        fieldType: 'enum',
+        unit: null,
+        scoreMin: null,
+        scoreMax: null,
+        description: 'Which sport.',
+        createdAt: '2026-07-20T09:00:00Z',
+      },
+    ];
+
+    const response = await app.request('/metrics/fields/f1/values', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'rowing' }),
+    });
+    expect(response.status).toBe(204);
+    expect(categories.approveCalls).toEqual([{ structureType: 'metric_field:exercise:sport', name: 'rowing' }]);
+  });
+
+  it('rejects a value for a non-enum field', async () => {
+    metricFields.fields = [
+      {
+        id: 'f1',
+        metric: 'exercise',
+        fieldKey: 'distance_km',
+        label: 'Distance',
+        fieldType: 'numeric',
+        unit: 'km',
+        scoreMin: null,
+        scoreMax: null,
+        description: 'How far.',
+        createdAt: '2026-07-20T09:00:00Z',
+      },
+    ];
+    const response = await app.request('/metrics/fields/f1/values', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'rowing' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects a field that does not exist', async () => {
+    const response = await app.request('/metrics/fields/never-existed/values', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'rowing' }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('GET /metrics/fields/:id/values/suggestions', () => {
+  it('delegates to CategoriesIndex under the metric_field structure type', async () => {
+    metricFields.fields = [
+      {
+        id: 'f1',
+        metric: 'exercise',
+        fieldKey: 'sport',
+        label: 'Sport',
+        fieldType: 'enum',
+        unit: null,
+        scoreMin: null,
+        scoreMax: null,
+        description: 'Which sport.',
+        createdAt: '2026-07-20T09:00:00Z',
+      },
+    ];
+    categories.suggestions = [
+      {
+        id: 's1',
+        structureType: 'metric_field:exercise:sport',
+        name: 'climbing',
+        reason: 'first time mentioned',
+        entryId: 'e1',
+        status: 'pending',
+        decidedAt: null,
+        suggestedAt: '2026-07-20T09:00:00Z',
+      },
+    ];
+
+    const response = await app.request('/metrics/fields/f1/values/suggestions');
+    const body = (await response.json()) as { suggestions: CategorySuggestion[] };
+    expect(body.suggestions.map((s) => s.name)).toEqual(['climbing']);
+  });
+
+  it('is empty, not an error, for a field that does not exist', async () => {
+    const response = await app.request('/metrics/fields/never-existed/values/suggestions');
+    expect(await response.json()).toEqual({ suggestions: [] });
+  });
+});
+
 describe('GET /reviews', () => {
   const record = (): ReviewRecord => ({
     id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -845,6 +1404,7 @@ describe('GET /reviews', () => {
     title: 'Some Film',
     medium: 'film',
     rating: 4,
+    progress: 100,
     opinion: 'Really enjoyed it.',
     eventTime: '2026-07-20T20:00:00+01:00',
     eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
@@ -868,6 +1428,7 @@ describe('GET /reviews', () => {
       title: 'Some Film',
       medium: 'film',
       rating: 4,
+      progress: 100,
       opinion: 'Really enjoyed it.',
       eventTime: '2026-07-20T20:00:00+01:00',
       eventTimeExplicit: true,
@@ -908,6 +1469,7 @@ describe('GET /lists', () => {
     listType: 'quote',
     text: '"The unexamined life is not worth living."',
     context: 'Socrates',
+    importance: 4,
     eventTime: '2026-07-20T20:00:00+01:00',
     eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
     eventTimeExplicit: true,
@@ -930,6 +1492,7 @@ describe('GET /lists', () => {
       listType: 'quote',
       text: '"The unexamined life is not worth living."',
       context: 'Socrates',
+      importance: 4,
       eventTime: '2026-07-20T20:00:00+01:00',
       eventTimeExplicit: true,
     };
@@ -939,6 +1502,17 @@ describe('GET /lists', () => {
   it('passes a listType filter straight to the ListItemsReader', async () => {
     await app.request('/lists?listType=quote');
     expect(lists.listCalls).toEqual([{ listType: 'quote', limit: 30 }]);
+  });
+
+  it('passes orderBy=importance straight to the ListItemsReader', async () => {
+    await app.request('/lists?orderBy=importance');
+    expect(lists.listCalls).toEqual([{ limit: 30, orderBy: 'importance' }]);
+  });
+
+  it('rejects an orderBy value that is neither recent nor importance', async () => {
+    const response = await app.request('/lists?orderBy=whenever');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
   });
 });
 
@@ -1081,6 +1655,104 @@ describe('GET /opinions/summaries', () => {
   });
 });
 
+describe('GET /questions', () => {
+  const record = (overrides: Partial<QuestionRecord> = {}): QuestionRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    question: 'Should I stay in this job?',
+    eventTime: '2026-07-20T20:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+    eventTimeExplicit: true,
+    extractedAt: '2026-07-20T21:00:00+01:00',
+    status: 'open',
+    resolvedEntryId: null,
+    resolution: null,
+    resolvedAt: null,
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been extracted', async () => {
+    const response = await app.request('/questions');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as QuestionsResponse).toEqual({ questions: [] });
+  });
+
+  it('returns whatever the QuestionsReader produces, without the internal-only fields', async () => {
+    questions.records = [record()];
+    const response = await app.request('/questions');
+    const body = (await response.json()) as QuestionsResponse;
+    const expected: OpenQuestion = {
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      question: 'Should I stay in this job?',
+      eventTime: '2026-07-20T20:00:00+01:00',
+      eventTimeExplicit: true,
+      status: 'open',
+      resolvedEntryId: null,
+      resolution: null,
+    };
+    expect(body.questions).toEqual([expected]);
+  });
+
+  it('includes resolution fields for a resolved question', async () => {
+    questions.records = [
+      record({ status: 'resolved', resolvedEntryId: '01ARZ3NDEKTSV4RRFFQ69G5FAX', resolution: 'Decided to leave.' }),
+    ];
+    const response = await app.request('/questions');
+    const body = (await response.json()) as QuestionsResponse;
+    expect(body.questions[0]).toMatchObject({
+      status: 'resolved',
+      resolvedEntryId: '01ARZ3NDEKTSV4RRFFQ69G5FAX',
+      resolution: 'Decided to leave.',
+    });
+  });
+
+  it('passes a status filter and the default limit straight to the QuestionsReader', async () => {
+    await app.request('/questions?status=resolved');
+    expect(questions.listCalls).toEqual([{ status: 'resolved', limit: 30 }]);
+  });
+
+  it('rejects a status value that is neither open nor resolved', async () => {
+    const response = await app.request('/questions?status=whenever');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects a limit outside 1..200', async () => {
+    const response = await app.request('/questions?limit=201');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('DELETE /questions/:id', () => {
+  it('removes the record', async () => {
+    const response = await app.request('/questions/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(questions.removeCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/questions/not-a-ulid', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(questions.removeCalls).toEqual([]);
+  });
+});
+
+describe('POST /questions/:id/reopen', () => {
+  it('reopens the record', async () => {
+    const response = await app.request('/questions/01ARZ3NDEKTSV4RRFFQ69G5FAV/reopen', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(questions.reopenCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/questions/not-a-ulid/reopen', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(questions.reopenCalls).toEqual([]);
+  });
+});
+
 describe('GET /categories', () => {
   it('returns the approved names for every structure type', async () => {
     categories.approved = {
@@ -1108,6 +1780,16 @@ describe('POST /categories', () => {
     });
     expect(response.status).toBe(204);
     expect(categories.approveCalls).toEqual([{ structureType: 'metric', name: 'meditation' }]);
+  });
+
+  it('accepts opinion_subject — a real gap this closed: it was missing from the validation enum', async () => {
+    const response = await app.request('/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'opinion_subject', name: 'career' }),
+    });
+    expect(response.status).toBe(204);
+    expect(categories.approveCalls).toEqual([{ structureType: 'opinion_subject', name: 'career' }]);
   });
 
   it('rejects an unknown structureType', async () => {
@@ -1152,6 +1834,16 @@ describe('GET /categories/suggestions', () => {
     categories.suggestions = [suggestion()];
     const response = await app.request('/categories/suggestions');
     expect((await response.json()) as SuggestionsResponse).toEqual({ suggestions: [suggestion()] });
+  });
+
+  it('excludes metric-field enum-value suggestions from the unfiltered listing — they belong to /metrics/fields/:id/values/suggestions', async () => {
+    categories.suggestions = [
+      suggestion(),
+      suggestion({ id: 's2', structureType: 'metric_field:exercise:sport', name: 'rowing' }),
+    ];
+    const response = await app.request('/categories/suggestions');
+    const body = (await response.json()) as SuggestionsResponse;
+    expect(body.suggestions.map((s) => s.id)).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
   });
 
   it('rejects an unknown structureType filter', async () => {

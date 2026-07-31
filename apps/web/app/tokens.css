@@ -63,6 +63,9 @@
    * vibrate against dark grounds. There is no fourth colour (`design.md` §2.1). */
   --accent: light-dark(#2f4a33, #8fae8b);
   --accent-hover: light-dark(#3e5f42, #a6c2a2);
+  /* The accent diluted for an area fill under a data line (`design.md`
+   * §5.3) — still no gradient, a single flat translucent tone. */
+  --accent-fill: color-mix(in srgb, var(--accent) 16%, transparent);
 
   --selection: light-dark(#d9e0d3, #2c3a2c);
 
@@ -120,6 +123,12 @@
    */
   --measure: 62ch;
   --measure-narrow: 48ch;
+  /* The analysis surfaces are dense tabular/graphic material, not prose —
+   * a statistical yearbook's page is set far wider than its running text
+   * (`design.md` §5.3). In `rem` rather than `ch` because it bounds a
+   * grid of tiles, not a line of glyphs, and should still honour the
+   * reader's own text size. */
+  --measure-wide: 100rem;
 
   /* ═══ Space ═════════════════════════════════════════════════════════════════
    *

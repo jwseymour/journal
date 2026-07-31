@@ -215,10 +215,85 @@ export interface TemporalMetric {
    * entry's own written time because it said nothing about when. */
   eventTimeExplicit: boolean;
   detail: string;
+  /** User-defined structured values (`MetricFieldDefinition`), keyed by
+   * `fieldKey`, `null` for anything the entry didn't state — never guessed.
+   * Empty for a metric with no fields defined. */
+  fields: Record<string, string | number | null>;
 }
 
 export interface MetricsResponse {
   metrics: TemporalMetric[];
+}
+
+/**
+ * A user-defined structured field for one metric — e.g. `exercise` gaining
+ * `sport` (an `enum`) or `distance_km` (`numeric`, unit `km`). Grown the
+ * same two ways as every open-ended category: the AI suggests one
+ * (`MetricFieldSuggestion`), or the user defines one directly.
+ */
+export type MetricFieldType = 'numeric' | 'enum' | 'text' | 'score';
+
+export interface MetricFieldDefinition {
+  id: string;
+  metric: string;
+  fieldKey: string;
+  label: string;
+  fieldType: MetricFieldType;
+  /** Numeric fields only — descriptive metadata, never used for conversion. */
+  unit: string | null;
+  /** Score fields only — the scale's inclusive bounds. */
+  scoreMin: number | null;
+  scoreMax: number | null;
+  /** What this field captures — fed into the extraction prompt verbatim. */
+  description: string;
+}
+
+export interface MetricFieldsResponse {
+  fields: MetricFieldDefinition[];
+}
+
+/** The user defining a field directly (`requirements.md` §5.3's second
+ * route, extended from category names to fields). */
+export interface DefineMetricFieldRequest {
+  metric: string;
+  fieldKey: string;
+  label: string;
+  fieldType: MetricFieldType;
+  unit?: string;
+  scoreMin?: number;
+  scoreMax?: number;
+  description: string;
+}
+
+/** A field the AI proposed but a human has not yet decided on
+ * (`requirements.md` §5.3's first route, extended from category names to
+ * fields). `entryId` is the entry that prompted it. */
+export interface MetricFieldSuggestion {
+  id: string;
+  metric: string;
+  fieldKey: string;
+  label: string;
+  fieldType: MetricFieldType;
+  unit: string | null;
+  scoreMin: number | null;
+  scoreMax: number | null;
+  description: string;
+  reason: string;
+  entryId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface MetricFieldSuggestionsResponse {
+  suggestions: MetricFieldSuggestion[];
+}
+
+/** An enum field's approved values — reuses the same `CategoriesIndex`
+ * suggest/approve mechanism as every other open-ended category, addressed
+ * through `/metrics/fields/:id/values` rather than the closed `/categories`
+ * surface (`apps/api/src/index/categories-index.ts`'s `MetricFieldStructureType`). */
+export interface MetricFieldValuesResponse {
+  values: string[];
 }
 
 /**
@@ -236,6 +311,12 @@ export interface Review {
   medium: string;
   /** 1–5, or `null` if the entry gave no rating — never inferred from tone. */
   rating: number | null;
+  /** 0–100, or `null` if the entry gave no sense of how far through the
+   * work this encounter was — never inferred from tone. For a
+   * single-sitting medium (film, music) the extractor defaults this to 100
+   * unless the entry says otherwise; for a multi-session medium (book) it
+   * is only ever set when the entry actually implies a fraction. */
+  progress: number | null;
   opinion: string;
   /** When the thing was encountered, not when the entry was written
    * (`requirements.md` §6.3). RFC 3339 with a UTC offset. */
@@ -259,6 +340,11 @@ export interface ListItem {
   listType: string;
   text: string;
   context: string;
+  /** 1–5, or `null` if nothing in the entry signalled particular
+   * significance — never inferred from topic alone. No decay is stored
+   * against this value; any age-based ranking is computed fresh at read
+   * time from `importance` and `eventTime`, never written back. */
+  importance: number | null;
   eventTime: string;
   eventTimeExplicit: boolean;
 }
@@ -322,12 +408,48 @@ export interface OpinionSummariesResponse {
 }
 
 /**
+ * Open questions — something the writer posed as genuinely undecided, that
+ * a later entry may go on to answer. Unlike every structure above, a single
+ * record's life can span two entries: `entryId` is always the entry that
+ * *raised* it; `resolvedEntryId` is whichever later entry the extractor
+ * matched it to, or `null` while still open. No category enum — unlike
+ * metrics, reviews, lists, and opinions, there is no approved-name set to
+ * extract against here, since a question's content is the whole of it.
+ */
+export interface OpenQuestion {
+  id: string;
+  entryId: string;
+  question: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  status: 'open' | 'resolved';
+  resolvedEntryId: string | null;
+  /** A faithful quote or summary of what the resolving entry actually said —
+   * never an answer inferred beyond that. `null` while still open. */
+  resolution: string | null;
+}
+
+export interface QuestionsResponse {
+  questions: OpenQuestion[];
+}
+
+export interface QuestionsSummaryResponse {
+  openCount: number;
+  resolvedCount: number;
+}
+
+/**
  * The open-ended category field every structure type above has (`metric`,
  * `medium`, `listType`, `subject`) — kept to an approved set the AI may
  * extract against, grown only by approval (`plan.md` M8, `requirements.md`
  * §5.3: "the AI does not autonomously create new metrics").
  */
-export type StructureType = 'metric' | 'review_medium' | 'list_type' | 'opinion_subject';
+export type CoreStructureType = 'metric' | 'review_medium' | 'list_type' | 'opinion_subject';
+/** One per user-defined metric field of type `enum` — its approved values
+ * reuse the exact same suggest/approve mechanism as every core structure
+ * type. Mirrors `apps/api/src/index/categories-index.ts`'s own widening. */
+export type MetricFieldStructureType = `metric_field:${string}:${string}`;
+export type StructureType = CoreStructureType | MetricFieldStructureType;
 
 /** The names currently approved for each structure type. */
 export interface CategoriesResponse {
@@ -390,6 +512,35 @@ export interface MetricsSummaryResponse {
   windowDays: number;
 }
 
+/** One calendar day (UTC) within a field's summary window, and the sum of
+ * that field's numeric values recorded on it — the raw material for a
+ * magnitude-aware small multiple, computed here rather than in the frontend
+ * (`requirements.md` §7.1). */
+export interface DayValue {
+  /** `YYYY-MM-DD`, UTC. */
+  date: string;
+  value: number;
+}
+
+/**
+ * Aggregated numeric data for one metric field (`plan.md` M9 — structured
+ * metric fields), e.g. "how much rowing have I done": total/average/count
+ * across the window, optionally filtered to records where another field
+ * equals a given value.
+ */
+export interface MetricFieldSummaryResponse {
+  metric: string;
+  fieldKey: string;
+  unit: string | null;
+  filter: { field: string; value: string } | null;
+  total: number;
+  average: number;
+  /** Records contributing a non-null value — the denominator `average` used. */
+  count: number;
+  windowDays: number;
+  days: DayValue[];
+}
+
 /** `averageRating` is `null` when nothing in the medium has a rating — never
  * coerced to 0, which would read as "rated zero" rather than "no ratings
  * given." */
@@ -410,6 +561,100 @@ export interface ListTypeSummary {
 
 export interface ListsSummaryResponse {
   summaries: ListTypeSummary[];
+}
+
+/**
+ * A conversational turn in the chat feature ("further features",
+ * `requirements.md` §8). No persistence in v1 — the client holds the whole
+ * conversation, the server holds none of it between requests, so a
+ * `ChatRequest` always carries the entire history so far.
+ */
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatRequest {
+  /** Oldest first, ending in the new user message. */
+  messages: ChatMessage[];
+}
+
+/** One point in a day-bucketed series, normalised for the sparkline
+ * renderer regardless of whether it was sourced from a `DayCount` (keyed
+ * `count`) or a `DayValue` (keyed `value`) on the backend — the frontend
+ * has exactly one shape to draw. */
+export interface SparklinePoint {
+  /** `YYYY-MM-DD`, UTC. */
+  date: string;
+  value: number;
+}
+
+export interface SparklineChartSpec {
+  type: 'sparkline';
+  title: string;
+  unit: string | null;
+  totalLabel: string | null;
+  points: SparklinePoint[];
+}
+
+export interface BarComparisonBar {
+  label: string;
+  value: number;
+}
+
+export interface BarComparisonChartSpec {
+  type: 'bar_comparison';
+  title: string;
+  unit: string | null;
+  bars: BarComparisonBar[];
+}
+
+export interface StatTileChartSpec {
+  type: 'stat_tile';
+  label: string;
+  value: number | string;
+  unit: string | null;
+}
+
+export interface TableColumn {
+  key: string;
+  label: string;
+}
+
+export interface TableRow {
+  values: Record<string, string | number | null>;
+  /** The record this row came from, when it has one — never rendered as its
+   * own column, only as a citation link back to the source entry
+   * (`requirements.md` §3). */
+  entryId: string | null;
+}
+
+export interface TableChartSpec {
+  type: 'table';
+  title: string;
+  columns: TableColumn[];
+  rows: TableRow[];
+}
+
+/**
+ * The fixed vocabulary the chat model may choose from — never model-
+ * generated code or layout, only a pick from this union filled with real
+ * data the backend already computed. Matched by a single `switch` on the
+ * frontend (`apps/web/components/chat/chart-spec.tsx`).
+ */
+export type ChartSpec = SparklineChartSpec | BarComparisonChartSpec | StatTileChartSpec | TableChartSpec;
+
+/**
+ * The result of one chat turn. `citedEntryIds` is coarse, per-turn
+ * traceability — every entry behind whatever data was looked up this turn,
+ * deduplicated, not per-sentence citation (`requirements.md` §3); finer-
+ * grained citation would want persisted turns to attach it to, which v1
+ * deliberately does not have.
+ */
+export interface ChatResponse {
+  answer: string;
+  charts: ChartSpec[];
+  citedEntryIds: string[];
 }
 
 /**
@@ -468,6 +713,12 @@ export type ApiErrorCode =
    * reads entries (`requirements.md` §6.1, §7.6).
    */
   | 'extraction_failed'
+  /**
+   * The AI Gateway is not configured, unreachable, or a chat turn could not
+   * be completed. Never a reason to lose anything — chat only ever reads
+   * (`requirements.md` §7.6).
+   */
+  | 'chat_failed'
   /** Anything unanticipated. */
   | 'internal';
 

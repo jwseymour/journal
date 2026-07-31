@@ -88,6 +88,7 @@ describe('extractEntry', () => {
           listType: 'quote',
           text: '"The unexamined life is not worth living."',
           context: 'Socrates',
+          importance: null,
           eventTime: '2026-07-20T20:00:00+01:00',
           eventTimeExplicit: true,
         },
@@ -104,6 +105,23 @@ describe('extractEntry', () => {
     });
   });
 
+  it('stores an importance rating when the model gives one — never invents one otherwise', async () => {
+    modelClient.result = {
+      items: [
+        {
+          listType: 'quote',
+          text: 'This is the one thing I want to remember from this whole year.',
+          context: '',
+          importance: 5,
+          eventTime: '2026-07-20T20:00:00+01:00',
+          eventTimeExplicit: true,
+        },
+      ],
+    };
+    await extractor.extractEntry(entry('e1', 'This is the one thing I want to remember from this whole year.'));
+    expect(listsIndex.list({ limit: 10 })[0]!.importance).toBe(5);
+  });
+
   it('stores nothing when the model finds no atomic item', async () => {
     modelClient.result = { items: [] };
     await extractor.extractEntry(entry('e1', 'A day with nothing to note.'));
@@ -112,7 +130,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time for a malformed eventTime', async () => {
     modelClient.result = {
-      items: [{ listType: 'quote', text: 'x', context: '', eventTime: 'not a timestamp', eventTimeExplicit: true }],
+      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: 'not a timestamp', eventTimeExplicit: true }],
     };
     await extractor.extractEntry(entry('e1', 'x', '2026-07-20T21:00:00+01:00'));
     const [record] = listsIndex.list({ limit: 10 });
@@ -137,7 +155,7 @@ describe('extractEntry', () => {
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.result = {
-      items: [{ listType: 'quote', text: 'x', context: '', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
     };
     await extractor.extractEntry(entry('e1', 'x'));
     extractor.removeEntry('e1');
@@ -149,7 +167,7 @@ describe('reprocessAll', () => {
   it('extracts every entry and clears what came before', async () => {
     await extractor.extractEntry(entry('stale', 'leftover'));
     modelClient.result = {
-      items: [{ listType: 'quote', text: 'x', context: '', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
     };
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b')]);
 

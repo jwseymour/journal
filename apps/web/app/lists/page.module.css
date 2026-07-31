@@ -46,6 +46,13 @@
   line-height: var(--leading-normal);
 }
 
+.importance {
+  margin-left: var(--space-2xs);
+  color: var(--accent);
+  font-weight: var(--weight-normal);
+  letter-spacing: var(--tracking-wide);
+}
+
 .context {
   display: block;
   margin-top: var(--space-3xs);

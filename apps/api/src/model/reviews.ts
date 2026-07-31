@@ -49,6 +49,23 @@ function buildReviewSchema(approvedMedia: readonly string[]) {
             'A 1-5 rating ONLY if the entry states or clearly implies one. null if no rating was ' +
               'given — never infer a number from tone alone.',
           ),
+        /** Nullable for the same reason as `rating`: many reviews say
+         * nothing about how far through the work this encounter was, and a
+         * multi-session medium like a book is often reviewed before it is
+         * finished, so a forced value would misrepresent that. */
+        progress: z
+          .number()
+          .min(0)
+          .max(100)
+          .nullable()
+          .describe(
+            'Percent of the work experienced as of this encounter, 0-100. For a medium normally ' +
+              'consumed in one sitting (e.g. film, music), default to 100 unless the entry says or ' +
+              'implies otherwise (still watching or listening, stopped partway, gave up). For a medium ' +
+              'normally consumed over multiple sessions (e.g. book), set this ONLY if the entry states ' +
+              'or clearly implies a fraction (e.g. "halfway through", "just started") — otherwise null. ' +
+              'Never guess a number from tone alone.',
+          ),
         opinion: z
           .string()
           .describe('The opinion or reaction as actually expressed in the entry — summarised, not invented.'),
@@ -82,6 +99,8 @@ Each encounter is its own record, even for something reviewed before. If the ent
 For "opinion", summarise only what the entry actually says — never extend the reasoning or add praise/criticism the entry does not contain. This structure organises opinions actually expressed; it does not extrapolate.
 
 For "rating", use null unless the entry gives or clearly implies a 1-5 rating. Do not guess a number from tone.
+
+For "progress", give a 0-100 percentage of how far through the work this encounter was. For a medium normally finished in one sitting (film, music), default to 100 unless the entry indicates the work was left unfinished (stopped partway, still watching or listening, gave up). For a medium normally spread across multiple sessions (book), only set a value the entry actually implies (e.g. "halfway through," "just started") — otherwise null. Never guess a number from tone alone.
 
 For "eventTime", resolve when the thing was actually encountered, not when the entry was written. Use the entry's own written time (given below) as the reference point for relative expressions. If nothing is said about when, use the entry's own written time exactly and mark eventTimeExplicit as false.
 

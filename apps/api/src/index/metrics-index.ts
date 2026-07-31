@@ -28,6 +28,12 @@ export interface TemporalMetricRecord {
    * entry's own written time (`requirements.md` §6.3). */
   eventTimeExplicit: boolean;
   detail: string;
+  /** User-defined structured values (`MetricFieldsIndex`), keyed by
+   * `fieldKey`, `null` for anything the entry didn't state — never guessed.
+   * `detail` stays alongside this, not replaced by it: the field set is a
+   * user-curated subset of what could ever be said about a metric, and
+   * `detail` is the catch-all for everything else. */
+  fields: Record<string, string | number | null>;
   /** When this record was extracted — informational, never used for
    * ordering (that is `eventEpochMs`'s job). */
   extractedAt: string;
@@ -57,6 +63,24 @@ export interface MetricSummary {
   days: DayCount[];
 }
 
+/** One calendar day (UTC) within a field's summary window, and the sum of
+ * that field's numeric values recorded on it — the numeric analogue of
+ * `DayCount` (`plan.md` M9). */
+export interface DayValue {
+  /** `YYYY-MM-DD`, UTC. */
+  date: string;
+  value: number;
+}
+
+export interface MetricFieldSummary {
+  total: number;
+  average: number;
+  /** Records contributing a non-null value — the denominator `average` used. */
+  count: number;
+  /** Oldest first, one entry per day in the window, zero-filled. */
+  days: DayValue[];
+}
+
 /**
  * The seam `http/app.ts` depends on — same shape as `Searcher`: the route
  * knows nothing about SQLite, only that a list comes back and a record can
@@ -69,6 +93,13 @@ export interface MetricsReader {
   list(options: ListMetricsOptions): TemporalMetricRecord[];
   remove(id: string): void;
   summarize(approvedNames: readonly string[], windowDays: number, now?: number): MetricSummary[];
+  sumByField(
+    metric: string,
+    fieldKey: string,
+    windowDays: number,
+    filter?: { field: string; value: string },
+    now?: number,
+  ): MetricFieldSummary;
 }
 
 export class MetricsIndex implements MetricsReader {
@@ -91,6 +122,7 @@ export class MetricsIndex implements MetricsReader {
         event_epoch_ms INTEGER NOT NULL,
         event_time_explicit INTEGER NOT NULL,
         detail TEXT NOT NULL,
+        fields TEXT NOT NULL DEFAULT '{}',
         extracted_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS temporal_metrics_entry ON temporal_metrics (entry_id);
@@ -114,8 +146,8 @@ export class MetricsIndex implements MetricsReader {
       this.#db.prepare('DELETE FROM temporal_metrics WHERE entry_id = ?').run(entryId);
       const stmt = this.#db.prepare(
         `INSERT INTO temporal_metrics
-           (id, entry_id, metric, event_time, event_epoch_ms, event_time_explicit, detail, extracted_at)
-         VALUES (@id, @entryId, @metric, @eventTime, @eventEpochMs, @eventTimeExplicit, @detail, @extractedAt)`,
+           (id, entry_id, metric, event_time, event_epoch_ms, event_time_explicit, detail, fields, extracted_at)
+         VALUES (@id, @entryId, @metric, @eventTime, @eventEpochMs, @eventTimeExplicit, @detail, @fields, @extractedAt)`,
       );
       for (const record of records) {
         stmt.run({
@@ -126,6 +158,7 @@ export class MetricsIndex implements MetricsReader {
           eventEpochMs: record.eventEpochMs,
           eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
           detail: record.detail,
+          fields: JSON.stringify(record.fields),
           extractedAt: record.extractedAt,
         });
       }
@@ -194,6 +227,63 @@ export class MetricsIndex implements MetricsReader {
     });
   }
 
+  /**
+   * The numeric analogue of `summarize()` — day-bucketed sums of one
+   * structured field instead of day-bucketed occurrence counts, e.g. "how
+   * much rowing have I done" (`plan.md` M9). SQLite's `json_extract` reads
+   * the value straight out of the `fields` JSON column with no join and no
+   * normalized side table, the same "reads are always every field for this
+   * record" reasoning `OpinionSummariesIndex` already applies to its own
+   * JSON columns.
+   *
+   * `filter`, when given, narrows to records where another field on the
+   * same metric equals a value — what makes "distance, but only rowing"
+   * possible without a bespoke query per combination.
+   */
+  sumByField(
+    metric: string,
+    fieldKey: string,
+    windowDays: number,
+    filter?: { field: string; value: string },
+    now: number = Date.now(),
+  ): MetricFieldSummary {
+    const windowStart = now - windowDays * 24 * 60 * 60 * 1000;
+    const path = `$.${fieldKey}`;
+    const filterClause = filter ? 'AND json_extract(fields, ?) = ?' : '';
+    const filterParams = filter ? [`$.${filter.field}`, filter.value] : [];
+
+    const totals = this.#db
+      .prepare(
+        `SELECT SUM(json_extract(fields, ?)) AS total, COUNT(json_extract(fields, ?)) AS n
+         FROM temporal_metrics WHERE metric = ? ${filterClause}`,
+      )
+      .get(path, path, metric, ...filterParams) as { total: number | null; n: number };
+
+    const windowRows = this.#db
+      .prepare(
+        `SELECT event_epoch_ms AS epochMs, json_extract(fields, ?) AS value
+         FROM temporal_metrics WHERE metric = ? AND event_epoch_ms >= ? ${filterClause}`,
+      )
+      .all(path, metric, windowStart, ...filterParams) as { epochMs: number; value: number | null }[];
+
+    const sums = new Map<string, number>();
+    for (const row of windowRows) {
+      if (row.value === null) continue;
+      const day = toUtcDate(row.epochMs);
+      sums.set(day, (sums.get(day) ?? 0) + row.value);
+    }
+
+    const days: DayValue[] = [];
+    for (let offset = windowDays - 1; offset >= 0; offset -= 1) {
+      const date = toUtcDate(now - offset * 24 * 60 * 60 * 1000);
+      days.push({ date, value: sums.get(date) ?? 0 });
+    }
+
+    const total = totals.total ?? 0;
+    const count = totals.n;
+    return { total, average: count > 0 ? total / count : 0, count, days };
+  }
+
   stats(): { metricCount: number } {
     const metricCount = (
       this.#db.prepare('SELECT COUNT(*) AS n FROM temporal_metrics').get() as { n: number }
@@ -220,6 +310,7 @@ interface RawRow {
   event_epoch_ms: number;
   event_time_explicit: number;
   detail: string;
+  fields: string;
   extracted_at: string;
 }
 
@@ -232,6 +323,7 @@ function fromRaw(row: RawRow): TemporalMetricRecord {
     eventEpochMs: row.event_epoch_ms,
     eventTimeExplicit: row.event_time_explicit === 1,
     detail: row.detail,
+    fields: JSON.parse(row.fields) as Record<string, string | number | null>,
     extractedAt: row.extracted_at,
   };
 }

@@ -48,6 +48,22 @@ function buildListItemSchema(approvedTypes: readonly string[]) {
             'Brief surrounding context actually stated — who said it, where it is from, why it was ' +
               'noted. Empty string if the entry gives none.',
           ),
+        /** Nullable, same convention as a review's `rating`: most items say
+         * nothing about their own significance, and inventing a number
+         * would be exactly the extrapolation this pipeline must avoid. No
+         * decay against this value is ever stored — any age-based ranking
+         * is computed fresh at read time (see `ListsIndex`). */
+        importance: z
+          .number()
+          .min(1)
+          .max(5)
+          .nullable()
+          .describe(
+            'A 1-5 significance rating ONLY if the entry\'s own language signals this item mattered ' +
+              'more than an ordinary note — strong emphasis, explicitly called out as important, ' +
+              'described as something to remember. null otherwise. Never infer importance from the ' +
+              'topic alone (e.g. a quote is not automatically important just for being a quote).',
+          ),
         eventTime: z
           .string()
           .describe(
@@ -74,6 +90,8 @@ function buildListSystemPrompt(approvedTypes: readonly string[]): string {
 The only approved item types right now are: ${approvedTypes.join(', ')}. Only extract something the entry actually contains verbatim or near-verbatim — never invent or paraphrase a "quote" into different words. If the entry contains nothing that fits an approved type, return an empty list.
 
 For "text", use the item exactly as written. For "context", use only what the entry actually states about where it came from or why it was noted — never guess.
+
+For "importance", use null unless the entry's own language signals this item mattered more than an ordinary note (strong emphasis, explicitly called important, described as something to remember) — then give a 1-5 rating. Do not infer importance just from the item's topic or type.
 
 For "eventTime", resolve when this was actually encountered, not when the entry was written. Use the entry's own written time (given below) as the reference point for relative expressions. If nothing is said about when, use the entry's own written time exactly and mark eventTimeExplicit as false.
 

@@ -3,12 +3,16 @@ import { ConfigError, loadConfig } from './config.js';
 import { createApp } from './http/app.js';
 import { CategoriesIndex } from './index/categories-index.js';
 import { ListsIndex } from './index/lists-index.js';
+import { MetricFieldsIndex } from './index/metric-fields-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
 import { OpinionStatementsIndex } from './index/opinion-statements-index.js';
 import { OpinionSummariesIndex } from './index/opinion-summaries-index.js';
+import { QuestionsIndex } from './index/questions-index.js';
 import { ReviewsIndex } from './index/reviews-index.js';
 import { SearchIndex } from './index/search-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
+import { ChatOrchestrator } from './model/chat-orchestrator.js';
+import { GatewayChatClient, UnconfiguredChatClient } from './model/gateway-chat-client.js';
 import { LIST_TYPE_SEED_NAMES } from './model/lists.js';
 import { OPINION_SUBJECT_SEED_NAMES } from './model/opinions.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
@@ -54,10 +58,12 @@ async function main(): Promise<void> {
   // reads what a past reprocess already wrote, via `GET /metrics` and
   // friends.
   const metricsIndex = new MetricsIndex(config.indexDbPath);
+  const metricFieldsIndex = new MetricFieldsIndex(config.indexDbPath);
   const reviewsIndex = new ReviewsIndex(config.indexDbPath);
   const listsIndex = new ListsIndex(config.indexDbPath);
   const opinionStatementsIndex = new OpinionStatementsIndex(config.indexDbPath);
   const opinionSummariesIndex = new OpinionSummariesIndex(config.indexDbPath);
+  const questionsIndex = new QuestionsIndex(config.indexDbPath);
   // Seeded on every boot too, not only in `reprocess.ts` — the approved-name
   // list has to exist before `GET /categories` can answer anything, and
   // boot is the one place guaranteed to run before that request can arrive.
@@ -69,17 +75,35 @@ async function main(): Promise<void> {
   categoriesIndex.seed('review_medium', REVIEW_MEDIUM_SEED_NAMES, seededAt);
   categoriesIndex.seed('list_type', LIST_TYPE_SEED_NAMES, seededAt);
   categoriesIndex.seed('opinion_subject', OPINION_SUBJECT_SEED_NAMES, seededAt);
+  // Unlike extraction, chat is the first subsystem that calls a model live
+  // from the running server — there is no offline batch step for it to hide
+  // behind, so it needs the same "absent key fails clearly at point of use,
+  // never at boot" gating extraction gets from `UnconfiguredModelClient`.
+  const chatClient = config.aiGatewayApiKey
+    ? new GatewayChatClient(config.aiGatewayApiKey, config.chatModel)
+    : new UnconfiguredChatClient();
+  const chatOrchestrator = new ChatOrchestrator(
+    chatClient,
+    metricsIndex,
+    metricFieldsIndex,
+    reviewsIndex,
+    listsIndex,
+    categoriesIndex,
+  );
   const app = createApp(
     store,
     config,
     transcriber,
     searcher,
     metricsIndex,
+    metricFieldsIndex,
     reviewsIndex,
     listsIndex,
     categoriesIndex,
     opinionStatementsIndex,
     opinionSummariesIndex,
+    questionsIndex,
+    chatOrchestrator,
   );
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
@@ -93,6 +117,11 @@ async function main(): Promise<void> {
       config.aiGatewayApiKey
         ? `[journal] extraction model: ${config.extractionModel}`
         : '[journal] extraction: AI_GATEWAY_API_KEY not set — GET /metrics will be empty until `npm run reprocess` is run with it configured',
+    );
+    console.log(
+      config.aiGatewayApiKey
+        ? `[journal] chat model: ${config.chatModel}`
+        : '[journal] chat: AI_GATEWAY_API_KEY not set — POST /chat will return chat_failed until configured',
     );
   });
 }

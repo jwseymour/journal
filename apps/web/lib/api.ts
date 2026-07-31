@@ -4,16 +4,26 @@ import type {
   ApiErrorCode,
   ApproveCategoryRequest,
   CategoriesResponse,
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
   CreateEntryRequest,
   CreateEntryResponse,
   Entry,
   EntryPage,
+  DefineMetricFieldRequest,
   ListItemsResponse,
   ListsSummaryResponse,
+  MetricFieldsResponse,
+  MetricFieldSummaryResponse,
+  MetricFieldSuggestionsResponse,
+  MetricFieldValuesResponse,
   MetricsResponse,
   MetricsSummaryResponse,
   OpinionStatementsResponse,
   OpinionSummariesResponse,
+  QuestionsResponse,
+  QuestionsSummaryResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
   SearchResponse,
@@ -179,6 +189,67 @@ export async function deleteMetric(id: string): Promise<void> {
 }
 
 /**
+ * User-defined structured fields per metric (`plan.md` M9) — grown the same
+ * two ways as every other open-ended category: the AI suggesting one during
+ * extraction, or the user defining one directly here.
+ */
+export function listMetricFields(metric?: string): Promise<MetricFieldsResponse> {
+  const suffix = metric ? `?metric=${encodeURIComponent(metric)}` : '';
+  return request<MetricFieldsResponse>(`/metrics/fields${suffix}`);
+}
+
+export async function defineMetricField(field: DefineMetricFieldRequest): Promise<void> {
+  await request<undefined>('/metrics/fields', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(field),
+  });
+}
+
+export async function deleteMetricField(id: string): Promise<void> {
+  await request<undefined>(`/metrics/fields/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function listMetricFieldSuggestions(options: { metric?: string; status?: string } = {}): Promise<MetricFieldSuggestionsResponse> {
+  const query = new URLSearchParams();
+  if (options.metric) query.set('metric', options.metric);
+  if (options.status) query.set('status', options.status);
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<MetricFieldSuggestionsResponse>(`/metrics/fields/suggestions${suffix}`);
+}
+
+export async function approveMetricFieldSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/metrics/fields/suggestions/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectMetricFieldSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/metrics/fields/suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+}
+
+/** An enum field's approved values — reuses `CategoriesIndex` behind the
+ * scenes, but addressed through this dedicated surface rather than
+ * `/categories`, whose `structureType` enum is closed to the four core
+ * types. Suggestions here are decided through the same
+ * `approveSuggestion`/`rejectSuggestion` as every other category
+ * suggestion — the mechanism is identical, only the listing is scoped. */
+export function listMetricFieldValues(fieldId: string): Promise<MetricFieldValuesResponse> {
+  return request<MetricFieldValuesResponse>(`/metrics/fields/${encodeURIComponent(fieldId)}/values`);
+}
+
+export async function approveMetricFieldValue(fieldId: string, value: string): Promise<void> {
+  await request<undefined>(`/metrics/fields/${encodeURIComponent(fieldId)}/values`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
+}
+
+export function listMetricFieldValueSuggestions(fieldId: string, status?: string): Promise<SuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<SuggestionsResponse>(`/metrics/fields/${encodeURIComponent(fieldId)}/values/suggestions${suffix}`);
+}
+
+/**
  * Extracted reviews (`plan.md` M8, `requirements.md` §5.2) — never live,
  * only whatever a past `npm run reprocess` last wrote.
  */
@@ -238,6 +309,30 @@ export function listOpinionSummaries(subject?: string): Promise<OpinionSummaries
 }
 
 /**
+ * Open questions (`plan.md` M8c) — something raised in one entry, possibly
+ * resolved by a later one. Never live, only whatever a past `npm run
+ * reprocess` last wrote.
+ */
+export function listQuestions(options: { status?: 'open' | 'resolved'; limit?: number } = {}): Promise<QuestionsResponse> {
+  const query = new URLSearchParams();
+  if (options.status) query.set('status', options.status);
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<QuestionsResponse>(`/questions${suffix}`);
+}
+
+export async function deleteQuestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Reverts a resolution without discarding the original question — for
+ * when the match itself was wrong, not the question (`requirements.md`
+ * §6.2). */
+export async function reopenQuestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/${encodeURIComponent(id)}/reopen`, { method: 'POST' });
+}
+
+/**
  * The approved category names extraction may use, per structure type
  * (`plan.md` M8, `requirements.md` §5.3).
  */
@@ -290,6 +385,42 @@ export function analysisReviews(): Promise<ReviewsSummaryResponse> {
 
 export function analysisLists(): Promise<ListsSummaryResponse> {
   return request<ListsSummaryResponse>('/analysis/lists');
+}
+
+export function analysisQuestions(): Promise<QuestionsSummaryResponse> {
+  return request<QuestionsSummaryResponse>('/analysis/questions');
+}
+
+/** A numeric field's total/average across a window, optionally filtered to
+ * another field's value (`plan.md` M9) — e.g. total distance where sport is
+ * rowing. Computed entirely behind the API; nothing here sums anything. */
+export function analysisMetricField(
+  metric: string,
+  fieldKey: string,
+  options: { filter?: { field: string; value: string }; windowDays?: number } = {},
+): Promise<MetricFieldSummaryResponse> {
+  const query = new URLSearchParams();
+  if (options.filter) query.set('filter', `${options.filter.field}:${options.filter.value}`);
+  if (options.windowDays !== undefined) query.set('windowDays', String(options.windowDays));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<MetricFieldSummaryResponse>(
+    `/analysis/metrics/${encodeURIComponent(metric)}/fields/${encodeURIComponent(fieldKey)}${suffix}`,
+  );
+}
+
+/**
+ * One turn of the chat feature ("further features", `requirements.md` §8).
+ * Ephemeral — nothing about the conversation is stored behind the API, so
+ * the caller sends the whole conversation so far on every turn. Everything
+ * about which tools to call and how to answer happens behind this one
+ * request (`requirements.md` §7.1) — this function is transport, nothing else.
+ */
+export function chat(messages: ChatMessage[]): Promise<ChatResponse> {
+  return request<ChatResponse>('/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages } satisfies ChatRequest),
+  });
 }
 
 /**

@@ -15,6 +15,11 @@ export interface ListItemRecord {
   listType: string;
   text: string;
   context: string;
+  /** 1–5, or `null` if nothing in the entry signalled particular
+   * significance — never inferred from topic alone. This is the only
+   * importance-related value ever stored; any decay against it is computed
+   * fresh at read time (`rankByImportance` below), never persisted. */
+  importance: number | null;
   eventTime: string;
   eventEpochMs: number;
   eventTimeExplicit: boolean;
@@ -24,6 +29,31 @@ export interface ListItemRecord {
 export interface ListItemsOptions {
   listType?: string;
   limit: number;
+  /** `'recent'` (default) is a plain reverse-chronological read. `'importance'`
+   * ranks by `rankByImportance` instead — still just a read-time sort, never
+   * anything written back to the row. */
+  orderBy?: 'recent' | 'importance';
+  /** Only used by `orderBy: 'importance'` — the instant "now" is measured
+   * from, so ranking is deterministic in tests. Defaults to `Date.now()`. */
+  now?: number;
+}
+
+/**
+ * A fixed, read-time-only formula combining a list item's static
+ * `importance` with its age — no decay rate is ever stored per item, so
+ * there is nothing beyond the one static value for anything to "interact
+ * with" in the derived layer.
+ *
+ * A one-year half-life: an item rated 5 outranks a brand-new item rated 1
+ * for roughly two years before recency overtakes it. `importance ?? 1`
+ * treats an unrated item as the lowest rung rather than excluding it, so it
+ * still appears, ranked among its peers by recency alone.
+ */
+const IMPORTANCE_HALF_LIFE_DAYS = 365;
+
+export function rankByImportance(importance: number | null, eventEpochMs: number, now: number): number {
+  const ageDays = Math.max(0, (now - eventEpochMs) / 86_400_000);
+  return (importance ?? 1) * 2 ** (-ageDays / IMPORTANCE_HALF_LIFE_DAYS);
 }
 
 /** The aggregation an analysis surface needs (`plan.md` M8, `design.md`
@@ -60,6 +90,7 @@ export class ListsIndex implements ListItemsReader {
         list_type TEXT NOT NULL,
         text TEXT NOT NULL,
         context TEXT NOT NULL,
+        importance REAL,
         event_time TEXT NOT NULL,
         event_epoch_ms INTEGER NOT NULL,
         event_time_explicit INTEGER NOT NULL,
@@ -75,8 +106,8 @@ export class ListsIndex implements ListItemsReader {
       this.#db.prepare('DELETE FROM list_items WHERE entry_id = ?').run(entryId);
       const stmt = this.#db.prepare(
         `INSERT INTO list_items
-           (id, entry_id, list_type, text, context, event_time, event_epoch_ms, event_time_explicit, extracted_at)
-         VALUES (@id, @entryId, @listType, @text, @context, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt)`,
+           (id, entry_id, list_type, text, context, importance, event_time, event_epoch_ms, event_time_explicit, extracted_at)
+         VALUES (@id, @entryId, @listType, @text, @context, @importance, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt)`,
       );
       for (const record of records) {
         stmt.run({
@@ -85,6 +116,7 @@ export class ListsIndex implements ListItemsReader {
           listType: record.listType,
           text: record.text,
           context: record.context,
+          importance: record.importance,
           eventTime: record.eventTime,
           eventEpochMs: record.eventEpochMs,
           eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
@@ -105,6 +137,21 @@ export class ListsIndex implements ListItemsReader {
   }
 
   list(options: ListItemsOptions): ListItemRecord[] {
+    if (options.orderBy === 'importance') {
+      const rows = (
+        options.listType
+          ? this.#db.prepare('SELECT * FROM list_items WHERE list_type = ?').all(options.listType)
+          : this.#db.prepare('SELECT * FROM list_items').all()
+      ) as RawRow[];
+      const now = options.now ?? Date.now();
+      return rows
+        .map(fromRaw)
+        .map((record) => ({ record, score: rankByImportance(record.importance, record.eventEpochMs, now) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, options.limit)
+        .map(({ record }) => record);
+    }
+
     const rows = (
       options.listType
         ? this.#db
@@ -142,6 +189,7 @@ interface RawRow {
   list_type: string;
   text: string;
   context: string;
+  importance: number | null;
   event_time: string;
   event_epoch_ms: number;
   event_time_explicit: number;
@@ -155,6 +203,7 @@ function fromRaw(row: RawRow): ListItemRecord {
     listType: row.list_type,
     text: row.text,
     context: row.context,
+    importance: row.importance,
     eventTime: row.event_time,
     eventEpochMs: row.event_epoch_ms,
     eventTimeExplicit: row.event_time_explicit === 1,

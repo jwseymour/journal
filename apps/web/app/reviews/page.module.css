@@ -52,6 +52,14 @@
   letter-spacing: var(--tracking-wide);
 }
 
+.progress {
+  margin-left: var(--space-2xs);
+  color: var(--ink-muted);
+  font-weight: var(--weight-normal);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
 .opinion {
   display: block;
   margin-top: var(--space-3xs);

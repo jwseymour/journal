@@ -21,6 +21,7 @@ const record = (overrides: Partial<Omit<TemporalMetricRecord, 'entryId'>> = {}):
   eventEpochMs: Date.parse('2026-07-20T08:00:00Z'),
   eventTimeExplicit: true,
   detail: 'a 5k run',
+  fields: {},
   extractedAt: '2026-07-20T10:00:00+01:00',
   ...overrides,
 });
@@ -77,6 +78,16 @@ describe('replaceEntry / list', () => {
   it('round-trips eventTimeExplicit false correctly', () => {
     index.replaceEntry('e1', [record({ eventTimeExplicit: false })]);
     expect(index.list({ limit: 10 })[0]!.eventTimeExplicit).toBe(false);
+  });
+
+  it('round-trips structured field values — numbers, strings, and nulls', () => {
+    index.replaceEntry('e1', [record({ fields: { distance_km: 8.4, sport: 'rowing', intensity: null } })]);
+    expect(index.list({ limit: 10 })[0]!.fields).toEqual({ distance_km: 8.4, sport: 'rowing', intensity: null });
+  });
+
+  it('defaults to an empty fields object when a metric has none defined', () => {
+    index.replaceEntry('e1', [record()]);
+    expect(index.list({ limit: 10 })[0]!.fields).toEqual({});
   });
 });
 
@@ -186,5 +197,70 @@ describe('summarize', () => {
     index.replaceEntry('e2', [record({ id: 'm2', eventEpochMs: NOW - 1000 })]);
     const [summary] = index.summarize(['exercise'], 7, NOW);
     expect(summary!.days.at(-1)!.count).toBe(2);
+  });
+});
+
+describe('sumByField', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOW = Date.parse('2026-07-20T12:00:00Z');
+
+  it("answers the user's own example — total distance for one sport, filtered", () => {
+    index.replaceEntry('e1', [
+      record({ id: 'm1', metric: 'exercise', eventEpochMs: NOW, fields: { distance_km: 8, sport: 'rowing' } }),
+    ]);
+    index.replaceEntry('e2', [
+      record({ id: 'm2', metric: 'exercise', eventEpochMs: NOW - DAY_MS, fields: { distance_km: 5, sport: 'running' } }),
+    ]);
+    index.replaceEntry('e3', [
+      record({ id: 'm3', metric: 'exercise', eventEpochMs: NOW - 2 * DAY_MS, fields: { distance_km: 12, sport: 'rowing' } }),
+    ]);
+
+    const summary = index.sumByField('exercise', 'distance_km', 7, { field: 'sport', value: 'rowing' }, NOW);
+
+    expect(summary.total).toBe(20);
+    expect(summary.count).toBe(2);
+    expect(summary.average).toBe(10);
+  });
+
+  it('gives a zero total, not an error, when nothing has been recorded', () => {
+    const summary = index.sumByField('exercise', 'distance_km', 7, undefined, NOW);
+    expect(summary).toEqual({ total: 0, average: 0, count: 0, days: summary.days });
+    expect(summary.days).toHaveLength(7);
+    expect(summary.days.every((d) => d.value === 0)).toBe(true);
+  });
+
+  it('excludes a null field value from both the total and the count', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', eventEpochMs: NOW, fields: { distance_km: 8 } })]);
+    index.replaceEntry('e2', [record({ id: 'm2', eventEpochMs: NOW, fields: { distance_km: null } })]);
+
+    const summary = index.sumByField('exercise', 'distance_km', 7, undefined, NOW);
+    expect(summary.total).toBe(8);
+    expect(summary.count).toBe(1);
+  });
+
+  it('excludes an occurrence outside the window from the days, but not from the total', () => {
+    index.replaceEntry('e1', [record({ eventEpochMs: NOW - 30 * DAY_MS, fields: { distance_km: 8 } })]);
+    const summary = index.sumByField('exercise', 'distance_km', 7, undefined, NOW);
+    expect(summary.total).toBe(8);
+    expect(summary.days.every((d) => d.value === 0)).toBe(true);
+  });
+
+  it('sums more than one occurrence on the same day', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', eventEpochMs: NOW, fields: { distance_km: 3 } })]);
+    index.replaceEntry('e2', [record({ id: 'm2', eventEpochMs: NOW - 1000, fields: { distance_km: 4 } })]);
+    const summary = index.sumByField('exercise', 'distance_km', 7, undefined, NOW);
+    expect(summary.days.at(-1)!.value).toBe(7);
+  });
+
+  it('orders days oldest first, ending on "now"', () => {
+    const summary = index.sumByField('exercise', 'distance_km', 3, undefined, NOW);
+    expect(summary.days.map((d) => d.date)).toEqual(['2026-07-18', '2026-07-19', '2026-07-20']);
+  });
+
+  it('only sums fields belonging to the given metric', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', metric: 'exercise', eventEpochMs: NOW, fields: { distance_km: 8 } })]);
+    index.replaceEntry('e2', [record({ id: 'm2', metric: 'cycling', eventEpochMs: NOW, fields: { distance_km: 100 } })]);
+    const summary = index.sumByField('exercise', 'distance_km', 7, undefined, NOW);
+    expect(summary.total).toBe(8);
   });
 });

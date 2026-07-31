@@ -1,0 +1,161 @@
+/* No literal values outside the token file (`design.md` §6.2). SVG geometry
+ * attributes in the companion `.tsx` are an abstract viewBox coordinate
+ * space, not CSS sizes, and are exempt for the same reason a data-driven
+ * bar width already is. */
+
+.tile {
+  /* A grid item otherwise refuses to shrink below its content's intrinsic
+   * width — the calendar grid's own column count, not the tile's allotted
+   * track, would win and the tile would overflow `.wideTiles`. */
+  min-width: 0;
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule-strong);
+}
+
+.tileHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.tileName {
+  color: var(--ink);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.tileCount {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+/* ── Calendar heatmap ─────────────────────────────────────────────────── */
+
+.calendar {
+  display: flex;
+  gap: var(--space-2xs);
+  margin-top: var(--space-xs);
+}
+
+.calendarLabels {
+  display: grid;
+  grid-template-rows: repeat(7, 1fr);
+  gap: var(--hairline);
+  flex-shrink: 0;
+}
+
+.calendarLabel {
+  display: flex;
+  align-items: center;
+  color: var(--ink-faint);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-none);
+}
+
+.calendarGrid {
+  display: grid;
+  grid-template-rows: repeat(7, 1fr);
+  grid-auto-flow: column;
+  gap: var(--hairline);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.calendarCell,
+.calendarCellEmpty {
+  aspect-ratio: 1;
+  width: 100%;
+  min-width: var(--space-2xs);
+  border-radius: var(--radius-sm);
+}
+
+.calendarCell {
+  border: var(--hairline) solid var(--rule);
+  background-color: var(--accent);
+}
+
+.calendarCellEmpty {
+  border: none;
+  background: none;
+}
+
+.heat0 {
+  background-color: transparent;
+}
+
+.heat1 {
+  opacity: 0.4;
+}
+
+.heat2 {
+  opacity: 0.7;
+}
+
+.heat3 {
+  opacity: 1;
+}
+
+/* ── Line + area sparkline ────────────────────────────────────────────── */
+
+.lineChart {
+  display: block;
+  width: 100%;
+  height: var(--space-lg);
+  margin-top: var(--space-xs);
+  overflow: visible;
+}
+
+.lineArea {
+  fill: var(--accent-fill);
+  stroke: none;
+}
+
+.lineStroke {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.linePoint {
+  fill: var(--accent);
+}
+
+/* ── Scatter / range-frame plot ───────────────────────────────────────── */
+
+.scatter {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: var(--space-xs);
+}
+
+.scatterAxis {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.scatterPoint {
+  fill: var(--accent);
+  opacity: 0.75;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+
+.scatterLink:hover .scatterPoint,
+.scatterLink:focus-visible .scatterPoint {
+  opacity: 1;
+}
+
+.scatterAxisLabels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  margin-top: var(--space-2xs);
+  color: var(--ink-muted);
+  font-size: var(--text-2xs);
+}

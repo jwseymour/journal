@@ -7,16 +7,23 @@ import type {
   ApiError,
   ApproveCategoryRequest,
   CategoriesResponse,
+  ChatResponse,
   CreateEntryResponse,
   Entry,
   EntryPage,
   HealthResponse,
   ListItemsResponse,
   ListsSummaryResponse,
+  MetricFieldsResponse,
+  MetricFieldSummaryResponse,
+  MetricFieldSuggestionsResponse,
+  MetricFieldValuesResponse,
   MetricsResponse,
   MetricsSummaryResponse,
   OpinionStatementsResponse,
   OpinionSummariesResponse,
+  QuestionsResponse,
+  QuestionsSummaryResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
   SearchResponse,
@@ -29,11 +36,14 @@ import type { Config } from '../config.js';
 import { AppError, invalidRequest } from '../errors.js';
 import type { CategoriesReader } from '../index/categories-index.js';
 import type { ListItemsReader } from '../index/lists-index.js';
+import { resolveNumericField, type MetricFieldsReader } from '../index/metric-fields-index.js';
 import type { MetricsReader } from '../index/metrics-index.js';
 import type { OpinionStatementsReader } from '../index/opinion-statements-index.js';
 import type { OpinionSummariesReader } from '../index/opinion-summaries-index.js';
+import type { QuestionsReader } from '../index/questions-index.js';
 import type { ReviewsReader } from '../index/reviews-index.js';
-import { isUlid } from '../record/id.js';
+import type { ChatAnswerer } from '../model/chat-orchestrator.js';
+import { isUlid, ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
 import type { Searcher } from '../search/searcher.js';
 import type { Transcriber } from '../transcribe/transcriber.js';
@@ -61,6 +71,10 @@ const DEFAULT_SEARCH_LIMIT = 20;
 /** A month is enough for a small-multiples sparkline (`design.md` §5.3) to
  * show a real pattern without asking the browser to render a year of tiles. */
 const METRICS_SUMMARY_WINDOW_DAYS = 30;
+/** A generous ceiling on a field-summary window, not a tuned one — a decade
+ * comfortably covers "all time" for a personal journal without letting the
+ * query be truly unbounded. */
+const MAX_FIELD_SUMMARY_WINDOW_DAYS = 3650;
 
 /**
  * Hosts this server will answer to.
@@ -99,8 +113,43 @@ const UpdateEntrySchema = z
 
 const ApproveCategorySchema = z
   .object({
-    structureType: z.enum(['metric', 'review_medium', 'list_type']),
+    structureType: z.enum(['metric', 'review_medium', 'list_type', 'opinion_subject']),
     name: z.string().min(1),
+  })
+  .strict();
+
+const MetricFieldTypeSchema = z.enum(['numeric', 'enum', 'text', 'score']);
+
+const DefineMetricFieldSchema = z
+  .object({
+    metric: z.string().min(1),
+    fieldKey: z.string().min(1),
+    label: z.string().min(1),
+    fieldType: MetricFieldTypeSchema,
+    unit: z.string().min(1).optional(),
+    scoreMin: z.number().optional(),
+    scoreMax: z.number().optional(),
+    description: z.string().min(1),
+  })
+  .strict();
+
+const ApproveMetricFieldValueSchema = z.object({ value: z.string().min(1) }).strict();
+
+/** Bounds one chat turn's per-request cost — with no persistence (`plan.md`
+ * — v1 is ephemeral), the client resends the whole conversation on every
+ * turn, so this is the only limit on how large that gets. */
+const MAX_CHAT_MESSAGES = 40;
+
+const ChatMessageSchema = z
+  .object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string().min(1),
+  })
+  .strict();
+
+const ChatRequestSchema = z
+  .object({
+    messages: z.array(ChatMessageSchema).min(1).max(MAX_CHAT_MESSAGES),
   })
   .strict();
 
@@ -130,11 +179,14 @@ export function createApp(
   transcriber: Transcriber,
   searcher: Searcher,
   metrics: MetricsReader,
+  metricFields: MetricFieldsReader,
   reviews: ReviewsReader,
   lists: ListItemsReader,
   categories: CategoriesReader,
   opinionStatements: OpinionStatementsReader,
   opinionSummaries: OpinionSummariesReader,
+  questions: QuestionsReader,
+  chat: ChatAnswerer,
 ): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
@@ -361,6 +413,7 @@ export function createApp(
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
         detail: record.detail,
+        fields: record.fields,
       })),
     };
     return c.json(response);
@@ -373,6 +426,147 @@ export function createApp(
     // correcting a mistake should be this easy, not fussy about repeats).
     if (isUlid(id)) metrics.remove(id);
     return c.body(null, 204);
+  });
+
+  app.get('/metrics/fields', async (c) => {
+    const metric = c.req.query('metric');
+    const fields = metric ? metricFields.listForMetric(metric) : metricFields.listAll();
+    const response: MetricFieldsResponse = {
+      fields: fields.map((field) => ({
+        id: field.id,
+        metric: field.metric,
+        fieldKey: field.fieldKey,
+        label: field.label,
+        fieldType: field.fieldType,
+        unit: field.unit,
+        scoreMin: field.scoreMin,
+        scoreMax: field.scoreMax,
+        description: field.description,
+      })),
+    };
+    return c.json(response);
+  });
+
+  app.post('/metrics/fields', async (c) => {
+    let json: unknown;
+    try {
+      json = await c.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+
+    const parsed = DefineMetricFieldSchema.safeParse(json);
+    if (!parsed.success) {
+      const [issue] = parsed.error.issues;
+      const at = issue && issue.path.length > 0 ? ` at '${issue.path.join('.')}'` : '';
+      throw invalidRequest(`${issue?.message ?? 'Invalid request body.'}${at}`);
+    }
+
+    // The user defining a field directly (`requirements.md` §5.3's second
+    // route, extended from category names to fields) — approved
+    // immediately, no suggestion or review step.
+    // Not matched against `DefineMetricFieldRequest` by type here — Zod's
+    // `.optional()` output types an absent field as `string | undefined`,
+    // which `exactOptionalPropertyTypes` treats as distinct from "the key
+    // is simply not present," even though both parse identically.
+    const { metric, fieldKey, label, fieldType, unit, scoreMin, scoreMax, description } = parsed.data;
+    metricFields.define({
+      id: ulid(Date.now()),
+      metric,
+      fieldKey,
+      label,
+      fieldType,
+      unit: unit ?? null,
+      scoreMin: scoreMin ?? null,
+      scoreMax: scoreMax ?? null,
+      description,
+      now: nowTimestamp().canonical,
+    });
+    return c.body(null, 204);
+  });
+
+  app.delete('/metrics/fields/:id', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) metricFields.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.get('/metrics/fields/suggestions', async (c) => {
+    const metric = c.req.query('metric');
+    const rawStatus = c.req.query('status');
+    if (rawStatus !== undefined && !['pending', 'approved', 'rejected'].includes(rawStatus)) {
+      throw invalidRequest("'status' must be one of: pending, approved, rejected.");
+    }
+
+    const suggestions = metricFields.listSuggestions({
+      ...(metric ? { metric } : {}),
+      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' } : {}),
+    });
+    const response: MetricFieldSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/metrics/fields/suggestions/:id/approve', async (c) => {
+    metricFields.decide(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/metrics/fields/suggestions/:id/reject', async (c) => {
+    metricFields.decide(c.req.param('id'), 'rejected', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  // An enum field's approved values reuse `CategoriesIndex` unchanged, via
+  // the `metric_field:<metric>:<fieldKey>` structure-type family — the same
+  // suggest/approve mechanism every other open-ended category uses.
+  // Suggestions this mechanism produces are decided through the existing
+  // `POST /categories/suggestions/:id/{approve,reject}`, which operates
+  // purely by suggestion id and needs no change to support them.
+  app.get('/metrics/fields/:id/values', async (c) => {
+    const field = metricFields.get(c.req.param('id'));
+    const emptyResponse: MetricFieldValuesResponse = { values: [] };
+    if (!field) return c.json(emptyResponse);
+    const response: MetricFieldValuesResponse = {
+      values: categories.approvedNames(`metric_field:${field.metric}:${field.fieldKey}`),
+    };
+    return c.json(response);
+  });
+
+  app.post('/metrics/fields/:id/values', async (c) => {
+    const field = metricFields.get(c.req.param('id'));
+    if (!field) throw invalidRequest('No such field.');
+    if (field.fieldType !== 'enum') throw invalidRequest('Only an enum-typed field has approved values.');
+
+    let json: unknown;
+    try {
+      json = await c.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+    const parsed = ApproveMetricFieldValueSchema.safeParse(json);
+    if (!parsed.success) {
+      const [issue] = parsed.error.issues;
+      const at = issue && issue.path.length > 0 ? ` at '${issue.path.join('.')}'` : '';
+      throw invalidRequest(`${issue?.message ?? 'Invalid request body.'}${at}`);
+    }
+
+    categories.approveDirectly(`metric_field:${field.metric}:${field.fieldKey}`, parsed.data.value, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/metrics/fields/:id/values/suggestions', async (c) => {
+    const field = metricFields.get(c.req.param('id'));
+    if (!field) return c.json({ suggestions: [] });
+    const rawStatus = c.req.query('status');
+    if (rawStatus !== undefined && !['pending', 'approved', 'rejected'].includes(rawStatus)) {
+      throw invalidRequest("'status' must be one of: pending, approved, rejected.");
+    }
+    const suggestions = categories.listSuggestions({
+      structureType: `metric_field:${field.metric}:${field.fieldKey}`,
+      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' } : {}),
+    });
+    const response: SuggestionsResponse = { suggestions };
+    return c.json(response);
   });
 
   app.get('/reviews', async (c) => {
@@ -396,6 +590,7 @@ export function createApp(
         title: record.title,
         medium: record.medium,
         rating: record.rating,
+        progress: record.progress,
         opinion: record.opinion,
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
@@ -413,6 +608,7 @@ export function createApp(
   app.get('/lists', async (c) => {
     const listType = c.req.query('listType');
     const rawLimit = c.req.query('limit');
+    const rawOrderBy = c.req.query('orderBy');
 
     let limit = DEFAULT_LIMIT;
     if (rawLimit !== undefined && rawLimit !== '') {
@@ -423,7 +619,12 @@ export function createApp(
       limit = value;
     }
 
-    const records = lists.list({ limit, ...(listType ? { listType } : {}) });
+    if (rawOrderBy !== undefined && rawOrderBy !== 'recent' && rawOrderBy !== 'importance') {
+      throw invalidRequest(`'orderBy' must be 'recent' or 'importance'.`);
+    }
+    const orderBy = rawOrderBy as 'recent' | 'importance' | undefined;
+
+    const records = lists.list({ limit, ...(listType ? { listType } : {}), ...(orderBy ? { orderBy } : {}) });
     const response: ListItemsResponse = {
       items: records.map((record) => ({
         id: record.id,
@@ -431,6 +632,7 @@ export function createApp(
         listType: record.listType,
         text: record.text,
         context: record.context,
+        importance: record.importance,
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
       })),
@@ -506,6 +708,53 @@ export function createApp(
     return c.json(response);
   });
 
+  app.get('/questions', async (c) => {
+    const rawStatus = c.req.query('status');
+    if (rawStatus !== undefined && rawStatus !== 'open' && rawStatus !== 'resolved') {
+      throw invalidRequest(`'status' must be 'open' or 'resolved'.`);
+    }
+    const status = rawStatus as 'open' | 'resolved' | undefined;
+
+    const rawLimit = c.req.query('limit');
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const records = questions.list({ limit, ...(status ? { status } : {}) });
+    const response: QuestionsResponse = {
+      questions: records.map((record) => ({
+        id: record.id,
+        entryId: record.entryId,
+        question: record.question,
+        eventTime: record.eventTime,
+        eventTimeExplicit: record.eventTimeExplicit,
+        status: record.status,
+        resolvedEntryId: record.resolvedEntryId,
+        resolution: record.resolution,
+      })),
+    };
+    return c.json(response);
+  });
+
+  app.delete('/questions/:id', async (c) => {
+    const id = c.req.param('id');
+    // The same tolerance as every other correction endpoint
+    // (`requirements.md` §6.2).
+    if (isUlid(id)) questions.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.post('/questions/:id/reopen', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) questions.reopen(id);
+    return c.body(null, 204);
+  });
+
   app.get('/categories', async (c) => {
     const response: CategoriesResponse = {
       metric: categories.approvedNames('metric'),
@@ -556,7 +805,15 @@ export function createApp(
       ...(rawStructureType ? { structureType: rawStructureType as StructureType } : {}),
       ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' } : {}),
     });
-    const response: SuggestionsResponse = { suggestions };
+    // An explicit filter is already validated against the 4 core types
+    // above, so this only ever trims the unfiltered case: metric-field enum
+    // value suggestions share this same table (they reuse `CategoriesIndex`
+    // unchanged), but belong to the dedicated
+    // `/metrics/fields/:id/values/suggestions` surface, not this one.
+    const filtered = rawStructureType
+      ? suggestions
+      : suggestions.filter((s) => STRUCTURE_TYPES.includes(s.structureType));
+    const response: SuggestionsResponse = { suggestions: filtered };
     return c.json(response);
   });
 
@@ -580,6 +837,47 @@ export function createApp(
     return c.json(response);
   });
 
+  app.get('/analysis/metrics/:metric/fields/:fieldKey', async (c) => {
+    const metric = c.req.param('metric');
+    const fieldKey = c.req.param('fieldKey');
+    const field = resolveNumericField(metricFields, metric, fieldKey);
+    if (!field) throw invalidRequest('No such field, or it is not a numeric or score field that can be summed.');
+
+    const rawFilter = c.req.query('filter');
+    let filter: { field: string; value: string } | undefined;
+    if (rawFilter !== undefined && rawFilter !== '') {
+      const separator = rawFilter.indexOf(':');
+      if (separator <= 0 || separator === rawFilter.length - 1) {
+        throw invalidRequest("'filter' must be in the form field:value.");
+      }
+      filter = { field: rawFilter.slice(0, separator), value: rawFilter.slice(separator + 1) };
+    }
+
+    const rawWindowDays = c.req.query('windowDays');
+    let windowDays = METRICS_SUMMARY_WINDOW_DAYS;
+    if (rawWindowDays !== undefined && rawWindowDays !== '') {
+      const value = Number(rawWindowDays);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_FIELD_SUMMARY_WINDOW_DAYS) {
+        throw invalidRequest(`'windowDays' must be a whole number between 1 and ${MAX_FIELD_SUMMARY_WINDOW_DAYS}.`);
+      }
+      windowDays = value;
+    }
+
+    const summary = metrics.sumByField(metric, fieldKey, windowDays, filter);
+    const response: MetricFieldSummaryResponse = {
+      metric,
+      fieldKey,
+      unit: field.unit,
+      filter: filter ?? null,
+      total: summary.total,
+      average: summary.average,
+      count: summary.count,
+      windowDays,
+      days: summary.days,
+    };
+    return c.json(response);
+  });
+
   app.get('/analysis/reviews', async (c) => {
     const approvedMedia = categories.approvedNames('review_medium');
     const response: ReviewsSummaryResponse = { summaries: reviews.summarize(approvedMedia) };
@@ -589,6 +887,38 @@ export function createApp(
   app.get('/analysis/lists', async (c) => {
     const approvedTypes = categories.approvedNames('list_type');
     const response: ListsSummaryResponse = { summaries: lists.summarize(approvedTypes) };
+    return c.json(response);
+  });
+
+  app.get('/analysis/questions', async (c) => {
+    const response: QuestionsSummaryResponse = questions.summarize();
+    return c.json(response);
+  });
+
+  // Ephemeral — no conversation is stored server-side (`plan.md` — v1 has no
+  // chat persistence). The client sends the whole conversation so far on
+  // every turn, and this route holds none of it once the response is sent.
+  app.post('/chat', async (c) => {
+    let json: unknown;
+    try {
+      json = await c.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+
+    const parsed = ChatRequestSchema.safeParse(json);
+    if (!parsed.success) {
+      const [issue] = parsed.error.issues;
+      const at = issue && issue.path.length > 0 ? ` at '${issue.path.join('.')}'` : '';
+      throw invalidRequest(`${issue?.message ?? 'Invalid request body.'}${at}`);
+    }
+
+    const { messages } = parsed.data;
+    if (messages[messages.length - 1]!.role !== 'user') {
+      throw invalidRequest('The conversation must end with a user message.');
+    }
+
+    const response: ChatResponse = await chat.answer(messages);
     return c.json(response);
   });
 

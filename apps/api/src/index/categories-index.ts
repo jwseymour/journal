@@ -24,7 +24,14 @@ import { dirname } from 'node:path';
  * deliberately does not (see `README.md`).
  */
 
-export type StructureType = 'metric' | 'review_medium' | 'list_type' | 'opinion_subject';
+export type CoreStructureType = 'metric' | 'review_medium' | 'list_type' | 'opinion_subject';
+/** One per user-defined metric field of type `enum` — its approved values
+ * reuse this same mechanism unchanged, the same way a fourth core structure
+ * type would (see the doc comment above). `structure_type` is a plain TEXT
+ * column with no CHECK constraint, so this template needs nothing but a
+ * wider type here. */
+export type MetricFieldStructureType = `metric_field:${string}:${string}`;
+export type StructureType = CoreStructureType | MetricFieldStructureType;
 export type SuggestionStatus = 'pending' | 'approved' | 'rejected';
 
 export interface CategorySuggestion {

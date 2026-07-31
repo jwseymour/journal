@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ListsIndex, type ListItemRecord } from '../../src/index/lists-index.js';
+import { ListsIndex, rankByImportance, type ListItemRecord } from '../../src/index/lists-index.js';
 
 let index: ListsIndex;
 
@@ -12,6 +12,7 @@ const record = (overrides: Partial<Omit<ListItemRecord, 'entryId'>> = {}): Omit<
   listType: 'quote',
   text: '"The unexamined life is not worth living."',
   context: 'Socrates, quoted in a book I was reading',
+  importance: 4,
   eventTime: '2026-07-20T20:00:00+01:00',
   eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
   eventTimeExplicit: true,
@@ -46,6 +47,69 @@ describe('replaceEntry / list', () => {
   it('preserves an empty context string rather than coercing it', () => {
     index.replaceEntry('e1', [record({ context: '' })]);
     expect(index.list({ limit: 10 })[0]!.context).toBe('');
+  });
+
+  it('stores a null importance faithfully — never defaulted to a number', () => {
+    index.replaceEntry('e1', [record({ importance: null })]);
+    expect(index.list({ limit: 10 })[0]!.importance).toBeNull();
+  });
+});
+
+describe('rankByImportance', () => {
+  it('ranks a higher-importance item above a lower one at the same age', () => {
+    expect(rankByImportance(5, 0, 0)).toBeGreaterThan(rankByImportance(1, 0, 0));
+  });
+
+  it('decays a fixed-importance item toward zero as it ages', () => {
+    const now = Date.parse('2027-07-20T00:00:00Z');
+    const eventEpochMs = Date.parse('2026-07-20T00:00:00Z');
+    const fresh = rankByImportance(3, now, now);
+    const oneYearOld = rankByImportance(3, eventEpochMs, now);
+    expect(oneYearOld).toBeLessThan(fresh);
+    expect(oneYearOld).toBeCloseTo(3 / 2, 5);
+  });
+
+  it('treats a null importance as the lowest rung, not an exclusion', () => {
+    expect(rankByImportance(null, 0, 0)).toBe(1);
+  });
+
+  it('lets a very important old item still outrank an unimportant recent one', () => {
+    const now = Date.parse('2027-07-20T00:00:00Z');
+    const oldButImportant = rankByImportance(5, Date.parse('2026-01-01T00:00:00Z'), now);
+    const recentButUnimportant = rankByImportance(1, Date.parse('2027-07-19T00:00:00Z'), now);
+    expect(oldButImportant).toBeGreaterThan(recentButUnimportant);
+  });
+});
+
+describe('list with orderBy: importance', () => {
+  it('orders by the importance/decay score rather than recency', () => {
+    const now = Date.parse('2027-07-20T00:00:00Z');
+    index.replaceEntry('e1', [
+      record({ id: 'low-recent', importance: 1, eventEpochMs: Date.parse('2027-07-19T00:00:00Z') }),
+    ]);
+    index.replaceEntry('e2', [
+      record({ id: 'high-old', importance: 5, eventEpochMs: Date.parse('2026-01-01T00:00:00Z') }),
+    ]);
+    const ranked = index.list({ limit: 10, orderBy: 'importance', now });
+    expect(ranked.map((r) => r.id)).toEqual(['high-old', 'low-recent']);
+  });
+
+  it('respects the limit after ranking', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', importance: 1 })]);
+    index.replaceEntry('e2', [record({ id: 'm2', importance: 5 })]);
+    const ranked = index.list({ limit: 1, orderBy: 'importance' });
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]!.id).toBe('m2');
+  });
+
+  it('defaults to recency when orderBy is omitted', () => {
+    index.replaceEntry('e1', [
+      record({ id: 'old', importance: 5, eventEpochMs: Date.parse('2020-01-01T00:00:00Z') }),
+    ]);
+    index.replaceEntry('e2', [
+      record({ id: 'new', importance: 1, eventEpochMs: Date.parse('2027-01-01T00:00:00Z') }),
+    ]);
+    expect(index.list({ limit: 10 }).map((r) => r.id)).toEqual(['new', 'old']);
   });
 });
 

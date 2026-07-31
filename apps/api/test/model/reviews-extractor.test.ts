@@ -88,6 +88,7 @@ describe('extractEntry', () => {
           title: 'Some Film',
           medium: 'film',
           rating: 4,
+          progress: 100,
           opinion: 'Really enjoyed it.',
           eventTime: '2026-07-20T20:00:00+01:00',
           eventTimeExplicit: true,
@@ -102,14 +103,51 @@ describe('extractEntry', () => {
       title: 'Some Film',
       medium: 'film',
       rating: 4,
+      progress: 100,
       opinion: 'Really enjoyed it.',
     });
+  });
+
+  it('stores a null progress when the model gives none — never invents one', async () => {
+    modelClient.result = {
+      reviews: [
+        {
+          title: 'A Book',
+          medium: 'book',
+          rating: null,
+          progress: null,
+          opinion: 'Interesting premise.',
+          eventTime: '2026-07-20T20:00:00+01:00',
+          eventTimeExplicit: true,
+        },
+      ],
+    };
+    await extractor.extractEntry(entry('e1', 'Reading A Book, interesting premise so far.'));
+    expect(reviewsIndex.list({ limit: 10 })[0]!.progress).toBeNull();
+  });
+
+  it('stores a partial progress value the model infers from the entry', async () => {
+    modelClient.result = {
+      reviews: [
+        {
+          title: 'A Book',
+          medium: 'book',
+          rating: null,
+          progress: 50,
+          opinion: 'Halfway through, enjoying it.',
+          eventTime: '2026-07-20T20:00:00+01:00',
+          eventTimeExplicit: true,
+        },
+      ],
+    };
+    await extractor.extractEntry(entry('e1', "I'm halfway through A Book."));
+    expect(reviewsIndex.list({ limit: 10 })[0]!.progress).toBe(50);
   });
 
   it('stores a null rating when the model gives none — never invents one', async () => {
     modelClient.result = {
       reviews: [
-        { title: 'A Book', medium: 'book', rating: null, opinion: 'Interesting premise.', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true },
+        { title: 'A Book', medium: 'book', rating: null, progress: null, opinion: 'Interesting premise.', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true },
       ],
     };
     await extractor.extractEntry(entry('e1', 'Reading A Book, interesting premise so far.'));
@@ -124,7 +162,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time for a malformed eventTime', async () => {
     modelClient.result = {
-      reviews: [{ title: 'X', medium: 'film', rating: null, opinion: 'ok', eventTime: 'not a timestamp', eventTimeExplicit: true }],
+      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: 'not a timestamp', eventTimeExplicit: true }],
     };
     await extractor.extractEntry(entry('e1', 'Watched X.', '2026-07-20T21:00:00+01:00'));
     const [record] = reviewsIndex.list({ limit: 10 });
@@ -134,7 +172,7 @@ describe('extractEntry', () => {
 
   it('keeps two encounters with the same title as two separate records across two extractions', async () => {
     modelClient.result = {
-      reviews: [{ title: 'Rewatched Film', medium: 'film', rating: 5, opinion: 'even better this time', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      reviews: [{ title: 'Rewatched Film', medium: 'film', rating: 5, progress: 100, opinion: 'even better this time', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
     };
     await extractor.extractEntry(entry('e1', 'Watched it again.'));
     await extractor.extractEntry(entry('e2', 'Watched it a third time.'));
@@ -158,7 +196,7 @@ describe('extractEntry', () => {
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.result = {
-      reviews: [{ title: 'X', medium: 'film', rating: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
     };
     await extractor.extractEntry(entry('e1', 'Watched X.'));
     extractor.removeEntry('e1');
@@ -170,7 +208,7 @@ describe('reprocessAll', () => {
   it('extracts every entry and clears what came before', async () => {
     await extractor.extractEntry(entry('stale', 'leftover'));
     modelClient.result = {
-      reviews: [{ title: 'X', medium: 'film', rating: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
     };
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b')]);
 

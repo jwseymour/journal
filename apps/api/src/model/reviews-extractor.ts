@@ -45,6 +45,7 @@ export class ReviewsExtractor {
         title: review.title,
         medium: review.medium,
         rating: review.rating,
+        progress: review.progress,
         opinion: review.opinion,
         ...resolved,
         extractedAt,

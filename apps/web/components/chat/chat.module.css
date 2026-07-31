@@ -1,0 +1,198 @@
+/* No literal values. Everything references a token (`design.md` §6.2).
+ * Print information-design throughout (`design.md` §5.3): hairlines, no
+ * gradients, no drop shadows, no chart junk — shared by every chart-spec
+ * renderer, the same way `analysis/page.module.css` styles its own inline
+ * charts. */
+
+.turn {
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.turn:first-child {
+  border-top: 0;
+}
+
+.turnLabel {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.turnContent {
+  margin: var(--space-3xs) 0 0;
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+}
+
+.charts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-top: var(--space-sm);
+}
+
+.sources {
+  margin-top: var(--space-2xs);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.sourceLink {
+  color: var(--ink-muted);
+}
+
+/* Sparkline — identical shape to analysis/page.module.css's own tile. */
+.tile {
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule-strong);
+}
+
+.tileHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.tileName {
+  color: var(--ink);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.tileCount {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.sparkline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hairline);
+  margin-top: var(--space-xs);
+}
+
+.day {
+  width: var(--space-2xs);
+  height: var(--space-2xs);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+}
+
+.dayFilled {
+  border-color: var(--accent);
+  background-color: var(--accent);
+}
+
+/* Bar comparison. */
+.barChart {
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule-strong);
+}
+
+.chartTitle {
+  margin: 0 0 var(--space-xs);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.barRow {
+  display: grid;
+  grid-template-columns: minmax(var(--space-3xl), auto) 1fr auto;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-3xs) 0;
+  border-bottom: var(--hairline) solid var(--rule);
+}
+
+.barRow:last-child {
+  border-bottom: 0;
+}
+
+.barLabel {
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+.barTrack {
+  display: block;
+  height: var(--space-2xs);
+  background-color: var(--ground-sunken);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.barFill {
+  display: block;
+  height: 100%;
+  background-color: var(--accent);
+}
+
+.barValue {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  text-align: right;
+}
+
+/* Stat tile. */
+.statTile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule-strong);
+}
+
+.statValue {
+  color: var(--ink);
+  font-size: var(--text-xl);
+}
+
+.statLabel {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+/* Table — the statistical-yearbook tradition, same as analysis/page.module.css. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th {
+  padding-bottom: var(--space-2xs);
+  border-bottom: var(--hairline) solid var(--rule-strong);
+  color: var(--ink-muted);
+  font-weight: var(--weight-normal);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.table td {
+  padding: var(--space-2xs) 0;
+  border-bottom: var(--hairline) solid var(--rule);
+}
+
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.rowLink {
+  text-align: right;
+  width: var(--space-md);
+}
+
+.rowLink a {
+  color: var(--ink-muted);
+}

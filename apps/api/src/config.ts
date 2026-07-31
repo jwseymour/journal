@@ -68,6 +68,11 @@ export interface Config {
    * §7.6) — the *only* place any provider is named. Changing model is
    * changing this one line, never the extraction logic or schemas around it. */
   readonly extractionModel: string;
+  /** The `creator/model-name` string for the chat feature's model — kept
+   * separate from `extractionModel` even though it defaults to the same
+   * value, because chat needs tool-calling ability and the two may need to
+   * diverge without one change accidentally affecting the other. */
+  readonly chatModel: string;
 }
 
 export const DEFAULT_PORT = 4319;
@@ -90,6 +95,10 @@ const DEFAULT_EMBEDDING_DIMENSIONS = 384;
  * cheapest available model, but a deliberate default rather than an
  * arbitrary one. One env var away from anything else the gateway serves. */
 const DEFAULT_EXTRACTION_MODEL = 'anthropic/claude-sonnet-5';
+
+/** Same default as extraction — it is already tool-calling-capable, so
+ * there is no reason for day one to name a different model. */
+const DEFAULT_CHAT_MODEL = 'anthropic/claude-sonnet-5';
 
 function readEmbeddingDimensions(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_EMBEDDING_DIMENSIONS;
@@ -183,5 +192,6 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     ),
     aiGatewayApiKey: env['AI_GATEWAY_API_KEY']?.trim() || undefined,
     extractionModel: env['EXTRACTION_MODEL']?.trim() || DEFAULT_EXTRACTION_MODEL,
+    chatModel: env['CHAT_MODEL']?.trim() || DEFAULT_CHAT_MODEL,
   };
 }

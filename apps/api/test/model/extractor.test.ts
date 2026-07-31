@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CategoriesIndex } from '../../src/index/categories-index.js';
+import { MetricFieldsIndex } from '../../src/index/metric-fields-index.js';
 import { MetricsIndex } from '../../src/index/metrics-index.js';
 import { Extractor } from '../../src/model/extractor.js';
 import { METRIC_SEED_NAMES } from '../../src/model/temporal-metrics.js';
@@ -74,16 +75,18 @@ const entry = (id: string, body: string, created = '2026-07-20T09:00:00+01:00'):
 });
 
 let metricsIndex: MetricsIndex;
+let metricFieldsIndex: MetricFieldsIndex;
 let categoriesIndex: CategoriesIndex;
 let modelClient: FakeModelClient;
 let extractor: Extractor;
 
 beforeEach(() => {
   metricsIndex = new MetricsIndex(':memory:');
+  metricFieldsIndex = new MetricFieldsIndex(':memory:');
   categoriesIndex = new CategoriesIndex(':memory:');
   categoriesIndex.seed('metric', METRIC_SEED_NAMES, '2026-01-01T00:00:00Z');
   modelClient = new FakeModelClient();
-  extractor = new Extractor(metricsIndex, categoriesIndex, modelClient);
+  extractor = new Extractor(metricsIndex, metricFieldsIndex, categoriesIndex, modelClient);
 });
 
 describe('extractEntry', () => {
@@ -97,7 +100,7 @@ describe('extractEntry', () => {
   it('stores a record for each metric the model returns', async () => {
     modelClient.result = {
       metrics: [
-        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run' },
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} },
       ],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run this morning.'));
@@ -120,7 +123,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time when the model returns a malformed eventTime', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'sleep', eventTime: 'not a timestamp', eventTimeExplicit: true, detail: 'ok' }],
+      metrics: [{ metric: 'sleep', eventTime: 'not a timestamp', eventTimeExplicit: true, detail: 'ok', fields: {} }],
     };
     await extractor.extractEntry(entry('e1', 'Slept fine.', '2026-07-20T09:00:00+01:00'));
 
@@ -134,12 +137,12 @@ describe('extractEntry', () => {
 
   it('replaces old records for an entry rather than accumulating them', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run' }],
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {} }],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run.'));
 
     modelClient.result = {
-      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'early night' }],
+      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'early night', fields: {} }],
     };
     await extractor.extractEntry(entry('e1', 'Revised: went to bed early instead.'));
 
@@ -183,8 +186,8 @@ describe('extractEntry', () => {
   it('gives every record a distinct id, even within the same extraction', async () => {
     modelClient.result = {
       metrics: [
-        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run' },
-        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'nap' },
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {} },
+        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'nap', fields: {} },
       ],
     };
     await extractor.extractEntry(entry('e1', 'A busy day.'));
@@ -193,10 +196,178 @@ describe('extractEntry', () => {
   });
 });
 
+describe('structured fields', () => {
+  it('sends a defined field to the model, described in the system prompt', async () => {
+    metricFieldsIndex.define({
+      id: 'f1',
+      metric: 'exercise',
+      fieldKey: 'distance_km',
+      label: 'Distance',
+      fieldType: 'numeric',
+      unit: 'km',
+      scoreMin: null,
+      scoreMax: null,
+      description: 'How far the run covered.',
+      now: '2026-01-01T00:00:00Z',
+    });
+
+    await extractor.extractEntry(entry('e1', 'Ran 8k this morning.'));
+
+    expect(modelClient.calls[0]!.system).toContain('distance_km');
+    expect(modelClient.calls[0]!.system).toContain('How far the run covered.');
+  });
+
+  it('stores whatever structured field values the model returns', async () => {
+    metricFieldsIndex.define({
+      id: 'f1',
+      metric: 'exercise',
+      fieldKey: 'distance_km',
+      label: 'Distance',
+      fieldType: 'numeric',
+      unit: 'km',
+      scoreMin: null,
+      scoreMax: null,
+      description: 'How far, in km.',
+      now: '2026-01-01T00:00:00Z',
+    });
+    modelClient.result = {
+      metrics: [
+        {
+          metric: 'exercise',
+          eventTime: '2026-07-20T07:00:00+01:00',
+          eventTimeExplicit: true,
+          detail: 'ran 8k',
+          fields: { distance_km: 8 },
+        },
+      ],
+    };
+
+    await extractor.extractEntry(entry('e1', 'Ran 8k this morning.'));
+
+    const [record] = metricsIndex.list({ limit: 10 });
+    expect(record!.fields).toEqual({ distance_km: 8 });
+  });
+
+  it('records a suggested field without inventing a definition for it', async () => {
+    modelClient.result = {
+      metrics: [],
+      suggestedField: {
+        metric: 'exercise',
+        fieldKey: 'pace_min_per_km',
+        label: 'Pace',
+        fieldType: 'numeric',
+        unit: 'min/km',
+        description: 'How fast, in minutes per km.',
+        reason: 'pace mentioned repeatedly',
+      },
+    };
+
+    await extractor.extractEntry(entry('e1', 'Ran at a 5 min/km pace.'));
+
+    expect(metricFieldsIndex.listForMetric('exercise')).toEqual([]);
+    const suggestions = metricFieldsIndex.listSuggestions();
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      metric: 'exercise',
+      fieldKey: 'pace_min_per_km',
+      reason: 'pace mentioned repeatedly',
+      entryId: 'e1',
+      status: 'pending',
+    });
+  });
+
+  it('does not record a field suggestion when the model returns none', async () => {
+    modelClient.result = { metrics: [] };
+    await extractor.extractEntry(entry('e1', 'Nothing notable.'));
+    expect(metricFieldsIndex.listSuggestions()).toEqual([]);
+  });
+
+  it('records a suggested value for an existing enum field', async () => {
+    metricFieldsIndex.define({
+      id: 'f1',
+      metric: 'exercise',
+      fieldKey: 'sport',
+      label: 'Sport',
+      fieldType: 'enum',
+      unit: null,
+      scoreMin: null,
+      scoreMax: null,
+      description: 'Which sport.',
+      now: '2026-01-01T00:00:00Z',
+    });
+    modelClient.result = {
+      metrics: [],
+      suggestedFieldValue: { metric: 'exercise', fieldKey: 'sport', value: 'climbing', reason: 'first time mentioned' },
+    };
+
+    await extractor.extractEntry(entry('e1', 'Went climbing for the first time.'));
+
+    const suggestions = categoriesIndex.listSuggestions();
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      structureType: 'metric_field:exercise:sport',
+      name: 'climbing',
+      reason: 'first time mentioned',
+      entryId: 'e1',
+      status: 'pending',
+    });
+  });
+
+  it('never trusts a suggested field value for a field that does not really exist', async () => {
+    modelClient.result = {
+      metrics: [],
+      suggestedFieldValue: { metric: 'exercise', fieldKey: 'not-a-real-field', value: 'climbing', reason: 'x' },
+    };
+    await extractor.extractEntry(entry('e1', 'Went climbing.'));
+    expect(categoriesIndex.listSuggestions()).toEqual([]);
+  });
+
+  it('never trusts a suggested field value naming a non-enum field', async () => {
+    metricFieldsIndex.define({
+      id: 'f1',
+      metric: 'exercise',
+      fieldKey: 'distance_km',
+      label: 'Distance',
+      fieldType: 'numeric',
+      unit: 'km',
+      scoreMin: null,
+      scoreMax: null,
+      description: 'How far.',
+      now: '2026-01-01T00:00:00Z',
+    });
+    modelClient.result = {
+      metrics: [],
+      suggestedFieldValue: { metric: 'exercise', fieldKey: 'distance_km', value: '8', reason: 'x' },
+    };
+    await extractor.extractEntry(entry('e1', 'Ran 8k.'));
+    expect(categoriesIndex.listSuggestions()).toEqual([]);
+  });
+
+  it('lists the approved enum values in the system prompt', async () => {
+    metricFieldsIndex.define({
+      id: 'f1',
+      metric: 'exercise',
+      fieldKey: 'sport',
+      label: 'Sport',
+      fieldType: 'enum',
+      unit: null,
+      scoreMin: null,
+      scoreMax: null,
+      description: 'Which sport.',
+      now: '2026-01-01T00:00:00Z',
+    });
+    categoriesIndex.approveDirectly('metric_field:exercise:sport', 'rowing', '2026-01-01T00:00:00Z');
+
+    await extractor.extractEntry(entry('e1', 'Went rowing.'));
+
+    expect(modelClient.calls[0]!.system).toContain('rowing');
+  });
+});
+
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run' }],
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {} }],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run.'));
     extractor.removeEntry('e1');
@@ -207,7 +378,7 @@ describe('removeEntry', () => {
 describe('reprocessAll', () => {
   it('extracts every entry across multiple pages', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: false, detail: '' }],
+      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: false, detail: '', fields: {} }],
     };
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b'), entry('e3', 'c')]);
 

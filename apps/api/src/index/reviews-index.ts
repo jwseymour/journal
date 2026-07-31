@@ -19,6 +19,7 @@ export interface ReviewRecord {
   title: string;
   medium: string;
   rating: number | null;
+  progress: number | null;
   opinion: string;
   eventTime: string;
   eventEpochMs: number;
@@ -67,6 +68,7 @@ export class ReviewsIndex implements ReviewsReader {
         title TEXT NOT NULL,
         medium TEXT NOT NULL,
         rating REAL,
+        progress REAL,
         opinion TEXT NOT NULL,
         event_time TEXT NOT NULL,
         event_epoch_ms INTEGER NOT NULL,
@@ -85,8 +87,8 @@ export class ReviewsIndex implements ReviewsReader {
       this.#db.prepare('DELETE FROM reviews WHERE entry_id = ?').run(entryId);
       const stmt = this.#db.prepare(
         `INSERT INTO reviews
-           (id, entry_id, title, medium, rating, opinion, event_time, event_epoch_ms, event_time_explicit, extracted_at)
-         VALUES (@id, @entryId, @title, @medium, @rating, @opinion, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt)`,
+           (id, entry_id, title, medium, rating, progress, opinion, event_time, event_epoch_ms, event_time_explicit, extracted_at)
+         VALUES (@id, @entryId, @title, @medium, @rating, @progress, @opinion, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt)`,
       );
       for (const record of records) {
         stmt.run({
@@ -95,6 +97,7 @@ export class ReviewsIndex implements ReviewsReader {
           title: record.title,
           medium: record.medium,
           rating: record.rating,
+          progress: record.progress,
           opinion: record.opinion,
           eventTime: record.eventTime,
           eventEpochMs: record.eventEpochMs,
@@ -159,6 +162,7 @@ interface RawRow {
   title: string;
   medium: string;
   rating: number | null;
+  progress: number | null;
   opinion: string;
   event_time: string;
   event_epoch_ms: number;
@@ -173,6 +177,7 @@ function fromRaw(row: RawRow): ReviewRecord {
     title: row.title,
     medium: row.medium,
     rating: row.rating,
+    progress: row.progress,
     opinion: row.opinion,
     eventTime: row.event_time,
     eventEpochMs: row.event_epoch_ms,

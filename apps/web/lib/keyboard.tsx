@@ -134,6 +134,9 @@ export function KeyboardProvider({ children }: { children: React.ReactNode }) {
         } else if (key === 'a') {
           event.preventDefault();
           router.push('/analysis');
+        } else if (key === 'c') {
+          event.preventDefault();
+          router.push('/chat');
         }
         return;
       }
