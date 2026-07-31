@@ -223,6 +223,52 @@ describe('list', () => {
     const error = await catchError(() => store.list({ limit: 5, cursor: 'made-up' }));
     expect(error.code).toBe('invalid_cursor');
   });
+
+  it('restricts to one calendar month when year and month are given', async () => {
+    await at('2026-06-15T09:00:00Z', 'June');
+    await at('2026-07-01T09:00:00Z', 'July first');
+    await at('2026-07-26T09:00:00Z', 'July last');
+
+    const { entries } = await store.list({ limit: 10, year: 2026, month: 7 });
+    expect(entries.map((e) => e.excerpt)).toEqual(['July last', 'July first']);
+  });
+
+  it('paginates within a single month without spilling into the next', async () => {
+    await at('2026-07-01T09:00:00Z', 'July A');
+    await at('2026-07-15T09:00:00Z', 'July B');
+    await at('2026-08-01T09:00:00Z', 'August');
+
+    const first = await store.list({ limit: 1, year: 2026, month: 7 });
+    expect(first.entries.map((e) => e.excerpt)).toEqual(['July B']);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await store.list({ limit: 1, year: 2026, month: 7, cursor: first.nextCursor! });
+    expect(second.entries.map((e) => e.excerpt)).toEqual(['July A']);
+    expect(second.nextCursor).toBeNull();
+  });
+});
+
+describe('listPeriods', () => {
+  const at = (iso: string, body: string) => store.create({ body, created: iso });
+
+  it('is empty, not an error, when nothing has been written', async () => {
+    expect(await store.listPeriods()).toEqual({ periods: [] });
+  });
+
+  it('lists each distinct year-month once, newest first, without a count', async () => {
+    await at('2026-06-15T09:00:00Z', 'June');
+    await at('2026-07-01T09:00:00Z', 'July first');
+    await at('2026-07-26T09:00:00Z', 'July second');
+
+    const { periods } = await store.listPeriods();
+    expect(periods).toEqual([
+      { year: 2026, month: 7 },
+      { year: 2026, month: 6 },
+    ]);
+    for (const period of periods) {
+      expect(period).not.toHaveProperty('count');
+    }
+  });
 });
 
 describe('tolerating a directory that is edited by hand', () => {

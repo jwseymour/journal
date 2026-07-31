@@ -150,6 +150,54 @@ describe('list', () => {
     expect(index.list(null, 2).hasMore).toBe(false);
     expect(index.list(null, 1).hasMore).toBe(true);
   });
+
+  it('restricts to one calendar month when a period is given', () => {
+    index.upsert(row({ id: 'A', absPath: '/a.md', epochMs: 1, created: '2026-06-15T10:00:00+00:00' }));
+    index.upsert(row({ id: 'B', absPath: '/b.md', epochMs: 2, created: '2026-07-01T10:00:00+00:00' }));
+    index.upsert(row({ id: 'C', absPath: '/c.md', epochMs: 3, created: '2026-07-26T10:00:00+00:00' }));
+
+    const { rows } = index.list(null, 10, { year: 2026, month: 7 });
+    expect(rows.map((r) => r.id)).toEqual(['C', 'B']);
+  });
+
+  it('combines a period filter with keyset pagination correctly', () => {
+    index.upsert(row({ id: 'A', absPath: '/a.md', epochMs: 1, created: '2026-07-01T10:00:00+00:00' }));
+    index.upsert(row({ id: 'B', absPath: '/b.md', epochMs: 2, created: '2026-07-10T10:00:00+00:00' }));
+    index.upsert(row({ id: 'C', absPath: '/c.md', epochMs: 3, created: '2026-08-01T10:00:00+00:00' }));
+
+    const first = index.list(null, 1, { year: 2026, month: 7 });
+    expect(first.rows.map((r) => r.id)).toEqual(['B']);
+    expect(first.hasMore).toBe(true);
+
+    const last = first.rows.at(-1)!;
+    const second = index.list({ epochMs: last.epochMs, id: last.id }, 1, { year: 2026, month: 7 });
+    expect(second.rows.map((r) => r.id)).toEqual(['A']);
+    expect(second.hasMore).toBe(false);
+  });
+
+  it('a period with no entries returns an empty page, not an error', () => {
+    index.upsert(row({ id: 'A', absPath: '/a.md', epochMs: 1, created: '2026-07-01T10:00:00+00:00' }));
+    expect(index.list(null, 10, { year: 2020, month: 1 })).toEqual({ rows: [], hasMore: false });
+  });
+});
+
+describe('listPeriods', () => {
+  it('is empty for a fresh index', () => {
+    expect(index.listPeriods()).toEqual([]);
+  });
+
+  it('lists each distinct year-month once, newest first', () => {
+    index.upsert(row({ id: 'A', absPath: '/a.md', created: '2026-06-15T10:00:00+00:00' }));
+    index.upsert(row({ id: 'B', absPath: '/b.md', created: '2026-07-01T10:00:00+00:00' }));
+    index.upsert(row({ id: 'C', absPath: '/c.md', created: '2026-07-26T10:00:00+00:00' }));
+    index.upsert(row({ id: 'D', absPath: '/d.md', created: '2025-12-31T10:00:00+00:00' }));
+
+    expect(index.listPeriods()).toEqual([
+      { year: 2026, month: 7 },
+      { year: 2026, month: 6 },
+      { year: 2025, month: 12 },
+    ]);
+  });
 });
 
 describe('rebuild via clear', () => {

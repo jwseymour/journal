@@ -24,6 +24,7 @@ import type {
   CreateEntryInput,
   EntryStore,
   ListOptions,
+  ListPeriodsResult,
   ListResult,
   StoreStats,
   StoredEntry,
@@ -310,13 +311,22 @@ export class FsEntryStore implements EntryStore {
   async list(options: ListOptions): Promise<ListResult> {
     await this.#refresh();
     const cursor = options.cursor === undefined ? null : decodeCursor(options.cursor);
-    const { rows, hasMore } = this.#index.list(cursor, options.limit);
+    const period =
+      options.year !== undefined && options.month !== undefined
+        ? { year: options.year, month: options.month }
+        : undefined;
+    const { rows, hasMore } = this.#index.list(cursor, options.limit, period);
     const last = rows.at(-1);
 
     return {
       entries: rows.map(summarise),
       nextCursor: hasMore && last ? encodeCursor({ epochMs: last.epochMs, id: last.id }) : null,
     };
+  }
+
+  async listPeriods(): Promise<ListPeriodsResult> {
+    await this.#refresh();
+    return { periods: this.#index.listPeriods() };
   }
 
   async stats(): Promise<StoreStats> {

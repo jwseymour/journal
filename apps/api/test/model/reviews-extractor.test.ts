@@ -54,6 +54,9 @@ class FakeEntryStore implements EntryStore {
   addAttachment(): Promise<never> {
     throw new Error('not used in these tests');
   }
+  listPeriods(): Promise<never> {
+    throw new Error('not used in these tests');
+  }
   async stats(): Promise<StoreStats> {
     return { entryCount: this.entries.length, unreadableCount: 0 };
   }

@@ -145,6 +145,10 @@
   --space-2xl: 5.5rem;
   --space-3xl: 8rem;
 
+  /* The Year/Month tree's row height (home page) — fixed, so its sticky
+   * headers can stack at predictable offsets as nested sections scroll. */
+  --tree-row-height: 2.75rem;
+
   /* ═══ Line and edge ════════════════════════════════════════════════════════
    *
    * Hairlines, never heavy rules (`design.md` §5.3). Radii are nearly nothing:

@@ -1,0 +1,73 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.field {
+  width: 100%;
+  padding: var(--space-sm) 0;
+  border: 0;
+  border-bottom: var(--hairline) solid var(--rule-strong);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+  outline: none;
+}
+
+.field::placeholder {
+  color: var(--ink-faint);
+}
+
+.results {
+  margin-top: var(--space-sm);
+  list-style: none;
+  padding: 0;
+}
+
+.results > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.item {
+  display: block;
+  margin-inline: calc(var(--space-2xs) * -1);
+  padding: var(--space-sm) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-decoration: none;
+  transition: background-color var(--motion-fast) var(--ease);
+}
+
+.item:hover {
+  background-color: var(--ground-sunken);
+}
+
+.when {
+  display: flex;
+  gap: var(--space-2xs);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.passage {
+  display: block;
+  margin-top: var(--space-3xs);
+  line-height: var(--leading-normal);
+}
+
+.seeAll {
+  display: inline-block;
+  margin-top: var(--space-sm);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.empty,
+.hint {
+  padding-top: var(--space-sm);
+  color: var(--ink-muted);
+}
+
+.error {
+  padding-top: var(--space-sm);
+  color: var(--danger);
+}

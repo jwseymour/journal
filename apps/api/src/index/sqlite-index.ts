@@ -50,6 +50,11 @@ export interface IndexListResult {
   hasMore: boolean;
 }
 
+export interface IndexPeriod {
+  year: number;
+  month: number;
+}
+
 export class SqliteIndex {
   readonly #db: Database.Database;
 
@@ -74,6 +79,7 @@ export class SqliteIndex {
         content_hash TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS entries_order ON entries (epoch_ms DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS entries_period ON entries (substr(created, 1, 7));
 
       CREATE TABLE IF NOT EXISTS unreadable (
         abs_path TEXT PRIMARY KEY
@@ -149,21 +155,33 @@ export class SqliteIndex {
    * One page, newest first — the same keyset ordering `store/cursor.ts`
    * defines, expressed as SQL instead of an array scan. `limit + 1` rows are
    * fetched so "is there another page" is answered without a second query.
+   *
+   * `period`, if given, restricts the page to one calendar month (local to
+   * the entry, per `created` — the same `YYYY-MM` grouping the on-disk
+   * `journal/YYYY/MM/` layout already uses).
    */
-  list(cursor: Cursor | null, limit: number): IndexListResult {
+  list(cursor: Cursor | null, limit: number, period?: IndexPeriod): IndexListResult {
+    const yearMonth = period ? `${String(period.year).padStart(4, '0')}-${String(period.month).padStart(2, '0')}` : null;
+
     const rows = (
       cursor
         ? this.#db
             .prepare(
               `SELECT * FROM entries
-               WHERE epoch_ms < @epochMs OR (epoch_ms = @epochMs AND id < @id)
+               WHERE (epoch_ms < @epochMs OR (epoch_ms = @epochMs AND id < @id))
+                 AND (@yearMonth IS NULL OR substr(created, 1, 7) = @yearMonth)
                ORDER BY epoch_ms DESC, id DESC
                LIMIT @limit`,
             )
-            .all({ epochMs: cursor.epochMs, id: cursor.id, limit: limit + 1 })
+            .all({ epochMs: cursor.epochMs, id: cursor.id, yearMonth, limit: limit + 1 })
         : this.#db
-            .prepare('SELECT * FROM entries ORDER BY epoch_ms DESC, id DESC LIMIT @limit')
-            .all({ limit: limit + 1 })
+            .prepare(
+              `SELECT * FROM entries
+               WHERE @yearMonth IS NULL OR substr(created, 1, 7) = @yearMonth
+               ORDER BY epoch_ms DESC, id DESC
+               LIMIT @limit`,
+            )
+            .all({ yearMonth, limit: limit + 1 })
     ) as RawRow[];
 
     const hasMore = rows.length > limit;
@@ -188,6 +206,19 @@ export class SqliteIndex {
     }
 
     return { rows: page, hasMore };
+  }
+
+  /** Every distinct year+month that has at least one entry, newest first. */
+  listPeriods(): IndexPeriod[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT DISTINCT CAST(substr(created, 1, 4) AS INTEGER) AS year,
+                CAST(substr(created, 6, 2) AS INTEGER) AS month
+         FROM entries
+         ORDER BY year DESC, month DESC`,
+      )
+      .all() as IndexPeriod[];
+    return rows;
   }
 
   stats(): IndexStats {

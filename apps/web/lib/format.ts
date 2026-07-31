@@ -79,6 +79,27 @@ export function formatTime(created: string): string {
   return at ? TIME.format(at) : '';
 }
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+/** `3` → `March`. A plain lookup — no `Intl` instantiation needed for a
+ * month number the API already returns as a plain integer. */
+export function monthName(month: number): string {
+  return MONTH_NAMES[month - 1] ?? String(month);
+}
+
 /**
  * `★★★★☆` — a 1–5 rating as plain glyphs in the running type, not a
  * graphical widget. The print information-design treatment

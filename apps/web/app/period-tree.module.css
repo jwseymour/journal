@@ -1,0 +1,91 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.empty {
+  padding-top: var(--space-md);
+  color: var(--ink-muted);
+}
+
+.tree {
+  margin-top: var(--space-sm);
+}
+
+.yearSection + .yearSection {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+/* Sticky headers under free multi-open (`design.md` home-page redesign):
+ * each Year and each open Month owns its own `<section>`, so the standard
+ * nested-sticky-section pattern pins the right ancestor headers as you
+ * scroll through any number of simultaneously open branches, entirely in
+ * CSS — no scroll-position tracking needed. */
+.yearHeader {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--tree-row-height);
+  padding: 0;
+  border: 0;
+  border-bottom: var(--hairline) solid var(--rule);
+  background-color: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-emphasis);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.months {
+  padding-left: var(--space-sm);
+  border-left: var(--hairline) solid var(--rule);
+}
+
+.monthSection + .monthSection {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.monthHeader {
+  position: sticky;
+  top: var(--tree-row-height);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--tree-row-height);
+  padding: 0;
+  border: 0;
+  border-bottom: var(--hairline) solid var(--rule);
+  background-color: var(--ground);
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.selected {
+  box-shadow: inset var(--focus-width) 0 0 var(--accent);
+}
+
+.entries {
+  padding-left: var(--space-sm);
+  border-left: var(--hairline) solid var(--rule);
+}
+
+.sentinel {
+  height: var(--hairline);
+}
+
+.monthEmpty,
+.monthLoading {
+  padding: var(--space-sm) 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}

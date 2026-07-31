@@ -99,6 +99,11 @@ describe('pass-through methods', () => {
     const result = await store.addAttachment(entry.id, { filename: 'x.jpg', data: Buffer.from('x') });
     expect(result.relativeLink).toMatch(/x\.jpg$/);
   });
+
+  it('delegates listPeriods to the inner store unchanged', async () => {
+    await store.create({ body: 'Something to find.', created: '2026-07-26T22:55:13+01:00' });
+    expect(await store.listPeriods()).toEqual({ periods: [{ year: 2026, month: 7 }] });
+  });
 });
 
 it('logs rather than throws when indexing a create fails', async () => {

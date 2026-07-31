@@ -584,6 +584,65 @@ describe('GET /entries', () => {
       expect((await errorOf(response)).code).toBe('invalid_request');
     }
   });
+
+  it('restricts to one calendar month when year and month are both given', async () => {
+    await write('2026-06-15T09:00:00Z', 'June');
+    await write('2026-07-01T09:00:00Z', 'July first');
+    await write('2026-07-26T09:00:00Z', 'July last');
+
+    const page = (await (await app.request('/entries?year=2026&month=7')).json()) as EntryPage;
+    expect(page.entries.map((e) => e.excerpt)).toEqual(['July last', 'July first']);
+  });
+
+  it('rejects year or month given without the other', async () => {
+    for (const query of ['year=2026', 'month=7']) {
+      const response = await app.request(`/entries?${query}`);
+      expect(response.status, query).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+
+  it('rejects a month outside 1-12', async () => {
+    for (const month of ['0', '13', 'july']) {
+      const response = await app.request(`/entries?year=2026&month=${month}`);
+      expect(response.status, month).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+});
+
+describe('GET /entries/periods', () => {
+  const write = (created: string, body: string) => post({ body, created });
+
+  it('is an empty list, not an error, on an empty journal', async () => {
+    const response = await app.request('/entries/periods');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ periods: [] });
+  });
+
+  it('lists each distinct year-month once, newest first, with no count', async () => {
+    await write('2026-06-15T09:00:00Z', 'June');
+    await write('2026-07-01T09:00:00Z', 'July first');
+    await write('2026-07-26T09:00:00Z', 'July second');
+
+    const response = await app.request('/entries/periods');
+    expect(await response.json()).toEqual({
+      periods: [
+        { year: 2026, month: 7 },
+        { year: 2026, month: 6 },
+      ],
+    });
+  });
+
+  it('is never shadowed by GET /entries/:id', async () => {
+    // "periods" is not a ulid, so if this route were absent or mis-registered
+    // the :id handler would answer with entry_not_found instead of a period list.
+    const response = await app.request('/entries/periods');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toHaveProperty('periods');
+    expect(body).not.toHaveProperty('error');
+  });
 });
 
 describe('GET /entries/:id', () => {

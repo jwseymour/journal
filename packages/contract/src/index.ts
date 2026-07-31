@@ -91,6 +91,25 @@ export interface EntryPage {
 }
 
 /**
+ * One calendar month that has at least one entry in it, local to each
+ * entry's own `created` offset — the same `YYYY-MM` grouping the on-disk
+ * `journal/YYYY/MM/` layout already uses.
+ *
+ * Deliberately just the label, never a count: an entry count is an
+ * aggregate over writing behaviour, which this application never shows
+ * (`design.md` §4, `plan.md` standing rule 7). This type must not grow one.
+ */
+export interface EntryPeriod {
+  year: number;
+  month: number;
+}
+
+export interface EntryPeriodsResponse {
+  /** Every month with an entry, newest first. */
+  periods: EntryPeriod[];
+}
+
+/**
  * Creating an entry.
  *
  * `created` and `location` come from the client because only the client knows

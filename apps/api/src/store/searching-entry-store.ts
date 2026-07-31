@@ -5,6 +5,7 @@ import type {
   CreateEntryInput,
   EntryStore,
   ListOptions,
+  ListPeriodsResult,
   ListResult,
   StoredEntry,
   StoreStats,
@@ -63,6 +64,10 @@ export class SearchingEntryStore implements EntryStore {
 
   list(options: ListOptions): Promise<ListResult> {
     return this.#inner.list(options);
+  }
+
+  listPeriods(): Promise<ListPeriodsResult> {
+    return this.#inner.listPeriods();
   }
 
   stats(): Promise<StoreStats> {

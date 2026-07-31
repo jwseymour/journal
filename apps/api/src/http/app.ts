@@ -11,6 +11,7 @@ import type {
   CreateEntryResponse,
   Entry,
   EntryPage,
+  EntryPeriodsResponse,
   HealthResponse,
   ListItemsResponse,
   ListsSummaryResponse,
@@ -278,6 +279,8 @@ export function createApp(
   app.get('/entries', async (c) => {
     const cursor = c.req.query('cursor');
     const rawLimit = c.req.query('limit');
+    const rawYear = c.req.query('year');
+    const rawMonth = c.req.query('month');
 
     let limit = DEFAULT_LIMIT;
     if (rawLimit !== undefined && rawLimit !== '') {
@@ -288,12 +291,36 @@ export function createApp(
       limit = value;
     }
 
+    if ((rawYear === undefined) !== (rawMonth === undefined)) {
+      throw invalidRequest(`'year' and 'month' must be given together.`);
+    }
+
+    let period: { year: number; month: number } | undefined;
+    if (rawYear !== undefined && rawMonth !== undefined) {
+      const year = Number(rawYear);
+      const month = Number(rawMonth);
+      if (!Number.isInteger(year) || year < 1) {
+        throw invalidRequest(`'year' must be a positive whole number.`);
+      }
+      if (!Number.isInteger(month) || month < 1 || month > 12) {
+        throw invalidRequest(`'month' must be a whole number between 1 and 12.`);
+      }
+      period = { year, month };
+    }
+
     const result = await store.list({
       limit,
       ...(cursor !== undefined && cursor !== '' ? { cursor } : {}),
+      ...(period ?? {}),
     });
     const page: EntryPage = { entries: result.entries, nextCursor: result.nextCursor };
     return c.json(page);
+  });
+
+  app.get('/entries/periods', async (c) => {
+    const result = await store.listPeriods();
+    const response: EntryPeriodsResponse = { periods: result.periods };
+    return c.json(response);
   });
 
   app.get('/entries/:id', async (c) => {

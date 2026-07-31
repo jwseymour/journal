@@ -11,6 +11,7 @@ import type {
   CreateEntryResponse,
   Entry,
   EntryPage,
+  EntryPeriodsResponse,
   DefineMetricFieldRequest,
   ListItemsResponse,
   ListsSummaryResponse,
@@ -97,12 +98,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function listEntries(options: { cursor?: string; limit?: number } = {}): Promise<EntryPage> {
+export function listEntries(
+  options: { cursor?: string; limit?: number; year?: number; month?: number } = {},
+): Promise<EntryPage> {
   const query = new URLSearchParams();
   if (options.cursor) query.set('cursor', options.cursor);
   if (options.limit !== undefined) query.set('limit', String(options.limit));
+  if (options.year !== undefined) query.set('year', String(options.year));
+  if (options.month !== undefined) query.set('month', String(options.month));
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   return request<EntryPage>(`/entries${suffix}`);
+}
+
+/** Every calendar month with at least one entry, newest first — the index
+ * behind the home page's Year/Month browser. */
+export function listEntryPeriods(): Promise<EntryPeriodsResponse> {
+  return request<EntryPeriodsResponse>('/entries/periods');
 }
 
 /** `null` for an entry that is not there, which is a normal answer, not a failure. */

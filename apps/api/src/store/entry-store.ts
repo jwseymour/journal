@@ -40,11 +40,23 @@ export interface UpdateEntryInput {
 export interface ListOptions {
   cursor?: string;
   limit: number;
+  /** Restrict to one calendar month, local to each entry's own `created`. Both or neither. */
+  year?: number;
+  month?: number;
 }
 
 export interface ListResult {
   entries: EntrySummary[];
   nextCursor: string | null;
+}
+
+export interface EntryPeriod {
+  year: number;
+  month: number;
+}
+
+export interface ListPeriodsResult {
+  periods: EntryPeriod[];
 }
 
 export interface StoreStats {
@@ -106,6 +118,9 @@ export interface EntryStore {
 
   /** One page of entries, newest first. */
   list(options: ListOptions): Promise<ListResult>;
+
+  /** Every calendar month with at least one entry, newest first. */
+  listPeriods(): Promise<ListPeriodsResult>;
 
   stats(): Promise<StoreStats>;
 }
