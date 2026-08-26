@@ -1,0 +1,10 @@
+# Template — `infra/deploy.sh` substitutes {{DOMAIN}} and installs this at
+# /etc/caddy/Caddyfile. Not consumed directly.
+#
+# Caddy handles the Let's Encrypt certificate and renewal automatically; the
+# only job here is reverse-proxying to the API process on localhost. Caddy
+# forwards X-Forwarded-For/Proto by default — nothing extra to configure.
+
+{{DOMAIN}} {
+	reverse_proxy 127.0.0.1:4319
+}

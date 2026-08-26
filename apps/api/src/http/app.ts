@@ -1,19 +1,29 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { z } from 'zod';
+import { authorizationUrl, beginFlow, exchangeCodeForIdentity } from '../auth/google.js';
+import { sealFlow, unsealFlow } from '../auth/flow-cookie.js';
+import { verifyPassword } from '../auth/password.js';
+import { FixedWindowRateLimiter } from '../auth/rate-limit.js';
+import { createSessionToken, verifySessionToken } from '../auth/session.js';
 import type {
   AddAttachmentResponse,
   ApiError,
   ApproveCategoryRequest,
   CategoriesResponse,
   ChatResponse,
+  CreateDocumentResponse,
   CreateEntryResponse,
+  Document,
+  DocumentPage,
   Entry,
   EntryPage,
   EntryPeriodsResponse,
   HealthResponse,
   ListItemsResponse,
+  ListItemUpdateSuggestionsResponse,
   ListsSummaryResponse,
   MetricFieldsResponse,
   MetricFieldSummaryResponse,
@@ -21,20 +31,25 @@ import type {
   MetricFieldValuesResponse,
   MetricsResponse,
   MetricsSummaryResponse,
+  MetricUpdateSuggestionsResponse,
   OpinionStatementsResponse,
+  OpinionStatementUpdateSuggestionsResponse,
   OpinionSummariesResponse,
   QuestionsResponse,
   QuestionsSummaryResponse,
+  QuestionUpdateSuggestionsResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
+  ReviewUpdateSuggestionsResponse,
   SearchResponse,
   StructureType,
   SuggestionsResponse,
   TranscribeResponse,
+  UpdateDocumentResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
-import { AppError, invalidRequest } from '../errors.js';
+import { AppError, invalidRequest, recordNotFound, unauthorized } from '../errors.js';
 import type { CategoriesReader } from '../index/categories-index.js';
 import type { ListItemsReader } from '../index/lists-index.js';
 import { resolveNumericField, type MetricFieldsReader } from '../index/metric-fields-index.js';
@@ -48,6 +63,7 @@ import { isUlid, ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
 import type { Searcher } from '../search/searcher.js';
 import type { Transcriber } from '../transcribe/transcriber.js';
+import type { DocumentStore } from './../store/document-store.js';
 import type { EntryStore } from './../store/entry-store.js';
 
 const STRUCTURE_TYPES: readonly StructureType[] = ['metric', 'review_medium', 'list_type', 'opinion_subject'];
@@ -112,6 +128,26 @@ const UpdateEntrySchema = z
   })
   .strict();
 
+/** A document is directly authored like an entry, never AI-derived, so its
+ * `PUT` body is a full replace — every editable field required — not the
+ * partial-patch shape the M10 `Update*Schema`s below use. */
+const CreateDocumentSchema = z
+  .object({
+    title: z.string().min(1),
+    body: z.string(),
+    citedEntries: z.array(z.string()).optional(),
+  })
+  .strict();
+
+const UpdateDocumentSchema = z
+  .object({
+    title: z.string().min(1),
+    body: z.string(),
+    citedEntries: z.array(z.string()).optional(),
+    contentHash: z.string().min(1),
+  })
+  .strict();
+
 const ApproveCategorySchema = z
   .object({
     structureType: z.enum(['metric', 'review_medium', 'list_type', 'opinion_subject']),
@@ -135,6 +171,84 @@ const DefineMetricFieldSchema = z
   .strict();
 
 const ApproveMetricFieldValueSchema = z.object({ value: z.string().min(1) }).strict();
+
+/** `PUT` bodies for the five touchable derived-record types (`plan.md`
+ * M10). Every field optional — only what's present changes, the rest is
+ * left as stored, same partial-edit shape as `UpdateMetricRequest` and
+ * siblings in `@journal/contract`. */
+const UpdateMetricSchema = z
+  .object({
+    detail: z.string().min(1).optional(),
+    fields: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+    eventTime: z.string().optional(),
+    eventTimeExplicit: z.boolean().optional(),
+  })
+  .strict();
+
+const UpdateReviewSchema = z
+  .object({
+    title: z.string().min(1).optional(),
+    rating: z.number().nullable().optional(),
+    progress: z.number().nullable().optional(),
+    opinion: z.string().optional(),
+    eventTime: z.string().optional(),
+    eventTimeExplicit: z.boolean().optional(),
+  })
+  .strict();
+
+const UpdateListItemSchema = z
+  .object({
+    text: z.string().min(1).optional(),
+    context: z.string().optional(),
+    importance: z.number().nullable().optional(),
+    eventTime: z.string().optional(),
+    eventTimeExplicit: z.boolean().optional(),
+  })
+  .strict();
+
+const UpdateOpinionStatementSchema = z
+  .object({
+    statement: z.string().min(1).optional(),
+    eventTime: z.string().optional(),
+    eventTimeExplicit: z.boolean().optional(),
+  })
+  .strict();
+
+const UpdateQuestionSchema = z
+  .object({
+    question: z.string().min(1).optional(),
+    eventTime: z.string().optional(),
+    eventTimeExplicit: z.boolean().optional(),
+  })
+  .strict();
+
+/** Parses and validates a `PUT` body against one of the schemas above,
+ * throwing the same `invalid_request` shape every other body-validating
+ * route in this file throws. Shared because all five follow the identical
+ * pattern (`plan.md` M10). */
+async function parseUpdateBody<T>(c: { req: { json: () => Promise<unknown> } }, schema: z.ZodType<T>): Promise<T> {
+  let json: unknown;
+  try {
+    json = await c.req.json();
+  } catch {
+    throw invalidRequest('The request body is not valid JSON.');
+  }
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) {
+    const [issue] = parsed.error.issues;
+    const at = issue && issue.path.length > 0 ? ` at '${issue.path.join('.')}'` : '';
+    throw invalidRequest(`${issue?.message ?? 'Invalid request body.'}${at}`);
+  }
+  return parsed.data;
+}
+
+function optionalStatus(raw: string | undefined): 'pending' | 'approved' | 'rejected' | undefined {
+  if (raw === undefined) return undefined;
+  if (!['pending', 'approved', 'rejected'].includes(raw)) {
+    throw invalidRequest("'status' must be one of: pending, approved, rejected.");
+  }
+  return raw as 'pending' | 'approved' | 'rejected';
+}
 
 /** Bounds one chat turn's per-request cost — with no persistence (`plan.md`
  * — v1 is ephemeral), the client resends the whole conversation on every
@@ -170,12 +284,47 @@ function entryResponse(entry: {
   };
 }
 
+function documentResponse(document: {
+  id: string;
+  title: string;
+  created: string;
+  updated: string;
+  citedEntries?: string[];
+  body: string;
+  contentHash: string;
+}): Document {
+  return {
+    id: document.id,
+    title: document.title,
+    created: document.created,
+    updated: document.updated,
+    ...(document.citedEntries && document.citedEntries.length > 0
+      ? { citedEntries: document.citedEntries }
+      : {}),
+    body: document.body,
+    contentHash: document.contentHash,
+  };
+}
+
 function errorBody(code: ApiError['error']['code'], message: string): ApiError {
   return { error: { code, message } };
 }
 
+const SESSION_COOKIE = 'journal_session';
+const FLOW_COOKIE = 'journal_oauth_flow';
+const SECURE_COOKIES = process.env['NODE_ENV'] === 'production';
+
+/** One key for the whole process (`plan.md` M11) — this is a single-user
+ * system, so limiting the *total* guess rate matters more than trying to
+ * attribute attempts to a caller, which a rotated IP defeats anyway. */
+const LOGIN_RATE_LIMIT_KEY = 'password-login';
+const loginRateLimiter = new FixedWindowRateLimiter(5, 15 * 60 * 1000);
+
+const LoginSchema = z.object({ password: z.string().min(1) }).strict();
+
 export function createApp(
   store: EntryStore,
+  documentStore: DocumentStore,
   config: Config,
   transcriber: Transcriber,
   searcher: Searcher,
@@ -231,6 +380,137 @@ export function createApp(
       maxAge: 600,
     }),
   );
+
+  // Single-user auth boundary (`plan.md` M11). Enforced only when
+  // `SESSION_SECRET` is configured — its absence means auth has not been set
+  // up yet, the same local-dev-unaffected-by-default posture
+  // `STORAGE_BACKEND` takes, not a silent hole in a deployment where it is
+  // expected to be set (`config.ts`).
+  app.use('*', async (c, next) => {
+    if (c.req.path === '/health' || c.req.path.startsWith('/auth/')) return next();
+    if (!config.sessionSecret) return next();
+
+    const authHeader = c.req.header('Authorization');
+    const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : undefined;
+    const usedCookie = bearer === undefined;
+    const token = bearer ?? getCookie(c, SESSION_COOKIE);
+
+    const payload = token ? verifySessionToken(config.sessionSecret, token) : null;
+    if (!payload || payload.sub !== config.authorizedEmail) {
+      return c.json(errorBody('unauthorized', 'Sign in required.'), 401);
+    }
+
+    // Tightened specifically for the cookie path (`plan.md` M11): a bearer
+    // caller supplies its credential explicitly and is unaffected by CSRF,
+    // but a cookie is sent automatically by the browser, so a
+    // state-changing cookie-authenticated request with no `Origin` at all is
+    // now suspicious rather than the normal "curl has no Origin" case the
+    // earlier, looser check (above) was written for.
+    const method = c.req.method.toUpperCase();
+    if (usedCookie && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      if (c.req.header('Origin') === undefined) {
+        return c.json(
+          errorBody('forbidden_origin', 'A state-changing, cookie-authenticated request must carry an Origin header.'),
+          403,
+        );
+      }
+    }
+
+    return next();
+  });
+
+  app.get('/auth/google/start', async (c) => {
+    if (!config.sessionSecret) throw invalidRequest('Auth is not configured on this server.');
+    if (!config.googleClientId || !config.googleClientSecret) {
+      throw invalidRequest('Google sign-in is not configured on this server.');
+    }
+
+    const flow = beginFlow();
+    setCookie(c, FLOW_COOKIE, sealFlow(config.sessionSecret, flow), {
+      httpOnly: true,
+      secure: SECURE_COOKIES,
+      sameSite: 'Lax',
+      maxAge: 600,
+      path: '/',
+    });
+
+    const redirectUri = new URL('/auth/google/callback', c.req.url).toString();
+    return c.redirect(authorizationUrl(config.googleClientId, redirectUri, flow));
+  });
+
+  app.get('/auth/google/callback', async (c) => {
+    if (!config.sessionSecret) throw invalidRequest('Auth is not configured on this server.');
+    if (!config.googleClientId || !config.googleClientSecret) {
+      throw invalidRequest('Google sign-in is not configured on this server.');
+    }
+
+    const code = c.req.query('code');
+    const state = c.req.query('state');
+    const sealed = getCookie(c, FLOW_COOKIE);
+    deleteCookie(c, FLOW_COOKIE, { path: '/' });
+
+    const flow = sealed ? unsealFlow(config.sessionSecret, sealed) : null;
+    if (!code || !state || !flow || flow.state !== state) {
+      throw unauthorized('The Google sign-in attempt could not be verified. Try again.');
+    }
+
+    let identity;
+    try {
+      const redirectUri = new URL('/auth/google/callback', c.req.url).toString();
+      identity = await exchangeCodeForIdentity(
+        config.googleClientId,
+        config.googleClientSecret,
+        redirectUri,
+        code,
+        flow.codeVerifier,
+      );
+    } catch (cause) {
+      console.error('[journal] google token exchange failed', cause);
+      throw unauthorized('Google sign-in failed.');
+    }
+
+    if (!identity.emailVerified || identity.email !== config.authorizedEmail) {
+      throw unauthorized('This Google account is not authorized for this journal.');
+    }
+
+    setCookie(c, SESSION_COOKIE, createSessionToken(config.sessionSecret, config.authorizedEmail), {
+      httpOnly: true,
+      secure: SECURE_COOKIES,
+      sameSite: 'Lax',
+      maxAge: 30 * 24 * 60 * 60,
+      path: '/',
+    });
+
+    const redirectTarget = config.allowedOrigins[0] ?? '/';
+    return c.redirect(redirectTarget);
+  });
+
+  app.post('/auth/login', async (c) => {
+    if (!config.sessionSecret || !config.authPasswordHash) {
+      throw invalidRequest('Password sign-in is not configured on this server.');
+    }
+    if (!loginRateLimiter.attempt(LOGIN_RATE_LIMIT_KEY)) {
+      throw unauthorized('Too many attempts. Try again later.');
+    }
+
+    const body = await parseUpdateBody(c, LoginSchema);
+    const ok = await verifyPassword(config.authPasswordHash, body.password);
+    if (!ok) throw unauthorized('Incorrect password.');
+
+    setCookie(c, SESSION_COOKIE, createSessionToken(config.sessionSecret, config.authorizedEmail), {
+      httpOnly: true,
+      secure: SECURE_COOKIES,
+      sameSite: 'Lax',
+      maxAge: 30 * 24 * 60 * 60,
+      path: '/',
+    });
+    return c.body(null, 204);
+  });
+
+  app.post('/auth/logout', async (c) => {
+    deleteCookie(c, SESSION_COOKIE, { path: '/' });
+    return c.body(null, 204);
+  });
 
   app.get('/health', async (c) => {
     const { entryCount, unreadableCount } = await store.stats();
@@ -397,6 +677,66 @@ export function createApp(
     return c.json(response, 201);
   });
 
+  app.post('/documents', async (c) => {
+    const { title, body, citedEntries } = await parseUpdateBody(c, CreateDocumentSchema);
+    const document = await documentStore.create({
+      title,
+      body,
+      ...(citedEntries !== undefined ? { citedEntries } : {}),
+    });
+    const response: CreateDocumentResponse = {
+      id: document.id,
+      created: document.created,
+      path: document.path,
+      contentHash: document.contentHash,
+    };
+    return c.json(response, 201);
+  });
+
+  app.get('/documents', async (c) => {
+    const cursor = c.req.query('cursor');
+    const rawLimit = c.req.query('limit');
+
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const result = await documentStore.list({
+      limit,
+      ...(cursor !== undefined && cursor !== '' ? { cursor } : {}),
+    });
+    const page: DocumentPage = { documents: result.documents, nextCursor: result.nextCursor };
+    return c.json(page);
+  });
+
+  app.get('/documents/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) throw recordNotFound('document', id);
+    const document = await documentStore.get(id);
+    if (!document) throw recordNotFound('document', id);
+    return c.json(documentResponse(document));
+  });
+
+  app.put('/documents/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) throw recordNotFound('document', id);
+
+    const { title, body, citedEntries, contentHash } = await parseUpdateBody(c, UpdateDocumentSchema);
+    const document = await documentStore.update(id, {
+      title,
+      body,
+      contentHash,
+      ...(citedEntries !== undefined ? { citedEntries } : {}),
+    });
+    const response: UpdateDocumentResponse = documentResponse(document);
+    return c.json(response);
+  });
+
   app.get('/search', async (c) => {
     const q = c.req.query('q');
     if (q === undefined || q.trim().length === 0) {
@@ -441,6 +781,7 @@ export function createApp(
         eventTimeExplicit: record.eventTimeExplicit,
         detail: record.detail,
         fields: record.fields,
+        touched: record.touched,
       })),
     };
     return c.json(response);
@@ -452,6 +793,46 @@ export function createApp(
     // id is simply nothing to do, not an error (`requirements.md` §6.2 —
     // correcting a mistake should be this easy, not fussy about repeats).
     if (isUlid(id)) metrics.remove(id);
+    return c.body(null, 204);
+  });
+
+  // Touch/edit surface (`plan.md` M10). Unlike DELETE above, PUT carries
+  // real content — dropping it silently on a bad id would be worse than the
+  // tolerant-no-op convention, so this 404s instead.
+  app.put('/metrics/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = await parseUpdateBody(c, UpdateMetricSchema);
+    const updated = metrics.update(id, body, nowTimestamp().canonical);
+    if (!updated) throw recordNotFound('metric', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/metrics/:id/validate', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) metrics.validate(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/metrics/:id/untouch', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) metrics.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/metrics/update-suggestions', async (c) => {
+    const status = optionalStatus(c.req.query('status'));
+    const suggestions = metrics.listUpdateSuggestions(status ? { status } : {});
+    const response: MetricUpdateSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/metrics/update-suggestions/:id/approve', async (c) => {
+    metrics.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/metrics/update-suggestions/:id/reject', async (c) => {
+    metrics.decideUpdate(c.req.param('id'), 'rejected', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 
@@ -621,6 +1002,7 @@ export function createApp(
         opinion: record.opinion,
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
+        touched: record.touched,
       })),
     };
     return c.json(response);
@@ -629,6 +1011,43 @@ export function createApp(
   app.delete('/reviews/:id', async (c) => {
     const id = c.req.param('id');
     if (isUlid(id)) reviews.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.put('/reviews/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = await parseUpdateBody(c, UpdateReviewSchema);
+    const updated = reviews.update(id, body, nowTimestamp().canonical);
+    if (!updated) throw recordNotFound('review', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/reviews/:id/validate', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) reviews.validate(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/reviews/:id/untouch', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) reviews.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/reviews/update-suggestions', async (c) => {
+    const status = optionalStatus(c.req.query('status'));
+    const suggestions = reviews.listUpdateSuggestions(status ? { status } : {});
+    const response: ReviewUpdateSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/reviews/update-suggestions/:id/approve', async (c) => {
+    reviews.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/reviews/update-suggestions/:id/reject', async (c) => {
+    reviews.decideUpdate(c.req.param('id'), 'rejected', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 
@@ -662,6 +1081,7 @@ export function createApp(
         importance: record.importance,
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
+        touched: record.touched,
       })),
     };
     return c.json(response);
@@ -670,6 +1090,43 @@ export function createApp(
   app.delete('/lists/:id', async (c) => {
     const id = c.req.param('id');
     if (isUlid(id)) lists.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.put('/lists/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = await parseUpdateBody(c, UpdateListItemSchema);
+    const updated = lists.update(id, body, nowTimestamp().canonical);
+    if (!updated) throw recordNotFound('list item', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/lists/:id/validate', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) lists.validate(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/lists/:id/untouch', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) lists.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/lists/update-suggestions', async (c) => {
+    const status = optionalStatus(c.req.query('status'));
+    const suggestions = lists.listUpdateSuggestions(status ? { status } : {});
+    const response: ListItemUpdateSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/lists/update-suggestions/:id/approve', async (c) => {
+    lists.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/lists/update-suggestions/:id/reject', async (c) => {
+    lists.decideUpdate(c.req.param('id'), 'rejected', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 
@@ -695,6 +1152,7 @@ export function createApp(
         statement: record.statement,
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
+        touched: record.touched,
       })),
     };
     return c.json(response);
@@ -705,6 +1163,43 @@ export function createApp(
     // The same tolerance as every other correction endpoint
     // (`requirements.md` §6.2).
     if (isUlid(id)) opinionStatements.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.put('/opinions/statements/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = await parseUpdateBody(c, UpdateOpinionStatementSchema);
+    const updated = opinionStatements.update(id, body, nowTimestamp().canonical);
+    if (!updated) throw recordNotFound('opinion statement', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/opinions/statements/:id/validate', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) opinionStatements.validate(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/opinions/statements/:id/untouch', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) opinionStatements.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/opinions/statements/update-suggestions', async (c) => {
+    const status = optionalStatus(c.req.query('status'));
+    const suggestions = opinionStatements.listUpdateSuggestions(status ? { status } : {});
+    const response: OpinionStatementUpdateSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/opinions/statements/update-suggestions/:id/approve', async (c) => {
+    opinionStatements.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/opinions/statements/update-suggestions/:id/reject', async (c) => {
+    opinionStatements.decideUpdate(c.req.param('id'), 'rejected', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 
@@ -763,6 +1258,7 @@ export function createApp(
         status: record.status,
         resolvedEntryId: record.resolvedEntryId,
         resolution: record.resolution,
+        touched: record.touched,
       })),
     };
     return c.json(response);
@@ -779,6 +1275,43 @@ export function createApp(
   app.post('/questions/:id/reopen', async (c) => {
     const id = c.req.param('id');
     if (isUlid(id)) questions.reopen(id);
+    return c.body(null, 204);
+  });
+
+  app.put('/questions/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = await parseUpdateBody(c, UpdateQuestionSchema);
+    const updated = questions.update(id, body, nowTimestamp().canonical);
+    if (!updated) throw recordNotFound('question', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/questions/:id/validate', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) questions.validate(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/questions/:id/untouch', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) questions.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/questions/update-suggestions', async (c) => {
+    const status = optionalStatus(c.req.query('status'));
+    const suggestions = questions.listUpdateSuggestions(status ? { status } : {});
+    const response: QuestionUpdateSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/questions/update-suggestions/:id/approve', async (c) => {
+    questions.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/questions/update-suggestions/:id/reject', async (c) => {
+    questions.decideUpdate(c.req.param('id'), 'rejected', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 

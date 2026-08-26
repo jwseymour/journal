@@ -67,3 +67,11 @@ export const extractionFailed = (message: string, cause?: unknown): AppError =>
 
 export const chatFailed = (message: string, cause?: unknown): AppError =>
   new AppError('chat_failed', message, 503, cause === undefined ? undefined : { cause });
+
+/** No valid session cookie or bearer token, or a Google/password sign-in
+ * attempt that did not check out (`plan.md` M11). Message is always
+ * generic — never distinguishes "wrong password" from "unknown account"
+ * from "expired session," so a caller learns nothing from the failure mode
+ * beyond "not signed in." */
+export const unauthorized = (message = 'Sign in required.'): AppError =>
+  new AppError('unauthorized', message, 401);

@@ -73,6 +73,36 @@ export interface Config {
    * value, because chat needs tool-calling ability and the two may need to
    * diverge without one change accidentally affecting the other. */
   readonly chatModel: string;
+
+  /** `fs` (default) or `s3` (`plan.md` M11). Which `EntryStore` boot
+   * constructs. Defaults to `fs` so nothing about local dev changes for
+   * anyone who has not opted in. */
+  readonly storageBackend: 'fs' | 's3';
+  /** Required only when `storageBackend` is `s3` — same "fail loudly at
+   * boot, never guess" treatment `journalDir` gets. */
+  readonly s3Bucket: string | undefined;
+  readonly awsRegion: string | undefined;
+  readonly awsAccessKeyId: string | undefined;
+  readonly awsSecretAccessKey: string | undefined;
+
+  /** The one identity auth ever accepts (`plan.md` M11) — this is a
+   * single-user system, so there is no users table, only an allowlist of
+   * one address. */
+  readonly authorizedEmail: string;
+  /** Google OAuth client credentials. `undefined`, not a fatal boot error,
+   * when absent — the same "whole subsystem is optional, fails clearly at
+   * the point of use" treatment `aiGatewayApiKey` gets. */
+  readonly googleClientId: string | undefined;
+  readonly googleClientSecret: string | undefined;
+  /** An argon2id hash, generated once via `npm run set-password`. `undefined`
+   * disables the password login path, not the server. */
+  readonly authPasswordHash: string | undefined;
+  /** Seals the session cookie and signs bearer tokens. Auth is enforced only
+   * when this is set — its absence means "auth is not configured yet," the
+   * same local-dev-unaffected-by-default posture `storageBackend` takes, not
+   * a silent security hole in a deployed instance where it is expected to be
+   * set. */
+  readonly sessionSecret: string | undefined;
 }
 
 export const DEFAULT_PORT = 4319;
@@ -99,6 +129,11 @@ const DEFAULT_EXTRACTION_MODEL = 'anthropic/claude-sonnet-5';
 /** Same default as extraction — it is already tool-calling-capable, so
  * there is no reason for day one to name a different model. */
 const DEFAULT_CHAT_MODEL = 'anthropic/claude-sonnet-5';
+
+/** The one person this system is for (`plan.md` M11). Overridable, but
+ * defaulting it means a fresh deploy is gated to the right person even
+ * before `.env` is fully filled in. */
+const DEFAULT_AUTHORIZED_EMAIL = 'seymour.w.jack@gmail.com';
 
 function readEmbeddingDimensions(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_EMBEDDING_DIMENSIONS;
@@ -144,7 +179,24 @@ function readOrigins(raw: string | undefined): readonly string[] {
   return origins;
 }
 
+function readStorageBackend(raw: string | undefined): 'fs' | 's3' {
+  const value = raw?.trim() || 'fs';
+  if (value !== 'fs' && value !== 's3') {
+    throw new ConfigError(`STORAGE_BACKEND must be 'fs' or 's3' — got '${value}'.`);
+  }
+  return value;
+}
+
 export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<Config> {
+  const storageBackend = readStorageBackend(env['STORAGE_BACKEND']);
+  const s3Bucket = env['S3_BUCKET']?.trim() || undefined;
+  const awsRegion = env['AWS_REGION']?.trim() || undefined;
+  if (storageBackend === 's3' && (!s3Bucket || !awsRegion)) {
+    throw new ConfigError(
+      'STORAGE_BACKEND is `s3` but S3_BUCKET and/or AWS_REGION is not set. Both are required to store entries in S3.',
+    );
+  }
+
   const raw = env['JOURNAL_DIR'];
   if (raw === undefined || raw.trim() === '') {
     throw new ConfigError(
@@ -193,5 +245,15 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     aiGatewayApiKey: env['AI_GATEWAY_API_KEY']?.trim() || undefined,
     extractionModel: env['EXTRACTION_MODEL']?.trim() || DEFAULT_EXTRACTION_MODEL,
     chatModel: env['CHAT_MODEL']?.trim() || DEFAULT_CHAT_MODEL,
+    storageBackend,
+    s3Bucket,
+    awsRegion,
+    awsAccessKeyId: env['AWS_ACCESS_KEY_ID']?.trim() || undefined,
+    awsSecretAccessKey: env['AWS_SECRET_ACCESS_KEY']?.trim() || undefined,
+    authorizedEmail: env['AUTHORIZED_EMAIL']?.trim() || DEFAULT_AUTHORIZED_EMAIL,
+    googleClientId: env['GOOGLE_CLIENT_ID']?.trim() || undefined,
+    googleClientSecret: env['GOOGLE_CLIENT_SECRET']?.trim() || undefined,
+    authPasswordHash: env['AUTH_PASSWORD_HASH']?.trim() || undefined,
+    sessionSecret: env['SESSION_SECRET']?.trim() || undefined,
   };
 }

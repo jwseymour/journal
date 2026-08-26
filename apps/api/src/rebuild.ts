@@ -1,9 +1,11 @@
 import { ConfigError, loadConfig } from './config.js';
+import { DocumentsIndex } from './index/documents-index.js';
 import { SearchIndex } from './index/search-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
 import { SearchIndexer } from './search/indexer.js';
 import { LocalEmbedder } from './search/local-embedder.js';
-import { FsEntryStore } from './store/fs-entry-store.js';
+import { createDocumentStore } from './store/create-document-store.js';
+import { createEntryStore } from './store/create-entry-store.js';
 
 /**
  * `rebuild --from-scratch` (`plan.md` M5/M6, `requirements.md` §6.4) — a
@@ -22,7 +24,7 @@ async function main(): Promise<void> {
   console.log(`[journal] from ${config.journalDir}`);
 
   const index = new SqliteIndex(config.indexDbPath);
-  const store = new FsEntryStore(config.journalDir, index);
+  const store = createEntryStore(config, index);
 
   const before = Date.now();
   const { entryCount, unreadableCount } = await store.rebuild();
@@ -38,8 +40,21 @@ async function main(): Promise<void> {
   const searchElapsedMs = Date.now() - searchBefore;
   console.log(`[journal] search index rebuilt in ${searchElapsedMs}ms: ${chunkCount} chunks`);
 
+  // Documents are never indexed for search in this milestone, so this is
+  // just the listing/lookup rebuild — the document-store twin of the entry
+  // rebuild above, free and local exactly the same way.
+  const documentsIndex = new DocumentsIndex(config.indexDbPath);
+  const documentStore = createDocumentStore(config, documentsIndex);
+  const documentsBefore = Date.now();
+  const { documentCount, unreadableCount: unreadableDocumentCount } = await documentStore.rebuild();
+  const documentsElapsedMs = Date.now() - documentsBefore;
+  console.log(
+    `[journal] documents rebuilt in ${documentsElapsedMs}ms: ${documentCount} documents, ${unreadableDocumentCount} unreadable`,
+  );
+
   searchIndex.close();
   index.close();
+  documentsIndex.close();
 }
 
 main().catch((error: unknown) => {

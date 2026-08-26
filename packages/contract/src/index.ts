@@ -996,6 +996,12 @@ export type ApiErrorCode =
    * (`requirements.md` §7.6).
    */
   | 'chat_failed'
+  /**
+   * The request carried no valid session cookie or bearer token
+   * (`plan.md` M11). Sign in via `POST /auth/google/start` or
+   * `POST /auth/login`.
+   */
+  | 'unauthorized'
   /** Anything unanticipated. */
   | 'internal';
 

@@ -14,6 +14,8 @@
     "dev:web": "npm run dev -w @journal/web",
     "rebuild-index": "npm run rebuild -w @journal/api",
     "reprocess": "npm run reprocess -w @journal/api",
+    "migrate-to-s3": "npm run migrate-to-s3 -w @journal/api",
+    "set-password": "npm run set-password -w @journal/api",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",

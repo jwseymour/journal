@@ -8,7 +8,10 @@ import type {
   CategoriesResponse,
   ChatMessage,
   ChatResponse,
+  CreateDocumentResponse,
   CreateEntryResponse,
+  Document,
+  DocumentPage,
   Entry,
   EntryPage,
   HealthResponse,
@@ -17,6 +20,7 @@ import type {
   ListsSummaryResponse,
   MetricsResponse,
   MetricsSummaryResponse,
+  MetricUpdateSuggestionsResponse,
   OpinionStatementsResponse,
   OpinionSummariesResponse,
   OpenQuestion,
@@ -31,25 +35,37 @@ import type {
   SuggestionsResponse,
   TemporalMetric,
   TranscribeResponse,
+  UpdateDocumentResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
 import { chatFailed, transcriptionFailed } from '../../src/errors.js';
 import { createApp } from '../../src/http/app.js';
 import type { CategoriesReader, CategorySuggestion, SuggestionStatus } from '../../src/index/categories-index.js';
-import type { ListItemRecord, ListItemsOptions, ListItemsReader, ListTypeSummary } from '../../src/index/lists-index.js';
+import type {
+  ListItemRecord,
+  ListItemsOptions,
+  ListItemsReader,
+  ListItemUpdateSuggestion,
+  ListTypeSummary,
+  UpdateListItemInput,
+} from '../../src/index/lists-index.js';
 import type { MetricFieldDefinition, MetricFieldSuggestion, MetricFieldsReader } from '../../src/index/metric-fields-index.js';
 import type {
   ListMetricsOptions,
   MetricFieldSummary,
   MetricsReader,
   MetricSummary,
+  MetricUpdateSuggestion,
   TemporalMetricRecord,
+  UpdateMetricInput,
 } from '../../src/index/metrics-index.js';
 import type {
   ListOpinionStatementsOptions,
   OpinionStatementRecord,
   OpinionStatementsReader,
+  OpinionStatementUpdateSuggestion,
+  UpdateOpinionStatementInput,
 } from '../../src/index/opinion-statements-index.js';
 import type { OpinionSummariesReader, OpinionSummaryPartRecord } from '../../src/index/opinion-summaries-index.js';
 import type {
@@ -57,11 +73,22 @@ import type {
   QuestionRecord,
   QuestionsReader,
   QuestionsSummary,
+  QuestionUpdateSuggestion,
+  UpdateQuestionInput,
 } from '../../src/index/questions-index.js';
-import type { ListReviewsOptions, ReviewMediumSummary, ReviewRecord, ReviewsReader } from '../../src/index/reviews-index.js';
+import type {
+  ListReviewsOptions,
+  ReviewMediumSummary,
+  ReviewRecord,
+  ReviewsReader,
+  ReviewUpdateSuggestion,
+  UpdateReviewInput,
+} from '../../src/index/reviews-index.js';
+import { DocumentsIndex } from '../../src/index/documents-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
 import type { ChatAnswerer } from '../../src/model/chat-orchestrator.js';
 import type { Searcher } from '../../src/search/searcher.js';
+import { FsDocumentStore } from '../../src/store/fs-document-store.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
 import type { Transcriber } from '../../src/transcribe/transcriber.js';
 
@@ -143,6 +170,39 @@ class FakeMetricsReader implements MetricsReader {
   ): MetricFieldSummary {
     this.sumByFieldCalls.push({ metric, fieldKey, windowDays, ...(filter ? { filter } : {}) });
     return this.fieldSummary;
+  }
+
+  updateSuggestions: MetricUpdateSuggestion[] = [];
+
+  update(id: string, input: UpdateMetricInput): TemporalMetricRecord | null {
+    const existing = this.records.find((r) => r.id === id);
+    if (!existing) return null;
+    const updated: TemporalMetricRecord = {
+      ...existing,
+      ...(input.detail !== undefined ? { detail: input.detail } : {}),
+      ...(input.fields !== undefined ? { fields: input.fields } : {}),
+      ...(input.eventTime !== undefined ? { eventTime: input.eventTime } : {}),
+      ...(input.eventTimeExplicit !== undefined ? { eventTimeExplicit: input.eventTimeExplicit } : {}),
+      touched: true,
+    };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  validate(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: true } : r));
+  }
+
+  untouch(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: false } : r));
+  }
+
+  listUpdateSuggestions(options: { status?: MetricUpdateSuggestion['status'] } = {}): MetricUpdateSuggestion[] {
+    return this.updateSuggestions.filter((s) => !options.status || s.status === options.status);
+  }
+
+  decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
+    this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
   }
 }
 
@@ -228,6 +288,41 @@ class FakeReviewsReader implements ReviewsReader {
     this.summarizeCalls.push(approvedMedia);
     return this.summaries;
   }
+
+  updateSuggestions: ReviewUpdateSuggestion[] = [];
+
+  update(id: string, input: UpdateReviewInput): ReviewRecord | null {
+    const existing = this.records.find((r) => r.id === id);
+    if (!existing) return null;
+    const updated: ReviewRecord = {
+      ...existing,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.rating !== undefined ? { rating: input.rating } : {}),
+      ...(input.progress !== undefined ? { progress: input.progress } : {}),
+      ...(input.opinion !== undefined ? { opinion: input.opinion } : {}),
+      ...(input.eventTime !== undefined ? { eventTime: input.eventTime } : {}),
+      ...(input.eventTimeExplicit !== undefined ? { eventTimeExplicit: input.eventTimeExplicit } : {}),
+      touched: true,
+    };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  validate(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: true } : r));
+  }
+
+  untouch(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: false } : r));
+  }
+
+  listUpdateSuggestions(options: { status?: ReviewUpdateSuggestion['status'] } = {}): ReviewUpdateSuggestion[] {
+    return this.updateSuggestions.filter((s) => !options.status || s.status === options.status);
+  }
+
+  decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
+    this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
 }
 
 /** Same reasoning again, for `/lists`. */
@@ -252,6 +347,40 @@ class FakeListItemsReader implements ListItemsReader {
   summarize(approvedTypes: readonly string[]): ListTypeSummary[] {
     this.summarizeCalls.push(approvedTypes);
     return this.summaries;
+  }
+
+  updateSuggestions: ListItemUpdateSuggestion[] = [];
+
+  update(id: string, input: UpdateListItemInput): ListItemRecord | null {
+    const existing = this.records.find((r) => r.id === id);
+    if (!existing) return null;
+    const updated: ListItemRecord = {
+      ...existing,
+      ...(input.text !== undefined ? { text: input.text } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
+      ...(input.importance !== undefined ? { importance: input.importance } : {}),
+      ...(input.eventTime !== undefined ? { eventTime: input.eventTime } : {}),
+      ...(input.eventTimeExplicit !== undefined ? { eventTimeExplicit: input.eventTimeExplicit } : {}),
+      touched: true,
+    };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  validate(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: true } : r));
+  }
+
+  untouch(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: false } : r));
+  }
+
+  listUpdateSuggestions(options: { status?: ListItemUpdateSuggestion['status'] } = {}): ListItemUpdateSuggestion[] {
+    return this.updateSuggestions.filter((s) => !options.status || s.status === options.status);
+  }
+
+  decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
+    this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
   }
 }
 
@@ -302,6 +431,40 @@ class FakeOpinionStatementsReader implements OpinionStatementsReader {
     this.removeCalls.push(id);
     this.records = this.records.filter((r) => r.id !== id);
   }
+
+  updateSuggestions: OpinionStatementUpdateSuggestion[] = [];
+
+  update(id: string, input: UpdateOpinionStatementInput): OpinionStatementRecord | null {
+    const existing = this.records.find((r) => r.id === id);
+    if (!existing) return null;
+    const updated: OpinionStatementRecord = {
+      ...existing,
+      ...(input.statement !== undefined ? { statement: input.statement } : {}),
+      ...(input.eventTime !== undefined ? { eventTime: input.eventTime } : {}),
+      ...(input.eventTimeExplicit !== undefined ? { eventTimeExplicit: input.eventTimeExplicit } : {}),
+      touched: true,
+    };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  validate(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: true } : r));
+  }
+
+  untouch(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: false } : r));
+  }
+
+  listUpdateSuggestions(
+    options: { status?: OpinionStatementUpdateSuggestion['status'] } = {},
+  ): OpinionStatementUpdateSuggestion[] {
+    return this.updateSuggestions.filter((s) => !options.status || s.status === options.status);
+  }
+
+  decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
+    this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
 }
 
 /** Same reasoning again, for `/opinions/summaries`. */
@@ -348,6 +511,38 @@ class FakeQuestionsReader implements QuestionsReader {
   summarize(): QuestionsSummary {
     return this.summary;
   }
+
+  updateSuggestions: QuestionUpdateSuggestion[] = [];
+
+  update(id: string, input: UpdateQuestionInput): QuestionRecord | null {
+    const existing = this.records.find((r) => r.id === id);
+    if (!existing) return null;
+    const updated: QuestionRecord = {
+      ...existing,
+      ...(input.question !== undefined ? { question: input.question } : {}),
+      ...(input.eventTime !== undefined ? { eventTime: input.eventTime } : {}),
+      ...(input.eventTimeExplicit !== undefined ? { eventTimeExplicit: input.eventTimeExplicit } : {}),
+      touched: true,
+    };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  validate(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: true } : r));
+  }
+
+  untouch(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: false } : r));
+  }
+
+  listUpdateSuggestions(options: { status?: QuestionUpdateSuggestion['status'] } = {}): QuestionUpdateSuggestion[] {
+    return this.updateSuggestions.filter((s) => !options.status || s.status === options.status);
+  }
+
+  decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
+    this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
 }
 
 /** Records calls and returns a canned response — these tests exercise the
@@ -388,6 +583,7 @@ let opinionSummaries: FakeOpinionSummariesReader;
 let questions: FakeQuestionsReader;
 let chat: FakeChatAnswerer;
 let index: SqliteIndex;
+let documentsIndex: DocumentsIndex;
 
 const config = (journalDir: string): Config => ({
   journalDir,
@@ -403,6 +599,19 @@ const config = (journalDir: string): Config => ({
   aiGatewayApiKey: undefined,
   extractionModel: 'anthropic/claude-sonnet-5',
   chatModel: 'anthropic/claude-sonnet-5',
+  storageBackend: 'fs',
+  s3Bucket: undefined,
+  awsRegion: undefined,
+  awsAccessKeyId: undefined,
+  awsSecretAccessKey: undefined,
+  authorizedEmail: 'seymour.w.jack@gmail.com',
+  googleClientId: undefined,
+  googleClientSecret: undefined,
+  authPasswordHash: undefined,
+  // `undefined` — auth stays off for this whole suite, exactly as before
+  // `plan.md` M11 (see `entry-store-contract.test.ts` / a future
+  // `auth.test.ts` for the auth-enabled behaviour).
+  sessionSecret: undefined,
 });
 
 beforeEach(async () => {
@@ -419,8 +628,10 @@ beforeEach(async () => {
   questions = new FakeQuestionsReader();
   chat = new FakeChatAnswerer();
   index = new SqliteIndex(':memory:');
+  documentsIndex = new DocumentsIndex(':memory:');
   app = createApp(
     new FsEntryStore(root, index),
+    new FsDocumentStore(root, documentsIndex),
     config(root),
     transcriber,
     searcher,
@@ -438,6 +649,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   index.close();
+  documentsIndex.close();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -827,6 +1039,186 @@ describe('POST /entries/:id/attachments', () => {
   });
 });
 
+describe('POST /documents', () => {
+  function postDocument(body: unknown) {
+    return app.request('/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('creates a document and reports where it landed', async () => {
+    const response = await postDocument({ title: 'The greenhouse project', body: 'Notes so far.' });
+
+    expect(response.status).toBe(201);
+    const created = (await response.json()) as CreateDocumentResponse;
+    expect(created.path).toBe(`documents/${created.id}.md`);
+
+    expect(await readFile(join(root, created.path), 'utf8')).toBe(
+      `---\nid: ${created.id}\ntitle: The greenhouse project\ncreated: ${created.created}\n` +
+        `updated: ${created.created}\n---\nNotes so far.\n`,
+    );
+  });
+
+  it('accepts citedEntries', async () => {
+    const entry = (await (await post({ body: 'Referenced entry.' })).json()) as CreateEntryResponse;
+    const response = await postDocument({
+      title: 'A project',
+      body: 'x',
+      citedEntries: [entry.id],
+    });
+    expect(response.status).toBe(201);
+    const created = (await response.json()) as CreateDocumentResponse;
+    const stored = await readFile(join(root, created.path), 'utf8');
+    expect(stored).toContain(`citedEntries: [${entry.id}]`);
+  });
+
+  it('rejects a missing or empty title', async () => {
+    for (const payload of [{ body: 'x' }, { title: '', body: 'x' }]) {
+      const response = await postDocument(payload);
+      expect(response.status, JSON.stringify(payload)).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+
+  it('rejects fields the format does not have', async () => {
+    const response = await postDocument({ title: 'x', body: 'x', touched: true });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('GET /documents', () => {
+  it('is an empty page, not an error, with no documents', async () => {
+    const response = await app.request('/documents');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual<DocumentPage>({ documents: [], nextCursor: null });
+  });
+
+  it('returns both documents with excerpts already cut', async () => {
+    const first = (await (
+      await app.request('/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'First', body: `${'long '.repeat(300)}` }),
+      })
+    ).json()) as CreateDocumentResponse;
+    await app.request('/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Second', body: 'Second body.' }),
+    });
+
+    const page = (await (await app.request('/documents')).json()) as DocumentPage;
+    expect(page.documents).toHaveLength(2);
+    expect(page.documents.map((d) => d.title).sort()).toEqual(['First', 'Second']);
+    const firstSummary = page.documents.find((d) => d.id === first.id)!;
+    expect(firstSummary.excerpt).toMatch(/…$/);
+    expect(firstSummary).not.toHaveProperty('body');
+    expect(firstSummary).not.toHaveProperty('path');
+  });
+
+  it('rejects an unusable limit', async () => {
+    for (const limit of ['0', '-1', '201', 'ten', '1.5']) {
+      const response = await app.request(`/documents?limit=${limit}`);
+      expect(response.status, limit).toBe(400);
+      expect((await errorOf(response)).code).toBe('invalid_request');
+    }
+  });
+});
+
+describe('GET /documents/:id', () => {
+  it('returns the metadata and the full body', async () => {
+    const created = (await (
+      await app.request('/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'A project', body: 'Line one\n\nLine two\n' }),
+      })
+    ).json()) as CreateDocumentResponse;
+
+    const response = await app.request(`/documents/${created.id}`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual<Document>({
+      id: created.id,
+      title: 'A project',
+      created: created.created,
+      updated: created.created,
+      body: 'Line one\n\nLine two\n',
+      contentHash: created.contentHash,
+    });
+  });
+
+  it('reports a missing document as record_not_found, including for a malformed id', async () => {
+    for (const id of ['01ARZ3NDEKTSV4RRFFQ69G5FAV', 'nonsense']) {
+      const response = await app.request(`/documents/${encodeURIComponent(id)}`);
+      expect(response.status, id).toBe(404);
+      expect((await errorOf(response)).code).toBe('record_not_found');
+    }
+  });
+});
+
+describe('PUT /documents/:id', () => {
+  function put(id: string, body: unknown) {
+    return app.request(`/documents/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  async function create(title: string, body: string): Promise<CreateDocumentResponse> {
+    const response = await app.request('/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, body }),
+    });
+    return (await response.json()) as CreateDocumentResponse;
+  }
+
+  it('changes the title and body and returns the document with a new contentHash', async () => {
+    const created = await create('Draft title', 'First draft.');
+
+    const response = await put(created.id, {
+      title: 'Final title',
+      body: 'Revised.',
+      contentHash: created.contentHash,
+    });
+    expect(response.status).toBe(200);
+    const updated = (await response.json()) as UpdateDocumentResponse;
+    expect(updated.title).toBe('Final title');
+    expect(updated.body).toBe('Revised.\n');
+    expect(updated.created).toBe(created.created);
+    expect(updated.updated).not.toBe(created.created);
+    expect(updated.contentHash).not.toBe(created.contentHash);
+  });
+
+  it('rejects a stale contentHash with a 409 and does not touch the file', async () => {
+    const created = await create('x', 'Original.');
+    await put(created.id, { title: 'x', body: 'First edit.', contentHash: created.contentHash });
+
+    const response = await put(created.id, { title: 'x', body: 'Conflicting edit.', contentHash: created.contentHash });
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe('edit_conflict');
+
+    const reread = (await (await app.request(`/documents/${created.id}`)).json()) as Document;
+    expect(reread.body).toBe('First edit.\n');
+  });
+
+  it('reports a missing document as record_not_found', async () => {
+    const response = await put('01ARZ3NDEKTSV4RRFFQ69G5FAV', { title: 'x', body: 'x', contentHash: 'whatever' });
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('record_not_found');
+  });
+
+  it('rejects an empty title', async () => {
+    const created = await create('x', 'x');
+    const response = await put(created.id, { title: '', body: 'x', contentHash: created.contentHash });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
 describe('GET /analysis/metrics', () => {
   it('passes the currently approved metric names and the window to summarize', async () => {
     categories.approved.metric = ['exercise', 'sleep'];
@@ -1133,6 +1525,7 @@ describe('GET /metrics', () => {
     detail: 'a 5k run',
     fields: {},
     extractedAt: '2026-07-20T10:00:00+01:00',
+    touched: false,
     ...overrides,
   });
 
@@ -1154,6 +1547,7 @@ describe('GET /metrics', () => {
       eventTimeExplicit: true,
       detail: 'a 5k run',
       fields: { distance_km: 5 },
+      touched: false,
     };
     expect(body.metrics).toEqual([expected]);
   });
@@ -1188,6 +1582,124 @@ describe('DELETE /metrics/:id', () => {
     const response = await app.request('/metrics/not-a-ulid', { method: 'DELETE' });
     expect(response.status).toBe(204);
     expect(metrics.removeCalls).toEqual([]);
+  });
+});
+
+/** Representative of the identical PUT/validate/untouch/update-suggestions
+ * surface repeated across reviews, lists, opinion statements, and questions
+ * (`plan.md` M10) — exercised once here in full; the others share the exact
+ * same route-handler shape in `http/app.ts`. */
+describe('PUT /metrics/:id (`plan.md` M10)', () => {
+  const record = (overrides: Partial<TemporalMetricRecord> = {}): TemporalMetricRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    metric: 'exercise',
+    eventTime: '2026-07-20T09:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T08:00:00Z'),
+    eventTimeExplicit: true,
+    detail: 'a 5k run',
+    fields: {},
+    extractedAt: '2026-07-20T10:00:00+01:00',
+    touched: false,
+    ...overrides,
+  });
+
+  it('edits the record and marks it touched', async () => {
+    metrics.records = [record()];
+    const response = await app.request('/metrics/01ARZ3NDEKTSV4RRFFQ69G5FAV', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ detail: 'corrected' }),
+    });
+    expect(response.status).toBe(204);
+    expect(metrics.records[0]).toMatchObject({ detail: 'corrected', touched: true });
+  });
+
+  it('404s with record_not_found rather than silently dropping the edit', async () => {
+    const response = await app.request('/metrics/01ARZ3NDEKTSV4RRFFQ69G5FAV', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ detail: 'corrected' }),
+    });
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('record_not_found');
+  });
+
+  it('rejects an unknown field', async () => {
+    metrics.records = [record()];
+    const response = await app.request('/metrics/01ARZ3NDEKTSV4RRFFQ69G5FAV', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ metric: 'sleep' }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('POST /metrics/:id/validate and /untouch (`plan.md` M10)', () => {
+  it('validate marks touched with no content change; untouch reverts it', async () => {
+    metrics.records = [
+      {
+        id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        entryId: 'e1',
+        metric: 'exercise',
+        eventTime: '2026-07-20T09:00:00+01:00',
+        eventEpochMs: Date.parse('2026-07-20T08:00:00Z'),
+        eventTimeExplicit: true,
+        detail: 'a 5k run',
+        fields: {},
+        extractedAt: '2026-07-20T10:00:00+01:00',
+        touched: false,
+      },
+    ];
+
+    const validated = await app.request('/metrics/01ARZ3NDEKTSV4RRFFQ69G5FAV/validate', { method: 'POST' });
+    expect(validated.status).toBe(204);
+    expect(metrics.records[0]).toMatchObject({ detail: 'a 5k run', touched: true });
+
+    const untouched = await app.request('/metrics/01ARZ3NDEKTSV4RRFFQ69G5FAV/untouch', { method: 'POST' });
+    expect(untouched.status).toBe(204);
+    expect(metrics.records[0]!.touched).toBe(false);
+  });
+
+  it('both are tolerant no-ops for a malformed id, matching every other correction endpoint', async () => {
+    const validated = await app.request('/metrics/not-a-ulid/validate', { method: 'POST' });
+    const untouched = await app.request('/metrics/not-a-ulid/untouch', { method: 'POST' });
+    expect(validated.status).toBe(204);
+    expect(untouched.status).toBe(204);
+  });
+});
+
+describe('GET/POST /metrics/update-suggestions (`plan.md` M10)', () => {
+  it('lists pending suggestions and lets the user approve or reject one', async () => {
+    metrics.updateSuggestions = [
+      {
+        id: 's1',
+        recordId: 'm1',
+        entryId: 'e1',
+        detail: 'reprocessed differently',
+        fields: {},
+        eventTime: '2026-07-20T09:00:00+01:00',
+        eventEpochMs: Date.parse('2026-07-20T08:00:00Z'),
+        eventTimeExplicit: true,
+        reason: 'Reprocessing this entry now extracts different content.',
+        status: 'pending',
+        suggestedAt: '2026-07-21T00:00:00Z',
+        decidedAt: null,
+      },
+    ];
+
+    const listed = await app.request('/metrics/update-suggestions');
+    expect(((await listed.json()) as MetricUpdateSuggestionsResponse).suggestions).toHaveLength(1);
+
+    const approved = await app.request('/metrics/update-suggestions/s1/approve', { method: 'POST' });
+    expect(approved.status).toBe(204);
+    expect(metrics.updateSuggestions[0]!.status).toBe('approved');
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const response = await app.request('/metrics/update-suggestions?status=nonsense');
+    expect(response.status).toBe(400);
   });
 });
 
@@ -1469,6 +1981,7 @@ describe('GET /reviews', () => {
     eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
     eventTimeExplicit: true,
     extractedAt: '2026-07-20T21:00:00+01:00',
+    touched: false,
   });
 
   it('is empty, not an error, when nothing has been extracted', async () => {
@@ -1491,6 +2004,7 @@ describe('GET /reviews', () => {
       opinion: 'Really enjoyed it.',
       eventTime: '2026-07-20T20:00:00+01:00',
       eventTimeExplicit: true,
+      touched: false,
     };
     expect(body.reviews).toEqual([expected]);
   });
@@ -1533,6 +2047,7 @@ describe('GET /lists', () => {
     eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
     eventTimeExplicit: true,
     extractedAt: '2026-07-20T21:00:00+01:00',
+    touched: false,
   });
 
   it('is empty, not an error, when nothing has been extracted', async () => {
@@ -1554,6 +2069,7 @@ describe('GET /lists', () => {
       importance: 4,
       eventTime: '2026-07-20T20:00:00+01:00',
       eventTimeExplicit: true,
+      touched: false,
     };
     expect(body.items).toEqual([expected]);
   });
@@ -1593,6 +2109,7 @@ describe('GET /opinions/statements', () => {
     eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
     eventTimeExplicit: true,
     extractedAt: '2026-07-20T21:00:00+01:00',
+    touched: false,
     ...overrides,
   });
 
@@ -1614,6 +2131,7 @@ describe('GET /opinions/statements', () => {
         statement: 'Believes in living deliberately.',
         eventTime: '2026-07-20T20:00:00+01:00',
         eventTimeExplicit: true,
+        touched: false,
       },
     ]);
   });
@@ -1727,6 +2245,7 @@ describe('GET /questions', () => {
     resolvedEntryId: null,
     resolution: null,
     resolvedAt: null,
+    touched: false,
     ...overrides,
   });
 
@@ -1749,6 +2268,7 @@ describe('GET /questions', () => {
       status: 'open',
       resolvedEntryId: null,
       resolution: null,
+      touched: false,
     };
     expect(body.questions).toEqual([expected]);
   });

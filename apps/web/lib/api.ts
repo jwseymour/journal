@@ -7,13 +7,18 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  CreateDocumentRequest,
+  CreateDocumentResponse,
   CreateEntryRequest,
   CreateEntryResponse,
+  Document,
+  DocumentPage,
   Entry,
   EntryPage,
   EntryPeriodsResponse,
   DefineMetricFieldRequest,
   ListItemsResponse,
+  ListItemUpdateSuggestionsResponse,
   ListsSummaryResponse,
   MetricFieldsResponse,
   MetricFieldSummaryResponse,
@@ -21,18 +26,29 @@ import type {
   MetricFieldValuesResponse,
   MetricsResponse,
   MetricsSummaryResponse,
+  MetricUpdateSuggestionsResponse,
   OpinionStatementsResponse,
+  OpinionStatementUpdateSuggestionsResponse,
   OpinionSummariesResponse,
   QuestionsResponse,
   QuestionsSummaryResponse,
+  QuestionUpdateSuggestionsResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
+  ReviewUpdateSuggestionsResponse,
   SearchResponse,
   StructureType,
   SuggestionsResponse,
   TranscribeResponse,
+  UpdateDocumentRequest,
+  UpdateDocumentResponse,
   UpdateEntryRequest,
   UpdateEntryResponse,
+  UpdateListItemRequest,
+  UpdateMetricRequest,
+  UpdateOpinionStatementRequest,
+  UpdateQuestionRequest,
+  UpdateReviewRequest,
 } from '@journal/contract';
 
 /**
@@ -46,9 +62,15 @@ import type {
  * the point: running locally does not license a shortcut across the boundary,
  * because going online later must be a deployment change rather than a rewrite
  * (`design.md` §6.4, `requirements.md` §7.2).
+ *
+ * As of `plan.md` M11, the default is the relative `/api` path — proxied by
+ * `next.config.ts`'s rewrite to the real backend — so the browser's request
+ * is same-origin and the auth cookie the API sets needs no CORS to reach it.
+ * `NEXT_PUBLIC_API_URL` still overrides this for a deploy that genuinely
+ * puts the two on separate origins.
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:4319';
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 /** A failure that reached us as a structured error, or as no response at all. */
 export class ApiRequestError extends Error {
@@ -171,6 +193,51 @@ export function addAttachment(entryId: string, file: Blob, filename: string): Pr
 }
 
 /**
+ * Documents (`requirements.md` §9, `plan.md` M12) — a second authored
+ * content type, directly written like an entry rather than AI-derived, so
+ * this group mirrors the entries functions above, not the touch/validate/
+ * untouch/suggestions shape the M10 record types use below.
+ */
+export function listDocuments(options: { cursor?: string; limit?: number } = {}): Promise<DocumentPage> {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<DocumentPage>(`/documents${suffix}`);
+}
+
+/** `null` for a document that is not there, which is a normal answer, not a failure. */
+export async function getDocument(id: string): Promise<Document | null> {
+  try {
+    return await request<Document>(`/documents/${encodeURIComponent(id)}`);
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.code === 'record_not_found') return null;
+    throw error;
+  }
+}
+
+export function createDocument(document: CreateDocumentRequest): Promise<CreateDocumentResponse> {
+  return request<CreateDocumentResponse>('/documents', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(document),
+  });
+}
+
+/**
+ * Replace a document's title, body and citations. Throws `ApiRequestError`
+ * with code `edit_conflict` if `input.contentHash` no longer matches what
+ * is on disk — same contract as `updateEntry`.
+ */
+export function updateDocument(id: string, input: UpdateDocumentRequest): Promise<UpdateDocumentResponse> {
+  return request<UpdateDocumentResponse>(`/documents/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/**
  * Search by meaning, not only by word (`requirements.md` §8, `plan.md` M6).
  * Each hit is a passage, not merely an entry — the backend has already found
  * the part that matched.
@@ -197,6 +264,43 @@ export function listMetrics(options: { metric?: string; limit?: number } = {}): 
  * general-purpose edit; the record is simply gone, not revised in place. */
 export async function deleteMetric(id: string): Promise<void> {
   await request<undefined>(`/metrics/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Edits a record and marks it touched — from this point it is mine, never
+ * silently overwritten by a later reprocess (`requirements.md` §2, §6.4,
+ * `plan.md` M10). Throws `record_not_found` if `id` is gone. */
+export async function updateMetric(id: string, input: UpdateMetricRequest): Promise<void> {
+  await request<undefined>(`/metrics/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/** Marks a record touched with no content change — "I checked this, it's
+ * correct" (`requirements.md` §2). */
+export async function validateMetric(id: string): Promise<void> {
+  await request<undefined>(`/metrics/${encodeURIComponent(id)}/validate`, { method: 'POST' });
+}
+
+/** Reverts a record to untouched/AI-owned (`requirements.md` §6.2). */
+export async function untouchMetric(id: string): Promise<void> {
+  await request<undefined>(`/metrics/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+/** Pending AI proposals to update a touched record, filed when a reprocess
+ * finds fresh extraction would now say something different (`plan.md` M10). */
+export function listMetricUpdateSuggestions(status?: string): Promise<MetricUpdateSuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<MetricUpdateSuggestionsResponse>(`/metrics/update-suggestions${suffix}`);
+}
+
+export async function approveMetricUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/metrics/update-suggestions/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectMetricUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/metrics/update-suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
 }
 
 /**
@@ -276,6 +380,35 @@ export async function deleteReview(id: string): Promise<void> {
   await request<undefined>(`/reviews/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export async function updateReview(id: string, input: UpdateReviewRequest): Promise<void> {
+  await request<undefined>(`/reviews/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function validateReview(id: string): Promise<void> {
+  await request<undefined>(`/reviews/${encodeURIComponent(id)}/validate`, { method: 'POST' });
+}
+
+export async function untouchReview(id: string): Promise<void> {
+  await request<undefined>(`/reviews/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+export function listReviewUpdateSuggestions(status?: string): Promise<ReviewUpdateSuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<ReviewUpdateSuggestionsResponse>(`/reviews/update-suggestions${suffix}`);
+}
+
+export async function approveReviewUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/reviews/update-suggestions/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectReviewUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/reviews/update-suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+}
+
 /**
  * Extracted atomic list items (`plan.md` M8, `requirements.md` §5.2) — for
  * example quotes.
@@ -290,6 +423,35 @@ export function listListItems(options: { listType?: string; limit?: number } = {
 
 export async function deleteListItem(id: string): Promise<void> {
   await request<undefined>(`/lists/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function updateListItem(id: string, input: UpdateListItemRequest): Promise<void> {
+  await request<undefined>(`/lists/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function validateListItem(id: string): Promise<void> {
+  await request<undefined>(`/lists/${encodeURIComponent(id)}/validate`, { method: 'POST' });
+}
+
+export async function untouchListItem(id: string): Promise<void> {
+  await request<undefined>(`/lists/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+export function listListItemUpdateSuggestions(status?: string): Promise<ListItemUpdateSuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<ListItemUpdateSuggestionsResponse>(`/lists/update-suggestions${suffix}`);
+}
+
+export async function approveListItemUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/lists/update-suggestions/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectListItemUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/lists/update-suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
 }
 
 /**
@@ -307,6 +469,41 @@ export function listOpinionStatements(options: { subject?: string; limit?: numbe
 
 export async function deleteOpinionStatement(id: string): Promise<void> {
   await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function updateOpinionStatement(id: string, input: UpdateOpinionStatementRequest): Promise<void> {
+  await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function validateOpinionStatement(id: string): Promise<void> {
+  await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}/validate`, { method: 'POST' });
+}
+
+export async function untouchOpinionStatement(id: string): Promise<void> {
+  await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+export function listOpinionStatementUpdateSuggestions(
+  status?: string,
+): Promise<OpinionStatementUpdateSuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<OpinionStatementUpdateSuggestionsResponse>(`/opinions/statements/update-suggestions${suffix}`);
+}
+
+export async function approveOpinionStatementUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/opinions/statements/update-suggestions/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+  });
+}
+
+export async function rejectOpinionStatementUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/opinions/statements/update-suggestions/${encodeURIComponent(id)}/reject`, {
+    method: 'POST',
+  });
 }
 
 /**
@@ -341,6 +538,35 @@ export async function deleteQuestion(id: string): Promise<void> {
  * §6.2). */
 export async function reopenQuestion(id: string): Promise<void> {
   await request<undefined>(`/questions/${encodeURIComponent(id)}/reopen`, { method: 'POST' });
+}
+
+export async function updateQuestion(id: string, input: UpdateQuestionRequest): Promise<void> {
+  await request<undefined>(`/questions/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function validateQuestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/${encodeURIComponent(id)}/validate`, { method: 'POST' });
+}
+
+export async function untouchQuestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+export function listQuestionUpdateSuggestions(status?: string): Promise<QuestionUpdateSuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<QuestionUpdateSuggestionsResponse>(`/questions/update-suggestions${suffix}`);
+}
+
+export async function approveQuestionUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/update-suggestions/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectQuestionUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/update-suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
 }
 
 /**

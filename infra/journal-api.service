@@ -1,0 +1,30 @@
+[Unit]
+Description=Journal API (@journal/api)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=journal
+Group=journal
+WorkingDirectory=/opt/journal/app
+# apps/api has no build step — `npm run start` runs `tsx src/index.ts`
+# directly (`apps/api/package.json`). Invoked with `-w` from the repo root,
+# matching how `npm run dev:api` already does it, so the workspace's
+# node_modules resolve the same way in production as they do locally.
+ExecStart=/usr/bin/npm run start -w @journal/api
+# Optional/non-fatal (leading "-") so the unit can be installed before .env
+# exists; the app itself already loads .env from the repo root
+# (`apps/api/src/config.ts`) and refuses to boot without JOURNAL_DIR set.
+EnvironmentFile=-/opt/journal/app/.env
+Restart=on-failure
+RestartSec=5
+# Journal entries in S3 have no local disk footprint, but the SQLite index
+# and model caches (INDEX_DB_PATH / WHISPER_CACHE_DIR / EMBEDDING_CACHE_DIR)
+# do — leave the service full filesystem access under /opt/journal, no
+# further sandboxing here beyond running as the unprivileged `journal` user.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

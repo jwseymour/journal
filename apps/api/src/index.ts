@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { ConfigError, loadConfig } from './config.js';
 import { createApp } from './http/app.js';
 import { CategoriesIndex } from './index/categories-index.js';
+import { DocumentsIndex } from './index/documents-index.js';
 import { ListsIndex } from './index/lists-index.js';
 import { MetricFieldsIndex } from './index/metric-fields-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
@@ -21,7 +22,8 @@ import { nowTimestamp } from './record/time.js';
 import { LocalEmbedder } from './search/local-embedder.js';
 import { SearchIndexer } from './search/indexer.js';
 import { HybridSearcher } from './search/searcher.js';
-import { FsEntryStore } from './store/fs-entry-store.js';
+import { createDocumentStore } from './store/create-document-store.js';
+import { createEntryStore } from './store/create-entry-store.js';
 import { SearchingEntryStore } from './store/searching-entry-store.js';
 import { LocalTranscriber } from './transcribe/local-transcriber.js';
 
@@ -48,8 +50,13 @@ async function main(): Promise<void> {
   const searchIndex = new SearchIndex(config.indexDbPath, config.embeddingDimensions);
   const embedder = new LocalEmbedder(config.embeddingModel, config.embeddingCacheDir, config.embeddingDimensions);
   const indexer = new SearchIndexer(searchIndex, embedder);
-  const store = new SearchingEntryStore(new FsEntryStore(config.journalDir, index), indexer);
+  const store = new SearchingEntryStore(createEntryStore(config, index), indexer);
   const searcher = new HybridSearcher(searchIndex, embedder, index);
+  // Never wrapped in `SearchingEntryStore` — documents aren't entries and
+  // aren't indexed for search in this milestone (`requirements.md` §9,
+  // "not in this milestone" in `plan.md` M12).
+  const documentsIndex = new DocumentsIndex(config.indexDbPath);
+  const documentStore = createDocumentStore(config, documentsIndex);
   const transcriber = new LocalTranscriber(config.whisperModel, config.whisperCacheDir);
   // No `ModelClient` is constructed here: extraction never runs live, only
   // via `npm run reprocess` (`src/reprocess.ts`) — see that file for why
@@ -92,6 +99,7 @@ async function main(): Promise<void> {
   );
   const app = createApp(
     store,
+    documentStore,
     config,
     transcriber,
     searcher,

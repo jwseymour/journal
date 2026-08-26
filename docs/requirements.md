@@ -42,7 +42,11 @@ An AI passes over all journal entries and produces structured data capturing my 
 
 The purpose is analysis and tracking — to gain insight into my fluctuations and my pillars. The structured data exists so that patterns spread thinly across years of prose can be seen in one place.
 
-The critical property: **the user only ever creates journal entries.** All secondary structures are populated by the AI reading those entries. I do not maintain the structured data by hand.
+**Origination is still automatic.** All secondary structures begin life populated by the AI reading entries — I do not hand-create derived records, and autonomy remains the default (§6.1).
+
+**Ownership, once created, is mine to take.** I may review, correct, or directly edit any derived record. Doing so — *touching* it — is a deliberate act, and it changes that record's status permanently: a touched record is mine, not the AI's, from that point on. It is never silently regenerated or overwritten by a later extraction pass.
+
+This reverses an earlier, stricter position — that structured data was never hand-maintained. The reversal is deliberate: I am already the one checking and correcting this data in practice, and the AI layer is more useful the more I can trust and shape it. Records I have never reviewed remain exactly what they always were — a pure function of the entries, freely regenerable, disposable (§6.4). The distinction between touched and untouched is what makes both halves of this pillar true at once.
 
 ---
 
@@ -98,7 +102,7 @@ Editing is allowed.
 
 **The application itself has no version-history feature.** No in-app revision browser, no diff view, no audit trail, no interface surface for any of it. Realistically this is a single-user system and I do not expect to go back and alter old entries; the application should not be designed around that possibility.
 
-Protection against loss is handled entirely outside the application, at the storage layer (§7.4). The journal directory is a git repository, but git is a **safety net around the files, not a feature of the system**: the application does not read git history, does not surface it, and does not depend on it in order to function. If git were removed tomorrow the application would behave identically — it would simply be less safe.
+Protection against loss is handled entirely outside the application, at the storage layer (§7.4): S3 versioning and a scheduled local git mirror, as of M11. Whichever mechanism is in place is a **safety net around the files, not a feature of the system**: the application does not read its history, does not surface it, and does not depend on it in order to function. If it were removed tomorrow the application would behave identically — it would simply be less safe.
 
 ### 4.5 Continuation and returning to earlier writing
 
@@ -185,13 +189,15 @@ Because most writes happen without review, it must be simple to rectify a mistak
 
 Following from section 4.3: the time an entry was written is not the time the things in it happened. Where a described event has its own time, that must be determined from the prose rather than assumed from the entry's timestamp.
 
-### 6.4 Everything derived is rebuildable, and is rebuilt in full
+### 6.4 Untouched data is rebuildable; touched data is not
 
-Everything derived from the entries can be reconstructed from the entries alone. If all of it were deleted, nothing would be lost that could not simply be produced again. It is a cache, never a record. This follows directly from section 3, and is the practical form of Pillar 1's precedence: the entries owe nothing to the structures built on them.
+**Untouched** derived records — created by the AI, never reviewed or edited (§2) — remain a pure function of the entries. If all of them were deleted, nothing would be lost that could not simply be produced again. They are a cache, never a record. This follows directly from section 3, and is the practical form of Pillar 1's precedence: the entries owe nothing to the structures built on them.
 
-Keeping that true in practice rather than in principle requires that rebuilding actually be exercised. So the pipeline has a **full reprocess-from-scratch mode** alongside incremental processing — a first-class operation, not a maintenance utility.
+**Touched** derived records — anything I have reviewed, corrected, or edited directly (§2) — are not disposable. They are mine, and losing one loses real work, not a regenerable artefact. From the point I touch a record, it carries the same durability expectation as the entries themselves (§7.4), not the expectation of a throwaway cache.
 
-This is also what makes changing model affordable (§7.6): re-running extraction across the whole corpus and comparing the output is how a model change is validated, and it is only cheap because the derived layer is disposable.
+The pipeline still has a **full reprocess-from-scratch mode** alongside incremental processing, and it remains a first-class operation, not a maintenance utility. What it means has changed: it re-runs extraction across the whole corpus, freely replacing untouched records, but it never silently overwrites a touched one. At most it proposes an update to a touched record, through the same suggest-and-approve mechanism used elsewhere (§5.3), for me to accept or ignore.
+
+This is also the mechanism behind changing model (§7.6): re-running extraction and diffing the result against my touched records — not against unreviewed AI output — is how a model change is judged. It is a deliberate, occasional action I take on purpose, not something triggered by day-to-day provider routing (§7.6).
 
 ---
 
@@ -211,31 +217,26 @@ A consequence worth stating: because the boundary is clean, more than one fronte
 
 ### 7.2 Local first
 
-**Everything runs locally, on my own machine, against my own file system.** No hosting, no third-party infrastructure, no external services.
+**As of M11, the journal runs online: S3 is the canonical store, and the API runs on a small persistent-disk host rather than my own machine.** This is a deliberate reversal of the position below, not an accretion on top of it — made because durability and reachability outweighed the overhead of external services, once §7.1's boundary made the move cheap enough to actually take.
 
-This is a deliberate decision for now, made to avoid the overhead of depending on external services at this stage. It is not a permanent commitment: the system may go online later, and that intention still stands.
+The strongest possible version of Pillar 1 was running fully local, depending on nothing but a disk I control. Going online gives that up in exchange for durability and reachability, deliberately: it keeps the properties Pillar 1 actually cares about — plain markdown, no lock-in, trivial full export — while relocating *where* the files live. Going back to fully local remains a supported, low-friction operation (`aws s3 sync`, a local storage adapter), not a one-way door.
 
-It is worth noting that this arrangement is the *strongest possible* version of Pillar 1. Plain markdown files sitting in a folder on a disk I control depend on nothing — no provider, no account, no network, no application. Going local is a simplification of the architecture, not a compromise of it.
-
-**Going online later is precisely what §7.1 protects.** Because all logic sits behind the API boundary and the frontend holds none of it, moving from a local backend to a hosted one should be a change of storage adapter and deployment target, not a rewrite. Nothing in the current design may assume the backend is local in a way that would make that move expensive.
+**This is exactly what §7.1 was protecting.** Because all logic sat behind the API boundary and the frontend held none of it, moving from a local backend to a hosted one was a change of storage adapter and deployment target (`S3EntryStore`, a compute host), not a rewrite.
 
 ### 7.3 Storage
 
-**The markdown files are canonical, and they live in an ordinary directory on the local file system.** Entries exist as actual markdown files that can be opened, read, copied, and searched with any tool, with or without this application. Export is not a feature to be built — it is `cp -r`.
+**The markdown files are canonical, and as of M11 they live as objects in a private S3 bucket**, one object per entry, laid out exactly as the local directory used to be. Entries remain actual markdown files, retrievable in full with any tool that speaks S3, with or without this application. Export is not a feature to be built — it is `aws s3 sync`, and import back the other direction is the same command reversed.
 
-**Encryption is not a priority.** It is acceptable if it is required for other reasons, provided it makes no difference to the user experience. No bespoke per-entry encryption scheme is called for, and nothing about it should compromise the plainness and portability of the stored files.
+**Encryption is not a priority**, and S3's default at-rest encryption satisfies the same acceptance test as before: it costs nothing and makes no difference to the experience. No bespoke per-entry encryption scheme is called for, and nothing about it compromises the plainness and portability of the stored files — `aws s3 sync` still produces ordinary, unencrypted-at-the-file-level markdown the moment it lands on a local disk.
 
 ### 7.4 Protection against loss
 
 No revision history exists inside the application (§4.4), so protection is handled at the storage layer.
 
-- **The journal directory is a git repository.** Commits provide the recoverable history the application deliberately lacks. Plain markdown is close to an ideal fit for git — small, diffable, text.
-- **A remote is what makes it a real backup.** A local-only repository does not survive disk failure. Pushing to a private remote gives offsite redundancy.
-- **iCloud may additionally sync the directory**, for a second copy.
+- **S3 versioning provides the recoverable history the application deliberately lacks.** Every write to an object retains its prior versions automatically, outside the application.
+- **A scheduled job mirrors the bucket down to a local git repository and commits.** The same "scheduled job outside the application" this section already settled on, retargeted: it now pulls from S3 before committing, rather than committing a directory the application wrote to directly. Pushing that mirror to a private remote gives the same offsite redundancy as before — and the mirror is also the "return to fully local" path if S3 is ever abandoned.
 
-**Git remains outside the system.** It is operated at the file level and the application must not depend on it. See §4.4.
-
-**Implementation hazard worth knowing:** a live git working tree inside an iCloud-synced folder is a known source of repository corruption, because iCloud may sync `.git` internals while git is mid-write. If both are used, they should not be layered over the same directory. A private git remote alone is the simpler arrangement and already provides offsite backup.
+**Both remain outside the system.** Neither is operated by the application, and the application must not depend on either functioning. See §4.4.
 
 Two sub-decisions, now settled:
 
@@ -246,7 +247,7 @@ Two sub-decisions, now settled:
 
 The following were previously decided and are now **deferred, not abandoned.** They are expected to return if and when the system goes online.
 
-- **Remote and multi-device access.** The earlier decision was that the journal be writable from phone and laptop and reachable from anywhere. That is not being built for now.
+- **Multi-device *clients*.** As of M11 the API itself is reachable from anywhere and gated by single-user auth — the infrastructure precondition for phone/laptop writing is met. Building an actual second client is separate, later work and remains deferred.
 - **Geocoding** of coordinates into place names (§4.3). Derived, so deferring it costs nothing and it can be produced at any time from the stored coordinates.
 
 Transcription was previously listed here, deferred unless run by a local model. It is no longer deferred: it is run locally, and so needs nothing external. See §4.7.
@@ -263,7 +264,9 @@ Vercel AI Gateway together with the AI SDK is the intended approach. It has been
 
 **Critical distinction, and the reason this needs to be thorough:** a swappable interface does not mean swappable *results*. Schema adherence and extraction quality differ between models even when the calling code is identical. Prompts and schemas tuned against one model must be re-validated when the model changes — the abstraction covers the plumbing, not the behaviour.
 
-This is what makes the full reprocess-from-scratch requirement (§6.4) load-bearing rather than housekeeping: it is also the mechanism for migrating models. Re-running extraction over the whole corpus and comparing output is how a model change is validated, and it is only cheap because the derived layer is disposable.
+**Two different things are both "the model changing," and only one of them matters here.** The gateway may route any given request to whichever provider is available, fast, or cheap at that moment — that happens routinely, automatically, per request, and requires no reaction from me or the system. A **model migration** is different: a deliberate, rare decision to change which model I rely on by default.
+
+This is what makes the full reprocess-from-scratch mode (§6.4) load-bearing rather than housekeeping: it is also the mechanism for migrating models, on the rare occasions I choose to. Re-running extraction over the whole corpus and diffing the result against my touched, validated records (§6.4) — not against unreviewed AI output — is how a model change is judged.
 
 ---
 
@@ -275,21 +278,49 @@ This is what makes the full reprocess-from-scratch requirement (§6.4) load-bear
 
 ---
 
-## 9. Deferred — not yet decided
+## 9. Documents
+
+A third kind of content, alongside the two pillars above. A document is not a journal entry (§4) and not something the AI derives (§5, §6) — it is something I write directly, about a single subject, over however long that subject takes.
+
+The purpose is different from an entry's. An entry records a moment of writing — free-form, chronological, one file per session. A document is the considered, continuous statement of one idea — typically a project, or a train of thought I want to develop properly — meant to be read as a finished piece rather than pieced together from entries written at different times. The immediate reason this matters is the eventual public-facing side of the project (§10): a document is the shape something takes when it's meant to be read on its own, not a private record I'm free to write disjointedly.
+
+### 9.1 What carries over from Pillar 1, and what doesn't
+
+A document is plain markdown, directly authored, and as canonical as an entry — safe, exportable, and simple in exactly the sense §2 describes. Like an entry, nothing but me ever writes to one; the AI never creates or edits a document (§6.1's autonomy is about derived structures only, and does not extend here).
+
+What doesn't carry over is entry-specific:
+
+- **A document has a title.** Entries deliberately never do (§4.3).
+- **A document is revised over its working life, as the norm.** An entry is written once and, realistically, never returned to (§4.4); a document is expected to be opened and changed repeatedly while its subject is still live.
+- **A document's identity has nothing to do with when it was started.** Entries are organised chronologically because that is what they are (§4.1); a document is organised by its subject.
+
+### 9.2 Relationship to entries
+
+A document may optionally reference specific entries it grew out of or relates to. This is a pointer I add by hand, not a derivation — citing an entry never pulls its content into the document, and a document's text is never assembled or generated from entries automatically. Everything in a document is mine, written directly, the same as an entry.
+
+### 9.3 Visibility
+
+Not yet decided in the specific mechanism, and deliberately not built yet — this waits on §10's public/private question being resolved for the whole system, not just documents. Until then, a document is exactly as private as an entry. When visibility is built, a document takes the same flag as everything else; there is no document-specific visibility mechanism.
+
+---
+
+## 10. Deferred — not yet decided
 
 The following have been raised and deliberately set aside for later consideration. They are open, not rejected.
 
-**To-do lists / longer-term goals.** Not needed for now. To be returned to after more thought.
+**To-do lists / longer-term goals.** No longer blocked in principle — §2 now allows a derived record to be directly maintained once touched, which is what a to-do list needs. The concrete structure — what a to-do item is, how it is created, how it is closed — is not yet designed.
 
 **Hand-editing the opinion model.** For now, not something I edit directly. To be reconsidered later.
 
 **Implementation of the opinion model.** Recognised as the least resolved of the identified structures.
 
-**Going online.** Remote access, multi-device use, and hosted infrastructure are deferred rather than rejected. See §7.2 and §7.5.
+**Multi-device use.** Still deferred — M11 makes the API reachable and adds single-user auth, but a phone/laptop-writing client is separate, later work. See §7.5.
+
+**Public/private access levels.** Still deferred, and not precluded by M11's single-user auth design. A future concern, not addressed here — including for documents (§9.3), which default to private in the meantime.
 
 ---
 
-## 10. Summary of what must remain true
+## 11. Summary of what must remain true
 
 - The journal entries are plain markdown and are the only thing I write.
 - What I write persists for life, safely, exportably, and simply.
@@ -297,13 +328,14 @@ The following have been raised and deliberately set aside for later consideratio
 - Entries record the time and place of writing, and nothing else — automatically, never by hand.
 - Spoken entries always become plaintext; audio is optional and additional.
 - No user markup, ever; structuring is the AI's job.
-- All structured data is derived from the entries and linked back to them.
-- The derived layer is a rebuildable cache, and is rebuilt in full to keep that true.
+- Documents are a third content type, alongside entries and derived structures — directly authored like an entry, but titled, revised over time, and organised by subject rather than by when they were written (§9).
+- All structured data originates from the entries and links back to them.
+- Derived data is rebuildable until I touch it; once reviewed or edited, a record is mine and is never silently overwritten.
 - Many kinds of structure exist, more will be added, and the design assumes this.
 - New metrics are approved or requested by me, never created unilaterally.
 - Most extraction is autonomous; mistakes are easy to correct.
 - Model and provider are always swappable; nothing is tied to one vendor.
 - The opinion model organises what I said, and never extrapolates beyond it.
 - Frontend and backend are cleanly separated; the frontend is disposable.
-- Everything runs locally, on my own file system, with the files canonical — and the separation above is what keeps going online later cheap.
+- As of M11, journal storage and the API run online (S3, a hosted API) rather than purely on my own file system — the files stay canonical, and the separation above (§7.1) is what made that move cheap rather than a rewrite.
 - Everything above the journal serves the journal, and never the reverse.

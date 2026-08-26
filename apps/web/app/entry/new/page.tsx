@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Coordinates } from '@journal/contract';
 import { Composer } from '@/components/composer';
-import { addAttachment, ApiRequestError, createEntry, updateEntry } from '@/lib/api';
+import { addAttachment, API_BASE, ApiRequestError, createEntry, updateEntry } from '@/lib/api';
 import { nowRfc3339 } from '@/lib/format';
 import { captureLocationOnce } from '@/lib/location';
 import styles from './page.module.css';
@@ -196,15 +196,14 @@ export default function NewEntryPage() {
     const hash = savedHashRef.current;
     if (!id || !hash || bodyRef.current.trim().length !== 0) return;
 
-    const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:4319';
     void (async () => {
-      await fetch(`${base}/entries/${id}`, {
+      await fetch(`${API_BASE}/entries/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body: '', contentHash: hash }),
         keepalive: true,
       }).catch(() => {});
-      await fetch(`${base}/entries/${id}`, { method: 'DELETE', keepalive: true }).catch(() => {});
+      await fetch(`${API_BASE}/entries/${id}`, { method: 'DELETE', keepalive: true }).catch(() => {});
     })();
   }, []);
 

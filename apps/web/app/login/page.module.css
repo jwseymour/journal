@@ -1,0 +1,83 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.wrap {
+  max-width: var(--measure-narrow);
+  margin: var(--space-2xl) auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.title {
+  font-family: var(--font-serif);
+  font-size: var(--text-xl);
+  color: var(--ink);
+}
+
+.googleButton {
+  display: block;
+  text-align: center;
+  padding: var(--space-sm) var(--space-md);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  text-decoration: none;
+  transition: background-color var(--motion-fast) var(--ease);
+}
+
+.googleButton:hover {
+  background-color: var(--ground-sunken);
+}
+
+.divider {
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.field {
+  padding: var(--space-sm);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--ground-raised);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+  outline: none;
+}
+
+.field::placeholder {
+  color: var(--ink-faint);
+}
+
+.submit {
+  padding: var(--space-sm) var(--space-md);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--ground);
+  font-family: var(--font-serif);
+  font-size: var(--text-md);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--ease);
+}
+
+.submit:hover {
+  background-color: var(--accent-hover);
+}
+
+.submit:disabled {
+  background: var(--ink-faint);
+  cursor: default;
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}

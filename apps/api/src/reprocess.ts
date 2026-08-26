@@ -19,7 +19,7 @@ import { QuestionsExtractor } from './model/questions-extractor.js';
 import { ReviewsExtractor } from './model/reviews-extractor.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
 import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
-import { FsEntryStore } from './store/fs-entry-store.js';
+import { createEntryStore } from './store/create-entry-store.js';
 import { nowTimestamp } from './record/time.js';
 
 /**
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   console.log(`[journal] model: ${config.extractionModel}`);
 
   const index = new SqliteIndex(config.indexDbPath);
-  const store = new FsEntryStore(config.journalDir, index);
+  const store = createEntryStore(config, index);
   const modelClient = new GatewayModelClient(config.aiGatewayApiKey, config.extractionModel);
 
   const categoriesIndex = new CategoriesIndex(config.indexDbPath);
