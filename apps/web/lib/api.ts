@@ -147,6 +147,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** Clears the session cookie. A harmless no-op if there wasn't one — this
+ * button can always be shown without the frontend needing to know whether
+ * auth is even turned on (`requirements.md` §7.1: no decisions here). */
+export function logout(): Promise<void> {
+  return request<void>('/auth/logout', { method: 'POST' });
+}
+
 export function listEntries(
   options: { cursor?: string; limit?: number; year?: number; month?: number } = {},
 ): Promise<EntryPage> {

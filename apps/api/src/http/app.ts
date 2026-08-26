@@ -108,13 +108,33 @@ function allowedHosts(config: Config): ReadonlySet<string> {
   return hosts;
 }
 
-/** The redirect URI Google is told to send the browser back to. Built from
- * `config.publicUrl` when set — the only value this can safely trust behind
- * a reverse proxy (see its doc comment in `config.ts`) — falling back to
- * the request's own URL for local dev, where there is no proxy to get this
- * wrong. */
-function googleRedirectUri(config: Config, requestUrl: string): string {
-  return new URL('/auth/google/callback', config.publicUrl ?? requestUrl).toString();
+/**
+ * The redirect URI Google is told to send the browser back to — the
+ * frontend's own origin, at the `/api/auth/google/callback` path
+ * `next.config.ts`'s rewrite forwards to this route, **not** this API's own
+ * `config.publicUrl`. That distinction matters for exactly one reason: the
+ * session cookie this callback sets is scoped to whichever origin actually
+ * answers the browser's request. If Google redirected the browser straight
+ * to this API's own domain, the cookie would land there — but every later
+ * request the browser makes goes to the *frontend's* origin (proxied from
+ * there to here), so that cookie would never be sent back. Routing the
+ * callback back through the same proxy the rest of the app already uses is
+ * what keeps the whole flow same-origin from the browser's point of view.
+ */
+function googleRedirectUri(config: Config): string {
+  const webOrigin = config.allowedOrigins[0];
+  return new URL('/api/auth/google/callback', webOrigin ?? 'http://localhost:3000').toString();
+}
+
+/** Where a failed sign-in sends the browser back to, with a message the
+ * login page can actually show — a bare thrown error here would otherwise
+ * render as raw JSON on a full-page navigation, which looks exactly like
+ * "nothing happened" to whoever is looking at it. */
+function loginFailureRedirect(config: Config, message: string): string {
+  const webOrigin = config.allowedOrigins[0] ?? 'http://localhost:3000';
+  const url = new URL('/login', webOrigin);
+  url.searchParams.set('error', message);
+  return url.toString();
 }
 
 const CoordinatesSchema = z
@@ -445,7 +465,7 @@ export function createApp(
       path: '/',
     });
 
-    const redirectUri = googleRedirectUri(config, c.req.url);
+    const redirectUri = googleRedirectUri(config);
     return c.redirect(authorizationUrl(config.googleClientId, redirectUri, flow));
   });
 
@@ -462,12 +482,14 @@ export function createApp(
 
     const flow = sealed ? unsealFlow(config.sessionSecret, sealed) : null;
     if (!code || !state || !flow || flow.state !== state) {
-      throw unauthorized('The Google sign-in attempt could not be verified. Try again.');
+      return c.redirect(
+        loginFailureRedirect(config, 'The Google sign-in attempt could not be verified. Try again.'),
+      );
     }
 
     let identity;
     try {
-      const redirectUri = googleRedirectUri(config, c.req.url);
+      const redirectUri = googleRedirectUri(config);
       identity = await exchangeCodeForIdentity(
         config.googleClientId,
         config.googleClientSecret,
@@ -477,11 +499,13 @@ export function createApp(
       );
     } catch (cause) {
       console.error('[journal] google token exchange failed', cause);
-      throw unauthorized('Google sign-in failed.');
+      return c.redirect(loginFailureRedirect(config, 'Google sign-in failed. Try again.'));
     }
 
     if (!identity.emailVerified || identity.email !== config.authorizedEmail) {
-      throw unauthorized('This Google account is not authorized for this journal.');
+      return c.redirect(
+        loginFailureRedirect(config, 'This Google account is not authorized for this journal.'),
+      );
     }
 
     setCookie(c, SESSION_COOKIE, createSessionToken(config.sessionSecret, config.authorizedEmail), {

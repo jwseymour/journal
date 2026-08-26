@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useChrome } from '@/lib/chrome';
+import { logout } from '@/lib/api';
 import { useTheme } from '@/lib/theme';
 import styles from './layout.module.css';
 
@@ -17,6 +18,16 @@ export function Header() {
   const { theme, toggle: toggleTheme } = useTheme();
 
   if (hidden) return null;
+
+  async function handleSignOut(): Promise<void> {
+    try {
+      await logout();
+    } finally {
+      // Best-effort either way — the cookie is gone or never existed, and
+      // the login page will correctly show "signed out" in both cases.
+      window.location.href = '/login';
+    }
+  }
 
   return (
     <header className={styles.header}>
@@ -38,6 +49,9 @@ export function Header() {
         <Link href="/documents">Documents</Link>
         <Link href="/chat">Chat</Link>
         <Link href="/entry/new">Write</Link>
+        <button type="button" className={styles.themeToggle} onClick={handleSignOut}>
+          Sign out
+        </button>
       </nav>
     </header>
   );

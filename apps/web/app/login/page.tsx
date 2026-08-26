@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { API_BASE } from '@/lib/api';
 import styles from './page.module.css';
 
@@ -15,6 +15,16 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A failed Google round-trip lands back here with `?error=...` rather
+  // than a bare thrown error, which would otherwise render as raw JSON on
+  // a full-page navigation — indistinguishable from nothing having
+  // happened at all. Read via `window.location` rather than
+  // `useSearchParams` so this page can stay statically rendered.
+  useEffect(() => {
+    const message = new URLSearchParams(window.location.search).get('error');
+    if (message) setError(message);
+  }, []);
 
   async function handlePasswordSubmit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
