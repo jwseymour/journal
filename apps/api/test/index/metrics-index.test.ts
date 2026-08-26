@@ -23,6 +23,7 @@ const record = (overrides: Partial<Omit<TemporalMetricRecord, 'entryId'>> = {}):
   detail: 'a 5k run',
   fields: {},
   extractedAt: '2026-07-20T10:00:00+01:00',
+  touched: false,
   ...overrides,
 });
 
@@ -125,6 +126,152 @@ describe('stats / clear', () => {
     index.replaceEntry('e1', [record()]);
     index.clear();
     expect(index.stats()).toEqual({ metricCount: 0 });
+    expect(index.list({ limit: 10 })).toEqual([]);
+  });
+});
+
+describe('touching a record (`plan.md` M10)', () => {
+  it('update() edits the given fields and sets touched, leaving the rest alone', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', detail: 'first draft', fields: { distance_km: 5 } })]);
+    const updated = index.update('m1', { detail: 'corrected' }, 'now');
+    expect(updated).toMatchObject({ id: 'm1', detail: 'corrected', fields: { distance_km: 5 }, touched: true });
+    expect(index.list({ limit: 10 })[0]).toMatchObject({ detail: 'corrected', touched: true });
+  });
+
+  it('update() returns null for an id that does not exist', () => {
+    expect(index.update('never-existed', { detail: 'x' }, 'now')).toBeNull();
+  });
+
+  it('validate() marks touched with no content change', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', detail: 'unchanged' })]);
+    index.validate('m1', 'now');
+    expect(index.list({ limit: 10 })[0]).toMatchObject({ detail: 'unchanged', touched: true });
+  });
+
+  it('validate() is a no-op, not an error, for an id that does not exist', () => {
+    expect(() => index.validate('never-existed', 'now')).not.toThrow();
+  });
+
+  it('untouch() reverts a touched record back to untouched', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' })]);
+    index.validate('m1', 'now');
+    index.untouch('m1', 'now');
+    expect(index.list({ limit: 10 })[0]!.touched).toBe(false);
+  });
+
+  it('touchedForEntry() returns only the touched rows for that entry', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' }), record({ id: 'm2' })]);
+    index.validate('m1', 'now');
+    expect(index.touchedForEntry('e1').map((r) => r.id)).toEqual(['m1']);
+  });
+});
+
+describe('replaceUntouchedForEntry (`plan.md` M10)', () => {
+  it('leaves a touched row alone and replaces the untouched rows around it', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', detail: 'keep me' }), record({ id: 'm2', detail: 'stale' })]);
+    index.validate('m1', 'now');
+
+    index.replaceUntouchedForEntry('e1', [record({ id: 'm3', detail: 'fresh' })]);
+
+    const rows = index.list({ limit: 10 });
+    expect(rows.map((r) => r.id).sort()).toEqual(['m1', 'm3']);
+    expect(rows.find((r) => r.id === 'm1')).toMatchObject({ detail: 'keep me', touched: true });
+    expect(rows.find((r) => r.id === 'm3')).toMatchObject({ detail: 'fresh', touched: false });
+  });
+
+  it('replaces everything for an entry with no touched rows, same as replaceEntry', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' })]);
+    index.replaceUntouchedForEntry('e1', [record({ id: 'm2' })]);
+    expect(index.list({ limit: 10 }).map((r) => r.id)).toEqual(['m2']);
+  });
+});
+
+describe('update suggestions (`plan.md` M10)', () => {
+  it('propose then approve applies the proposed fields via update(), staying touched', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', detail: 'original' })]);
+    index.validate('m1', 'now');
+
+    index.proposeUpdate({
+      id: 's1',
+      recordId: 'm1',
+      entryId: 'e1',
+      detail: 'reprocessed differently',
+      fields: {},
+      eventTime: record().eventTime,
+      eventEpochMs: record().eventEpochMs,
+      eventTimeExplicit: true,
+      reason: 'Reprocessing this entry now extracts different content.',
+      now: 'suggested-now',
+    });
+
+    expect(index.listUpdateSuggestions()).toHaveLength(1);
+    expect(index.listUpdateSuggestions({ status: 'pending' })[0]).toMatchObject({ recordId: 'm1', status: 'pending' });
+
+    index.decideUpdate('s1', 'approved', 'decided-now');
+
+    expect(index.listUpdateSuggestions({ status: 'pending' })).toHaveLength(0);
+    expect(index.list({ limit: 10 })[0]).toMatchObject({ detail: 'reprocessed differently', touched: true });
+  });
+
+  it('rejecting leaves the touched record exactly as it was', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', detail: 'original' })]);
+    index.validate('m1', 'now');
+    index.proposeUpdate({
+      id: 's1',
+      recordId: 'm1',
+      entryId: 'e1',
+      detail: 'proposed change',
+      fields: {},
+      eventTime: record().eventTime,
+      eventEpochMs: record().eventEpochMs,
+      eventTimeExplicit: true,
+      reason: 'reason',
+      now: 'now',
+    });
+
+    index.decideUpdate('s1', 'rejected', 'now');
+
+    expect(index.list({ limit: 10 })[0]).toMatchObject({ detail: 'original', touched: true });
+    expect(index.listUpdateSuggestions()[0]!.status).toBe('rejected');
+  });
+
+  it('does not file a second pending suggestion for the same record', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' })]);
+    index.validate('m1', 'now');
+    const propose = () =>
+      index.proposeUpdate({
+        id: `s-${Math.random()}`,
+        recordId: 'm1',
+        entryId: 'e1',
+        detail: 'x',
+        fields: {},
+        eventTime: record().eventTime,
+        eventEpochMs: record().eventEpochMs,
+        eventTimeExplicit: true,
+        reason: 'reason',
+        now: 'now',
+      });
+    propose();
+    propose();
+    expect(index.listUpdateSuggestions()).toHaveLength(1);
+  });
+});
+
+describe('clearUntouched (`plan.md` M10)', () => {
+  it('wipes untouched rows but leaves a touched row in place', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' })]);
+    index.replaceEntry('e2', [record({ id: 'm2' })]);
+    index.validate('m1', 'now');
+
+    index.clearUntouched();
+
+    expect(index.list({ limit: 10 }).map((r) => r.id)).toEqual(['m1']);
+  });
+
+  it('clear() (the pre-M10 primitive) still wipes everything, touched or not', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' })]);
+    index.validate('m1', 'now');
+    index.clear();
     expect(index.list({ limit: 10 })).toEqual([]);
   });
 });

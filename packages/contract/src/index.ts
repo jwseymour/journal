@@ -182,6 +182,99 @@ export interface AddAttachmentResponse {
 }
 
 /**
+ * Everything a document records about itself (`requirements.md` §9).
+ *
+ * A document is not an entry: it has a title, it is revised repeatedly over
+ * its working life rather than written once, and its identity has nothing
+ * to do with when it was started (`requirements.md` §9.1). `updated` exists
+ * here for exactly that reason — entries deliberately have no modification
+ * time (`EntryMetadata`), but a document's whole point is being returned to.
+ */
+export interface DocumentMetadata {
+  /** A ULID. Assigned once at creation, never changes, never reused. */
+  id: string;
+
+  title: string;
+
+  /** RFC 3339, always carrying a UTC offset — same shape as `EntryMetadata.created`. */
+  created: string;
+
+  /** RFC 3339, always carrying a UTC offset. Moves on every edit. */
+  updated: string;
+
+  /**
+   * Entries this document cites, by id — a pointer added by hand, never a
+   * derivation (`requirements.md` §9.2). Citing an entry does not pull its
+   * content in; a document's text is always written directly. Omitted
+   * entirely when empty, the same "absent, not empty" convention
+   * `EntryMetadata.location` uses.
+   */
+  citedEntries?: string[];
+}
+
+/** A document as it appears in a list: metadata plus enough prose to recognise it. */
+export interface DocumentSummary extends DocumentMetadata {
+  excerpt: string;
+}
+
+/** A document in full. The body is exactly the bytes on disk, minus frontmatter. */
+export interface Document extends DocumentMetadata {
+  body: string;
+
+  /** Same role as `Entry.contentHash` — an optimistic-concurrency precondition
+   * for `PUT /documents/:id`, not a value to interpret. */
+  contentHash: string;
+}
+
+/**
+ * One page of documents, newest-*updated*-first — deliberately different
+ * ordering from `EntryPage`'s newest-created-first: a working set of
+ * documents is more usefully surfaced by what was worked on most recently
+ * than by when it was started (`requirements.md` §9.1).
+ */
+export interface DocumentPage {
+  documents: DocumentSummary[];
+  /** Pass back as `cursor` for the next page. `null` means this was the last. */
+  nextCursor: string | null;
+}
+
+/** Creating a document. A title is required — unlike an entry, a document
+ * is a deliberate act, not something that exists from the first keystroke. */
+export interface CreateDocumentRequest {
+  title: string;
+  body: string;
+  citedEntries?: string[];
+}
+
+/** The result of creating a document. `path` is informational only, exactly
+ * as `CreateEntryResponse.path` is (`requirements.md` §4.2's identity-lives-in-id
+ * principle applies here too). */
+export interface CreateDocumentResponse {
+  id: string;
+  created: string;
+  path: string;
+  contentHash: string;
+}
+
+/**
+ * Editing a document — a full replace of every editable field, not a patch.
+ * `id` and `created` never move; `updated` is set by the server. This
+ * mirrors `UpdateEntryRequest`'s shape, not the partial-patch shape M10's
+ * touched-record types use — a document is directly authored like an entry,
+ * never AI-derived, so there is nothing to patch around.
+ */
+export interface UpdateDocumentRequest {
+  title: string;
+  body: string;
+  citedEntries?: string[];
+  /** Must match the current `Document.contentHash`, or the write is rejected. */
+  contentHash: string;
+}
+
+/** The document as it stands after the edit, including its new `contentHash`. */
+export type UpdateDocumentResponse = Document;
+
+/**
  * The result of transcribing a recording (`requirements.md` §4.7).
  *
  * Deliberately the only field. Nothing about *which* model produced it, no
@@ -238,10 +331,46 @@ export interface TemporalMetric {
    * `fieldKey`, `null` for anything the entry didn't state — never guessed.
    * Empty for a metric with no fields defined. */
   fields: Record<string, string | number | null>;
+  /** Whether the user has reviewed, corrected, or edited this record
+   * (`requirements.md` §2, §6.4, `plan.md` M10). Once touched, a reprocess
+   * never overwrites it silently — at most it proposes an update. */
+  touched: boolean;
 }
 
 export interface MetricsResponse {
   metrics: TemporalMetric[];
+}
+
+/** The editable subset of a metric — everything except `id`, `entryId`,
+ * `metric` (an approved category, not free content), and `touched` itself
+ * (`plan.md` M10). Only the fields present change; everything else is left
+ * as stored. */
+export interface UpdateMetricRequest {
+  detail?: string;
+  fields?: Record<string, string | number | null>;
+  eventTime?: string;
+  eventTimeExplicit?: boolean;
+}
+
+/** An AI-proposed update to a record the user has already touched
+ * (`plan.md` M10) — never applied automatically, only ever offered, the
+ * same shape as `MetricFieldSuggestion` but proposing a change to an
+ * existing record rather than a new field. */
+export interface MetricUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  detail: string;
+  fields: Record<string, string | number | null>;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface MetricUpdateSuggestionsResponse {
+  suggestions: MetricUpdateSuggestion[];
 }
 
 /**
@@ -341,10 +470,44 @@ export interface Review {
    * (`requirements.md` §6.3). RFC 3339 with a UTC offset. */
   eventTime: string;
   eventTimeExplicit: boolean;
+  /** Whether the user has reviewed, corrected, or edited this record
+   * (`requirements.md` §2, §6.4, `plan.md` M10). */
+  touched: boolean;
 }
 
 export interface ReviewsResponse {
   reviews: Review[];
+}
+
+/** The editable subset — everything except `id`, `entryId`, `medium` (an
+ * approved category, not free content), and `touched` itself (`plan.md`
+ * M10). */
+export interface UpdateReviewRequest {
+  title?: string;
+  rating?: number | null;
+  progress?: number | null;
+  opinion?: string;
+  eventTime?: string;
+  eventTimeExplicit?: boolean;
+}
+
+export interface ReviewUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  title: string;
+  rating: number | null;
+  progress: number | null;
+  opinion: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface ReviewUpdateSuggestionsResponse {
+  suggestions: ReviewUpdateSuggestion[];
 }
 
 /**
@@ -366,10 +529,42 @@ export interface ListItem {
   importance: number | null;
   eventTime: string;
   eventTimeExplicit: boolean;
+  /** Whether the user has reviewed, corrected, or edited this record
+   * (`requirements.md` §2, §6.4, `plan.md` M10). */
+  touched: boolean;
 }
 
 export interface ListItemsResponse {
   items: ListItem[];
+}
+
+/** The editable subset — everything except `id`, `entryId`, `listType` (an
+ * approved category, not free content), and `touched` itself (`plan.md`
+ * M10). */
+export interface UpdateListItemRequest {
+  text?: string;
+  context?: string;
+  importance?: number | null;
+  eventTime?: string;
+  eventTimeExplicit?: boolean;
+}
+
+export interface ListItemUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  text: string;
+  context: string;
+  importance: number | null;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface ListItemUpdateSuggestionsResponse {
+  suggestions: ListItemUpdateSuggestion[];
 }
 
 /**
@@ -389,10 +584,38 @@ export interface OpinionStatement {
   statement: string;
   eventTime: string;
   eventTimeExplicit: boolean;
+  /** Whether the user has reviewed, corrected, or edited this record
+   * (`requirements.md` §2, §6.4, `plan.md` M10). */
+  touched: boolean;
 }
 
 export interface OpinionStatementsResponse {
   statements: OpinionStatement[];
+}
+
+/** The editable subset — everything except `id`, `entryId`, `subject` (an
+ * approved category, not free content), and `touched` itself (`plan.md`
+ * M10). */
+export interface UpdateOpinionStatementRequest {
+  statement?: string;
+  eventTime?: string;
+  eventTimeExplicit?: boolean;
+}
+
+export interface OpinionStatementUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  statement: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface OpinionStatementUpdateSuggestionsResponse {
+  suggestions: OpinionStatementUpdateSuggestion[];
 }
 
 /**
@@ -446,10 +669,38 @@ export interface OpenQuestion {
   /** A faithful quote or summary of what the resolving entry actually said —
    * never an answer inferred beyond that. `null` while still open. */
   resolution: string | null;
+  /** Whether the user has reviewed, corrected, or edited this record
+   * (`requirements.md` §2, §6.4, `plan.md` M10). Reopening counts as a
+   * touch — it is a correction. */
+  touched: boolean;
 }
 
 export interface QuestionsResponse {
   questions: OpenQuestion[];
+}
+
+/** The editable subset of what an entry *raised* — never the resolution,
+ * which has its own dedicated `reopen`/`resolve` machinery (`plan.md` M10). */
+export interface UpdateQuestionRequest {
+  question?: string;
+  eventTime?: string;
+  eventTimeExplicit?: boolean;
+}
+
+export interface QuestionUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  question: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface QuestionUpdateSuggestionsResponse {
+  suggestions: QuestionUpdateSuggestion[];
 }
 
 export interface QuestionsSummaryResponse {
@@ -703,6 +954,13 @@ export type ApiErrorCode =
    * editor. The write did not happen (`plan.md` M2).
    */
   | 'edit_conflict'
+  /**
+   * A `PUT` named a derived record (metric, review, list item, opinion
+   * statement, or question) that does not exist. Unlike the tolerant no-op
+   * `DELETE` and state-transition routes use, an edit that lands nowhere is
+   * worth telling the caller about (`plan.md` M10).
+   */
+  | 'record_not_found'
   /** The journal directory could not be read or written. */
   | 'journal_unavailable'
   /**

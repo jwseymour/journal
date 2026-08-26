@@ -2,9 +2,20 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import type { OpinionStatement, OpinionSummary } from '@journal/contract';
+import type { OpinionStatement, OpinionStatementUpdateSuggestion, OpinionSummary } from '@journal/contract';
 import { formatDate, formatTime, formatTimestamp } from '@/lib/format';
-import { ApiRequestError, deleteOpinionStatement, listOpinionStatements, listOpinionSummaries } from '@/lib/api';
+import {
+  ApiRequestError,
+  approveOpinionStatementUpdateSuggestion,
+  deleteOpinionStatement,
+  listOpinionStatements,
+  listOpinionStatementUpdateSuggestions,
+  listOpinionSummaries,
+  rejectOpinionStatementUpdateSuggestion,
+  untouchOpinionStatement,
+  updateOpinionStatement,
+  validateOpinionStatement,
+} from '@/lib/api';
 import styles from './page.module.css';
 
 const LIMIT = 200;
@@ -12,6 +23,7 @@ const LIMIT = 200;
 interface OpinionsData {
   summaries: OpinionSummary[];
   statements: OpinionStatement[];
+  suggestions: OpinionStatementUpdateSuggestion[];
 }
 
 /**
@@ -20,19 +32,30 @@ interface OpinionsData {
  * cited summary per subject is the top layer — never hand-edited, only ever
  * whatever the last `npm run reprocess` wrote (`requirements.md` §9). The
  * full chronological statement record beneath it is what that summary was
- * built from, and the only layer a Discard button touches — correcting a
- * summary means discarding the statement it cites and reprocessing, not
- * editing the summary directly.
+ * built from, and the only layer editing touches — correcting a summary
+ * means correcting (or discarding) the statement it cites and reprocessing,
+ * not editing the summary directly.
+ *
+ * Editing and validating a statement (`requirements.md` §2, §6.4, `plan.md`
+ * M10) is scoped to `statement` itself — `eventTime` correction is not yet
+ * surfaced in this UI.
  */
 export default function OpinionsPage() {
   const [data, setData] = useState<OpinionsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
 
   const load = () => {
-    Promise.all([listOpinionSummaries(), listOpinionStatements({ limit: LIMIT })])
-      .then(([summariesResponse, statementsResponse]) =>
-        setData({ summaries: summariesResponse.summaries, statements: statementsResponse.statements }),
+    Promise.all([listOpinionSummaries(), listOpinionStatements({ limit: LIMIT }), listOpinionStatementUpdateSuggestions('pending')])
+      .then(([summariesResponse, statementsResponse, suggestionsResponse]) =>
+        setData({
+          summaries: summariesResponse.summaries,
+          statements: statementsResponse.statements,
+          suggestions: suggestionsResponse.suggestions,
+        }),
       )
       .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not load opinions.'));
   };
@@ -49,6 +72,57 @@ export default function OpinionsPage() {
       .finally(() => setRemovingId(null));
   };
 
+  const toggleTouched = (statement: OpinionStatement) => {
+    setBusyId(statement.id);
+    (statement.touched ? untouchOpinionStatement(statement.id) : validateOpinionStatement(statement.id))
+      .then(() =>
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              statements: current.statements.map((s) =>
+                s.id === statement.id ? { ...s, touched: !statement.touched } : s,
+              ),
+            },
+        ),
+      )
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
+      .finally(() => setBusyId(null));
+  };
+
+  const startEdit = (statement: OpinionStatement) => {
+    setEditingId(statement.id);
+    setDraft(statement.statement);
+  };
+
+  const saveEdit = (id: string) => {
+    setBusyId(id);
+    updateOpinionStatement(id, { statement: draft })
+      .then(() => {
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              statements: current.statements.map((s) => (s.id === id ? { ...s, statement: draft, touched: true } : s)),
+            },
+        );
+        setEditingId(null);
+      })
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not save.'))
+      .finally(() => setBusyId(null));
+  };
+
+  const decideSuggestion = (id: string, decision: 'approve' | 'reject') => {
+    setBusyId(id);
+    (decision === 'approve' ? approveOpinionStatementUpdateSuggestion(id) : rejectOpinionStatementUpdateSuggestion(id))
+      .then(() => {
+        setData((current) => current && { ...current, suggestions: current.suggestions.filter((s) => s.id !== id) });
+        if (decision === 'approve') load();
+      })
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not decide.'))
+      .finally(() => setBusyId(null));
+  };
+
   if (error) return <p className={styles.error}>{error}</p>;
   if (data === null) return <p className={styles.hint}>Loading…</p>;
   if (data.statements.length === 0) {
@@ -62,6 +136,40 @@ export default function OpinionsPage() {
 
   return (
     <div>
+      {data.suggestions.length > 0 && (
+        <section className={styles.section}>
+          <h2 className={styles.heading}>Reprocessing found changes to statements you've reviewed</h2>
+          <ul className={styles.suggestionList}>
+            {data.suggestions.map((suggestion) => (
+              <li key={suggestion.id} className={styles.suggestionRow}>
+                <div className={styles.main}>
+                  <span className={styles.text}>{suggestion.reason}</span>
+                  <span className={styles.text}>Would become: {suggestion.statement}</span>
+                </div>
+                <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.approveButton}
+                    onClick={() => decideSuggestion(suggestion.id, 'approve')}
+                    disabled={busyId === suggestion.id}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.rejectButton}
+                    onClick={() => decideSuggestion(suggestion.id, 'reject')}
+                    disabled={busyId === suggestion.id}
+                  >
+                    Keep mine
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className={styles.section}>
         <h2 className={styles.heading}>Summaries</h2>
         {data.summaries.length === 0 ? (
@@ -104,21 +212,61 @@ export default function OpinionsPage() {
                   <time dateTime={statement.eventTime}>{formatDate(statement.eventTime)}</time>
                   <span>{formatTime(statement.eventTime)}</span>
                   {!statement.eventTimeExplicit && <span>(from the entry’s own time)</span>}
+                  {statement.touched && <span className={styles.touched}>touched</span>}
                 </span>
                 <span className={styles.subject}>{statement.subject}</span>
-                <span className={styles.text}>{statement.statement}</span>
+                {editingId === statement.id ? (
+                  <div className={styles.editForm}>
+                    <textarea
+                      className={styles.textarea}
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                      aria-label="Statement"
+                    />
+                    <div className={styles.actions}>
+                      <button
+                        type="button"
+                        className={styles.approveButton}
+                        onClick={() => saveEdit(statement.id)}
+                        disabled={busyId === statement.id}
+                      >
+                        Save
+                      </button>
+                      <button type="button" className={styles.rejectButton} onClick={() => setEditingId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <span className={styles.text}>{statement.statement}</span>
+                )}
                 <Link href={`/entry/${statement.entryId}`} className={styles.link}>
                   Source entry
                 </Link>
               </div>
-              <button
-                type="button"
-                className={styles.discard}
-                onClick={() => discard(statement.id)}
-                disabled={removingId === statement.id}
-              >
-                Discard
-              </button>
+              {editingId !== statement.id && (
+                <div className={styles.rowActions}>
+                  <button type="button" className={styles.editButton} onClick={() => startEdit(statement)}>
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.editButton}
+                    onClick={() => toggleTouched(statement)}
+                    disabled={busyId === statement.id}
+                  >
+                    {statement.touched ? 'Untouch' : 'Validate'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.discard}
+                    onClick={() => discard(statement.id)}
+                    disabled={removingId === statement.id}
+                  >
+                    Discard
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ol>

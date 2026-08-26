@@ -66,10 +66,53 @@ export class Extractor {
         detail: metric.detail,
         fields: metric.fields ?? {},
         extractedAt,
+        touched: false,
       };
     });
 
-    this.#metricsIndex.replaceEntry(entry.id, records);
+    // Touched records for this entry are protected from reprocess
+    // (`requirements.md` §2, §6.4, `plan.md` M10): only the untouched subset
+    // is replaced. Where fresh extraction would now say something different
+    // for a touched record, that difference is offered as a suggestion
+    // rather than applied — positionally, since there is no other
+    // correlation key between "the touched records here" and "what
+    // extraction just produced" once an entry yields more than one metric.
+    // Where the counts don't line up 1:1, nothing is proposed this pass
+    // rather than guessing a wrong match; the touched record is still
+    // protected either way.
+    const touched = this.#metricsIndex.touchedForEntry(entry.id);
+    // A clean 1:1 match means every fresh candidate corresponds to a touched
+    // row, so nothing new is inserted untouched — otherwise every reprocess
+    // would leave a redundant fresh duplicate sitting next to the touched
+    // record it was compared against.
+    let untouchedRecords = records;
+    if (touched.length > 0 && touched.length === records.length) {
+      for (let i = 0; i < touched.length; i += 1) {
+        const before = touched[i];
+        const after = records[i];
+        if (!before || !after) continue;
+        if (
+          before.detail !== after.detail ||
+          JSON.stringify(before.fields) !== JSON.stringify(after.fields) ||
+          before.eventTime !== after.eventTime
+        ) {
+          this.#metricsIndex.proposeUpdate({
+            id: ulid(Date.now()),
+            recordId: before.id,
+            entryId: entry.id,
+            detail: after.detail,
+            fields: after.fields,
+            eventTime: after.eventTime,
+            eventEpochMs: after.eventEpochMs,
+            eventTimeExplicit: after.eventTimeExplicit,
+            reason: 'Reprocessing this entry now extracts different content.',
+            now: extractedAt,
+          });
+        }
+      }
+      untouchedRecords = [];
+    }
+    this.#metricsIndex.replaceUntouchedForEntry(entry.id, untouchedRecords);
 
     // The AI suggesting a new category (`requirements.md` §5.3's first
     // route) — never auto-approved, just recorded for a human to decide on
@@ -142,7 +185,9 @@ export class Extractor {
    * a burst.
    */
   async reprocessAll(store: EntryStore): Promise<{ entryCount: number; metricCount: number }> {
-    this.#metricsIndex.clear();
+    // Only untouched rows are wiped up front — touched records survive a
+    // reprocess-from-scratch (`requirements.md` §2, §6.4, `plan.md` M10).
+    this.#metricsIndex.clearUntouched();
     let cursor: string | undefined;
     let entryCount = 0;
     do {

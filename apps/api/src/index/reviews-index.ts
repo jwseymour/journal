@@ -25,12 +25,50 @@ export interface ReviewRecord {
   eventEpochMs: number;
   eventTimeExplicit: boolean;
   extractedAt: string;
+  /** Whether the user has reviewed, corrected, or edited this record
+   * (`requirements.md` §2, §6.4, `plan.md` M10). */
+  touched: boolean;
 }
 
 export interface ListReviewsOptions {
   medium?: string;
   limit: number;
 }
+
+/** The editable subset — everything except `id`, `entryId`, `medium` (an
+ * approved category, not free content), and `touched` itself (`plan.md`
+ * M10). */
+export interface UpdateReviewInput {
+  // See `UpdateMetricInput`'s comment for why `| undefined` is explicit.
+  title?: string | undefined;
+  rating?: number | null | undefined;
+  progress?: number | null | undefined;
+  opinion?: string | undefined;
+  eventTime?: string | undefined;
+  eventTimeExplicit?: boolean | undefined;
+}
+
+export interface ReviewUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  title: string;
+  rating: number | null;
+  progress: number | null;
+  opinion: string;
+  eventTime: string;
+  eventEpochMs: number;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+  decidedAt: string | null;
+}
+
+export type ProposeReviewUpdateInput = Omit<ReviewUpdateSuggestion, 'id' | 'status' | 'suggestedAt' | 'decidedAt'> & {
+  id: string;
+  now: string;
+};
 
 /** The aggregation an analysis surface needs (`plan.md` M8, `design.md`
  * §5.3), computed here rather than in the frontend (`requirements.md`
@@ -48,6 +86,11 @@ export interface ReviewsReader {
   list(options: ListReviewsOptions): ReviewRecord[];
   remove(id: string): void;
   summarize(approvedMedia: readonly string[]): ReviewMediumSummary[];
+  update(id: string, input: UpdateReviewInput, now: string): ReviewRecord | null;
+  validate(id: string, now: string): void;
+  untouch(id: string, now: string): void;
+  listUpdateSuggestions(options?: { status?: ReviewUpdateSuggestion['status'] }): ReviewUpdateSuggestion[];
+  decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
 }
 
 export class ReviewsIndex implements ReviewsReader {
@@ -77,7 +120,30 @@ export class ReviewsIndex implements ReviewsReader {
       );
       CREATE INDEX IF NOT EXISTS reviews_entry ON reviews (entry_id);
       CREATE INDEX IF NOT EXISTS reviews_order ON reviews (medium, event_epoch_ms DESC);
+
+      CREATE TABLE IF NOT EXISTS review_update_suggestions (
+        id TEXT PRIMARY KEY,
+        record_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rating REAL,
+        progress REAL,
+        opinion TEXT NOT NULL,
+        event_time TEXT NOT NULL,
+        event_epoch_ms INTEGER NOT NULL,
+        event_time_explicit INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL,
+        suggested_at TEXT NOT NULL,
+        decided_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS review_update_suggestions_status ON review_update_suggestions (status);
     `);
+
+    const columns = this.#db.prepare('PRAGMA table_info(reviews)').all() as { name: string }[];
+    if (!columns.some((c) => c.name === 'touched')) {
+      this.#db.exec('ALTER TABLE reviews ADD COLUMN touched INTEGER NOT NULL DEFAULT 0;');
+    }
   }
 
   /** Always the full set for an entry — see `MetricsIndex.replaceEntry` for
@@ -109,6 +175,40 @@ export class ReviewsIndex implements ReviewsReader {
     insert();
   }
 
+  /** The reprocess-safe sibling of `replaceEntry` (`plan.md` M10) — only
+   * touched=0 rows for this entry are replaced. */
+  replaceUntouchedForEntry(entryId: string, records: Omit<ReviewRecord, 'entryId' | 'touched'>[]): void {
+    const insert = this.#db.transaction(() => {
+      this.#db.prepare('DELETE FROM reviews WHERE entry_id = ? AND touched = 0').run(entryId);
+      const stmt = this.#db.prepare(
+        `INSERT INTO reviews
+           (id, entry_id, title, medium, rating, progress, opinion, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
+         VALUES (@id, @entryId, @title, @medium, @rating, @progress, @opinion, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, 0)`,
+      );
+      for (const record of records) {
+        stmt.run({
+          id: record.id,
+          entryId,
+          title: record.title,
+          medium: record.medium,
+          rating: record.rating,
+          progress: record.progress,
+          opinion: record.opinion,
+          eventTime: record.eventTime,
+          eventEpochMs: record.eventEpochMs,
+          eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+          extractedAt: record.extractedAt,
+        });
+      }
+    });
+    insert();
+  }
+
+  touchedForEntry(entryId: string): ReviewRecord[] {
+    const rows = this.#db.prepare('SELECT * FROM reviews WHERE entry_id = ? AND touched = 1').all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
   removeEntry(entryId: string): void {
     this.#db.prepare('DELETE FROM reviews WHERE entry_id = ?').run(entryId);
   }
@@ -116,6 +216,93 @@ export class ReviewsIndex implements ReviewsReader {
   /** Discard one wrong record (`requirements.md` §6.2). */
   remove(id: string): void {
     this.#db.prepare('DELETE FROM reviews WHERE id = ?').run(id);
+  }
+
+  update(id: string, input: UpdateReviewInput, _now: string): ReviewRecord | null {
+    const existing = this.#db.prepare('SELECT * FROM reviews WHERE id = ?').get(id) as RawRow | undefined;
+    if (!existing) return null;
+
+    const eventTimeExplicit = input.eventTimeExplicit ?? existing.event_time_explicit === 1;
+    const next: RawRow = {
+      ...existing,
+      title: input.title ?? existing.title,
+      rating: input.rating === undefined ? existing.rating : input.rating,
+      progress: input.progress === undefined ? existing.progress : input.progress,
+      opinion: input.opinion ?? existing.opinion,
+      event_time: input.eventTime ?? existing.event_time,
+      event_epoch_ms: input.eventTime ? Date.parse(input.eventTime) : existing.event_epoch_ms,
+      event_time_explicit: eventTimeExplicit ? 1 : 0,
+      touched: 1,
+    };
+    this.#db
+      .prepare(
+        `UPDATE reviews
+           SET title = @title, rating = @rating, progress = @progress, opinion = @opinion,
+               event_time = @event_time, event_epoch_ms = @event_epoch_ms,
+               event_time_explicit = @event_time_explicit, touched = 1
+         WHERE id = @id`,
+      )
+      .run(next);
+    return fromRaw(next);
+  }
+
+  validate(id: string, _now: string): void {
+    this.#db.prepare('UPDATE reviews SET touched = 1 WHERE id = ?').run(id);
+  }
+
+  untouch(id: string, _now: string): void {
+    this.#db.prepare('UPDATE reviews SET touched = 0 WHERE id = ?').run(id);
+  }
+
+  proposeUpdate(input: ProposeReviewUpdateInput): void {
+    const alreadyPending = this.#db
+      .prepare("SELECT 1 FROM review_update_suggestions WHERE record_id = ? AND status = 'pending'")
+      .get(input.recordId);
+    if (alreadyPending) return;
+
+    this.#db
+      .prepare(
+        `INSERT INTO review_update_suggestions
+           (id, record_id, entry_id, title, rating, progress, opinion, event_time, event_epoch_ms, event_time_explicit, reason, status, suggested_at, decided_at)
+         VALUES (@id, @recordId, @entryId, @title, @rating, @progress, @opinion, @eventTime, @eventEpochMs, @eventTimeExplicit, @reason, 'pending', @now, NULL)`,
+      )
+      .run({ ...input, eventTimeExplicit: input.eventTimeExplicit ? 1 : 0 });
+  }
+
+  listUpdateSuggestions(options: { status?: ReviewUpdateSuggestion['status'] } = {}): ReviewUpdateSuggestion[] {
+    const rows = (
+      options.status
+        ? this.#db
+            .prepare('SELECT * FROM review_update_suggestions WHERE status = ? ORDER BY suggested_at DESC')
+            .all(options.status)
+        : this.#db.prepare('SELECT * FROM review_update_suggestions ORDER BY suggested_at DESC').all()
+    ) as RawSuggestionRow[];
+    return rows.map(suggestionFromRaw);
+  }
+
+  decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void {
+    const apply = this.#db.transaction(() => {
+      const row = this.#db
+        .prepare("SELECT * FROM review_update_suggestions WHERE id = ? AND status = 'pending'")
+        .get(id) as RawSuggestionRow | undefined;
+      if (!row) return;
+
+      this.#db
+        .prepare('UPDATE review_update_suggestions SET status = ?, decided_at = ? WHERE id = ?')
+        .run(decision, now, id);
+
+      if (decision === 'approved') {
+        this.update(row.record_id, {
+          title: row.title,
+          rating: row.rating,
+          progress: row.progress,
+          opinion: row.opinion,
+          eventTime: row.event_time,
+          eventTimeExplicit: row.event_time_explicit === 1,
+        }, now);
+      }
+    });
+    apply();
   }
 
   list(options: ListReviewsOptions): ReviewRecord[] {
@@ -151,6 +338,12 @@ export class ReviewsIndex implements ReviewsReader {
     this.#db.exec('DELETE FROM reviews;');
   }
 
+  /** Reprocess-from-scratch entry point since M10 (`requirements.md` §6.4) —
+   * wipes only untouched rows. */
+  clearUntouched(): void {
+    this.#db.exec('DELETE FROM reviews WHERE touched = 0;');
+  }
+
   close(): void {
     this.#db.close();
   }
@@ -168,6 +361,7 @@ interface RawRow {
   event_epoch_ms: number;
   event_time_explicit: number;
   extracted_at: string;
+  touched: number;
 }
 
 function fromRaw(row: RawRow): ReviewRecord {
@@ -183,5 +377,42 @@ function fromRaw(row: RawRow): ReviewRecord {
     eventEpochMs: row.event_epoch_ms,
     eventTimeExplicit: row.event_time_explicit === 1,
     extractedAt: row.extracted_at,
+    touched: row.touched === 1,
+  };
+}
+
+interface RawSuggestionRow {
+  id: string;
+  record_id: string;
+  entry_id: string;
+  title: string;
+  rating: number | null;
+  progress: number | null;
+  opinion: string;
+  event_time: string;
+  event_epoch_ms: number;
+  event_time_explicit: number;
+  reason: string;
+  status: ReviewUpdateSuggestion['status'];
+  suggested_at: string;
+  decided_at: string | null;
+}
+
+function suggestionFromRaw(row: RawSuggestionRow): ReviewUpdateSuggestion {
+  return {
+    id: row.id,
+    recordId: row.record_id,
+    entryId: row.entry_id,
+    title: row.title,
+    rating: row.rating,
+    progress: row.progress,
+    opinion: row.opinion,
+    eventTime: row.event_time,
+    eventEpochMs: row.event_epoch_ms,
+    eventTimeExplicit: row.event_time_explicit === 1,
+    reason: row.reason,
+    status: row.status,
+    suggestedAt: row.suggested_at,
+    decidedAt: row.decided_at,
   };
 }

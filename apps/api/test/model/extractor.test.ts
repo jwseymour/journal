@@ -367,6 +367,78 @@ describe('structured fields', () => {
   });
 });
 
+describe('touched-record protection during reprocess (`plan.md` M10)', () => {
+  it('a touched record survives reprocessAll unchanged, and an untouched sibling is still replaced', async () => {
+    modelClient.result = {
+      metrics: [
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} },
+        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'ok', fields: {} },
+      ],
+    };
+    await extractor.extractEntry(entry('e1', 'Went for a run, slept fine.'));
+
+    const [run, sleep] = metricsIndex.list({ limit: 10 }).sort((a, b) => (a.metric < b.metric ? -1 : 1));
+    metricsIndex.update(run!.id, { detail: 'my own correction' }, 'now');
+
+    // Reprocessing this entry again would now find a different fresh
+    // candidate set than what's stored (two records vs. the touched pair),
+    // so per the "clean 1:1 match only" rule, nothing is proposed and both
+    // untouched records are simply replaced — but the touched one survives.
+    modelClient.result = {
+      metrics: [
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} },
+        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'ok', fields: {} },
+        { metric: 'sleep', eventTime: '2026-07-20T23:30:00+01:00', eventTimeExplicit: true, detail: 'woke once', fields: {} },
+      ],
+    };
+    const store = new FakeEntryStore([entry('e1', 'Went for a run, slept fine, woke once.')]);
+    await extractor.reprocessAll(store);
+
+    const rows = metricsIndex.list({ limit: 10 });
+    const kept = rows.find((r) => r.detail === 'my own correction');
+    expect(kept).toMatchObject({ touched: true });
+    expect(rows).toHaveLength(4); // the touched record, plus 3 freshly (re)extracted
+  });
+
+  it('a clean 1:1 touched match proposes an update instead of overwriting, and inserts nothing new untouched', async () => {
+    modelClient.result = {
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} }],
+    };
+    await extractor.extractEntry(entry('e1', 'Went for a run.'));
+    const [original] = metricsIndex.list({ limit: 10 });
+    metricsIndex.update(original!.id, { detail: 'my own correction' }, 'now');
+
+    modelClient.result = {
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a jog', fields: {} }],
+    };
+    const store = new FakeEntryStore([entry('e1', 'Went for a jog.')]);
+    await extractor.reprocessAll(store);
+
+    const rows = metricsIndex.list({ limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ detail: 'my own correction', touched: true });
+
+    const suggestions = metricsIndex.listUpdateSuggestions();
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({ recordId: original!.id, detail: 'a jog' });
+  });
+
+  it('proposes nothing when the fresh extraction agrees with the touched record', async () => {
+    modelClient.result = {
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} }],
+    };
+    await extractor.extractEntry(entry('e1', 'Went for a run.'));
+    const [original] = metricsIndex.list({ limit: 10 });
+    metricsIndex.validate(original!.id, 'now');
+
+    // Same result the second time — nothing has actually changed.
+    const store = new FakeEntryStore([entry('e1', 'Went for a run.')]);
+    await extractor.reprocessAll(store);
+
+    expect(metricsIndex.listUpdateSuggestions()).toHaveLength(0);
+  });
+});
+
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.result = {

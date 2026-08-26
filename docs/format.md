@@ -91,7 +91,61 @@ The application writes an entry only in response to the user writing it (`requir
 
 There is one narrow deletion. An entry file is created on the first keystroke of a session; if, when the session closes, the body is whitespace-only, that file is removed. This is not a delete feature — it is declining to commit an entry that was never written. A file with any content in it is never deleted by the application. If a whitespace-only file survives a crash it stays; a startup sweep that deletes files is a worse risk than a stray empty entry.
 
-## 6. The derived store
+## 6. The document file
+
+The concrete form of `requirements.md` §9, in the same relationship to it that §1–§5 above have to §4.
+
+```
+~/Journal/
+  documents/
+    01K3F9X2VQ8N7M4TQXYZ8ABCDE.md
+```
+
+Sibling to `journal/` at the repository root, not inside it — a document is not an entry, and its directory says so structurally. No year/month nesting: documents aren't chronological (`requirements.md` §9.1).
+
+### Filename
+
+```
+<id>.md
+```
+
+The full id, nothing shortened, no slug. An entry's filename can safely bake in a fragment of identity because everything it's built from — the date, the time, the id suffix — is immutable after creation. A document's title is not (`requirements.md` §9.1) — revision is the norm, not the exception — so deriving the filename from the title would mean either renaming the file on every edit or leaving a stale name behind. Identity stays in `id`, exactly as `format.md` §2 already establishes for entries; nothing ever resolves a document by its name.
+
+### The document file
+
+```markdown
+---
+id: 01K3F9X2VQ8N7M4TQXYZ8ABCDE
+title: The greenhouse project
+created: 2026-07-26T22:55:13+01:00
+updated: 2026-08-25T14:03:11+01:00
+citedEntries: [01K3ABCD1234567890ABCDEFG, 01K3EFGH1234567890ABCDEFG]
+---
+
+The body begins here.
+```
+
+YAML frontmatter, then the body — same structure as an entry file, same delimiter rules, same byte-verbatim body handling (§3 above applies unchanged).
+
+**`id`** — a ULID, exactly as for an entry.
+
+**`title`** — free text, required. The one field an entry deliberately never has (`requirements.md` §4.3, §9.1).
+
+**`created`** — RFC 3339 with a UTC offset, set once and never touched again.
+
+**`updated`** — RFC 3339 with a UTC offset. Moves on every edit. The one field an entry deliberately never has either (`requirements.md` §4.4's "no modification time") — a document's whole point is being returned to, so hiding that would hide the truth about how the file behaves.
+
+**`citedEntries`** — a list of entry ids, present only when non-empty. **Absent, not `[]`, when there are none** — the same convention `location` uses on an entry. Added and edited by hand; never populated automatically, never a derivation (`requirements.md` §9.2). Citing an entry is a pointer, not a copy — the cited entry's content is never pulled into the document.
+
+### Not in the file
+
+No visibility flag yet (`requirements.md` §9.3) — deliberately deferred until the system-wide public/private decision is made, not designed around in advance beyond keeping the frontmatter additive-safe for one.
+
+### Writing safely
+
+Same rules as §5 above: atomic write (temp file, `fsync`, rename), never rewritten except in direct response to the user editing it, never renamed after creation. There is no narrow-deletion case for documents the way there is for a blank entry draft — creation is a deliberate action gated on a non-empty title, not incidental to typing, so there is nothing to decline to commit.
+
+## 7. The derived store
 
 Everything derived lives in the application's own data directory, **outside the journal repository**. It is a cache (`requirements.md` §6.4) and must never be committed beside the record, nor appear in an export.
 

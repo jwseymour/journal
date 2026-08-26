@@ -107,7 +107,14 @@
   font-size: var(--text-xs);
 }
 
-.discard {
+.rowActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-2xs);
+}
+
+.discard,
+.editButton {
   flex-shrink: 0;
   padding: var(--space-3xs) var(--space-xs);
   border: var(--hairline) solid var(--rule-strong);
@@ -120,15 +127,111 @@
   transition: color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
 }
 
+.editButton:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .discard:hover {
   border-color: var(--danger);
   color: var(--danger);
 }
 
-.discard:disabled {
+.discard:disabled,
+.editButton:disabled {
   border-color: var(--rule);
   color: var(--ink-faint);
   cursor: default;
+}
+
+/* Touched indicator, inline edit form, and pending update-suggestions
+ * (`plan.md` M10) — reuses `.main`/`.text` above for the suggestion row
+ * rather than duplicating them under new names. */
+.touched {
+  padding: 0 var(--space-3xs);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.editForm {
+  margin-top: var(--space-3xs);
+}
+
+.textarea {
+  width: 100%;
+  min-height: var(--space-3xl);
+  padding: var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--ground-raised);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2xs);
+  margin-top: var(--space-2xs);
+}
+
+.approveButton,
+.rejectButton {
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.approveButton {
+  color: var(--ink);
+}
+
+.approveButton:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rejectButton {
+  color: var(--ink-muted);
+}
+
+.rejectButton:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.approveButton:disabled,
+.rejectButton:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.suggestionList {
+  list-style: none;
+  padding: 0;
+}
+
+.suggestionList > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.suggestionRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
 }
 
 .empty,

@@ -46,6 +46,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'go-entries', keys: 'g then e', label: 'Go to entries', group: 'global', available: true },
   { id: 'go-search', keys: 'g then s', label: 'Go to search', group: 'global', available: true },
   { id: 'go-analysis', keys: 'g then a', label: 'Go to analysis', group: 'global', available: true },
+  { id: 'go-documents', keys: 'g then d', label: 'Go to documents', group: 'global', available: true },
   { id: 'go-chat', keys: 'g then c', label: 'Go to chat', group: 'global', available: true },
   { id: 'shortcuts', keys: '?', label: 'Shortcut sheet', group: 'global', available: true },
   { id: 'back', keys: 'Esc', label: 'Step back one level', group: 'global', available: true },

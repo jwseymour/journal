@@ -108,6 +108,72 @@
   cursor: default;
 }
 
+/* Touched indicator, inline edit form, and pending update-suggestions
+ * (`plan.md` M10). */
+.touched {
+  padding: 0 var(--space-3xs);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.editForm {
+  margin-top: var(--space-3xs);
+}
+
+.textarea {
+  width: 100%;
+  min-height: var(--space-3xl);
+  padding: var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--ground-raised);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  resize: vertical;
+}
+
+.approveButton,
+.rejectButton {
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.approveButton {
+  color: var(--ink);
+}
+
+.approveButton:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rejectButton {
+  color: var(--ink-muted);
+}
+
+.rejectButton:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.approveButton:disabled,
+.rejectButton:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
 .empty,
 .hint {
   padding-top: var(--space-md);

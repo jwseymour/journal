@@ -1,0 +1,97 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.title {
+  padding: var(--space-2xs) 0;
+  border: 0;
+  border-bottom: var(--hairline) solid var(--rule-strong);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-emphasis);
+}
+
+.title:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.title::placeholder {
+  color: var(--ink-faint);
+}
+
+.citations {
+  padding: var(--space-3xs) 0;
+  border: 0;
+  border-bottom: var(--hairline) solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+}
+
+.citations:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.citations::placeholder {
+  color: var(--ink-faint);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.hint {
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+}
+
+.create {
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  background-color: var(--ground-raised);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+
+.create:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.create:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}

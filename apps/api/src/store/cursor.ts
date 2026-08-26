@@ -12,9 +12,15 @@ import { invalidCursor } from '../errors.js';
  * something is written between requests. The encoding is base64url of a tagged
  * tuple — enough to reject a cursor this server did not issue, and no more.
  * Callers must treat it as opaque; nothing outside this file may read into it.
+ *
+ * The version tag defaults to `'e1'` (entries, the first and only caller
+ * until documents) but is a parameter, not a constant, so a second cursor
+ * space — `'d1'` for documents — can never be confused with the first: a
+ * cursor from one list endpoint pasted into the other's query param is
+ * rejected rather than silently misread.
  */
 
-const VERSION = 'e1';
+const DEFAULT_VERSION = 'e1';
 
 export interface Cursor {
   /** The instant of the last entry on the previous page. */
@@ -23,13 +29,13 @@ export interface Cursor {
   readonly id: string;
 }
 
-export function encodeCursor(cursor: Cursor): string {
-  return Buffer.from(JSON.stringify([VERSION, cursor.epochMs, cursor.id]), 'utf8').toString(
+export function encodeCursor(cursor: Cursor, version: string = DEFAULT_VERSION): string {
+  return Buffer.from(JSON.stringify([version, cursor.epochMs, cursor.id]), 'utf8').toString(
     'base64url',
   );
 }
 
-export function decodeCursor(value: string): Cursor {
+export function decodeCursor(value: string, version: string = DEFAULT_VERSION): Cursor {
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
@@ -37,8 +43,8 @@ export function decodeCursor(value: string): Cursor {
     throw invalidCursor();
   }
   if (!Array.isArray(parsed) || parsed.length !== 3) throw invalidCursor();
-  const [version, epochMs, id] = parsed as unknown[];
-  if (version !== VERSION) throw invalidCursor();
+  const [taggedVersion, epochMs, id] = parsed as unknown[];
+  if (taggedVersion !== version) throw invalidCursor();
   if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) throw invalidCursor();
   if (typeof id !== 'string' || id.length === 0) throw invalidCursor();
   return { epochMs, id };

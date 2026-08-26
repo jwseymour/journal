@@ -37,7 +37,50 @@ export interface TemporalMetricRecord {
   /** When this record was extracted — informational, never used for
    * ordering (that is `eventEpochMs`'s job). */
   extractedAt: string;
+  /** Whether the user has reviewed, corrected, or edited this record
+   * (`requirements.md` §2, §6.4, `plan.md` M10). Once `true`, a reprocess
+   * never overwrites it — at most it proposes an update. `false` records
+   * remain a pure, disposable function of the entry. */
+  touched: boolean;
 }
+
+/** The editable subset of a metric record — everything except `id`,
+ * `entryId`, and `touched` itself, which are identity/provenance, not
+ * content (`plan.md` M10). */
+export interface UpdateMetricInput {
+  // `| undefined` throughout, not just `?:` — a Zod-parsed request body types
+  // an absent optional field as `T | undefined`, which `exactOptionalPropertyTypes`
+  // treats as distinct from the key being absent. Both mean the same thing to
+  // `update()` below, which reads every field through `??`.
+  detail?: string | undefined;
+  fields?: Record<string, string | number | null> | undefined;
+  eventTime?: string | undefined;
+  eventTimeExplicit?: boolean | undefined;
+}
+
+/** An AI-proposed update to a record the user has already touched
+ * (`plan.md` M10) — never applied automatically, only ever offered, exactly
+ * like `MetricFieldSuggestion` but proposing a change to an existing record
+ * rather than a new field. */
+export interface MetricUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  detail: string;
+  fields: Record<string, string | number | null>;
+  eventTime: string;
+  eventEpochMs: number;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+  decidedAt: string | null;
+}
+
+export type ProposeMetricUpdateInput = Omit<MetricUpdateSuggestion, 'id' | 'status' | 'suggestedAt' | 'decidedAt'> & {
+  id: string;
+  now: string;
+};
 
 export interface ListMetricsOptions {
   metric?: string;
@@ -100,6 +143,21 @@ export interface MetricsReader {
     filter?: { field: string; value: string },
     now?: number,
   ): MetricFieldSummary;
+  /** Edits content and marks the record touched (`plan.md` M10). `null` if
+   * `id` does not exist — unlike `remove`, a dropped edit is not a harmless
+   * no-op, so the caller (`http/app.ts`) turns this into a 404. */
+  update(id: string, input: UpdateMetricInput, now: string): TemporalMetricRecord | null;
+  /** Marks a record touched with no content change — "I checked this, it's
+   * correct" (`requirements.md` §2). Tolerant no-op if `id` is gone. */
+  validate(id: string, now: string): void;
+  /** Reverts a record to untouched/AI-owned (`requirements.md` §6.2 —
+   * correctability applies to touching too). Tolerant no-op if `id` is gone. */
+  untouch(id: string, now: string): void;
+  listUpdateSuggestions(options?: { status?: MetricUpdateSuggestion['status'] }): MetricUpdateSuggestion[];
+  /** Approving applies the suggestion's own fields via `update()`, staying
+   * touched — approving is itself a review act. Rejecting leaves the touched
+   * record exactly as it was. No-op if `id` is not a pending suggestion. */
+  decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
 }
 
 export class MetricsIndex implements MetricsReader {
@@ -127,7 +185,32 @@ export class MetricsIndex implements MetricsReader {
       );
       CREATE INDEX IF NOT EXISTS temporal_metrics_entry ON temporal_metrics (entry_id);
       CREATE INDEX IF NOT EXISTS temporal_metrics_order ON temporal_metrics (metric, event_epoch_ms DESC);
+
+      CREATE TABLE IF NOT EXISTS metric_update_suggestions (
+        id TEXT PRIMARY KEY,
+        record_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        fields TEXT NOT NULL DEFAULT '{}',
+        event_time TEXT NOT NULL,
+        event_epoch_ms INTEGER NOT NULL,
+        event_time_explicit INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL,
+        suggested_at TEXT NOT NULL,
+        decided_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS metric_update_suggestions_status ON metric_update_suggestions (status);
     `);
+
+    // `touched` (`plan.md` M10) — added after the table above already
+    // shipped, so it cannot simply be part of the `CREATE TABLE`: existing
+    // databases need it added in place, once, the same idempotent-migration
+    // shape `SqliteIndex` already uses elsewhere.
+    const columns = this.#db.prepare('PRAGMA table_info(temporal_metrics)').all() as { name: string }[];
+    if (!columns.some((c) => c.name === 'touched')) {
+      this.#db.exec('ALTER TABLE temporal_metrics ADD COLUMN touched INTEGER NOT NULL DEFAULT 0;');
+    }
   }
 
   /**
@@ -166,6 +249,46 @@ export class MetricsIndex implements MetricsReader {
     insert();
   }
 
+  /** The reprocess-safe sibling of `replaceEntry` (`plan.md` M10): deletes
+   * and reinserts only the still-untouched rows for this entry, leaving any
+   * touched row exactly as it is. Used by `Extractor.reprocessAll` instead
+   * of `replaceEntry`; `replaceEntry` itself is unchanged, since a brand-new
+   * entry never has existing rows either way. */
+  replaceUntouchedForEntry(entryId: string, records: Omit<TemporalMetricRecord, 'entryId' | 'touched'>[]): void {
+    const insert = this.#db.transaction(() => {
+      this.#db.prepare('DELETE FROM temporal_metrics WHERE entry_id = ? AND touched = 0').run(entryId);
+      const stmt = this.#db.prepare(
+        `INSERT INTO temporal_metrics
+           (id, entry_id, metric, event_time, event_epoch_ms, event_time_explicit, detail, fields, extracted_at, touched)
+         VALUES (@id, @entryId, @metric, @eventTime, @eventEpochMs, @eventTimeExplicit, @detail, @fields, @extractedAt, 0)`,
+      );
+      for (const record of records) {
+        stmt.run({
+          id: record.id,
+          entryId,
+          metric: record.metric,
+          eventTime: record.eventTime,
+          eventEpochMs: record.eventEpochMs,
+          eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+          detail: record.detail,
+          fields: JSON.stringify(record.fields),
+          extractedAt: record.extractedAt,
+        });
+      }
+    });
+    insert();
+  }
+
+  /** Every currently touched row for one entry — what a reprocess pass
+   * compares fresh extraction against before deciding whether to propose an
+   * update (`plan.md` M10). */
+  touchedForEntry(entryId: string): TemporalMetricRecord[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM temporal_metrics WHERE entry_id = ? AND touched = 1')
+      .all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
   removeEntry(entryId: string): void {
     this.#db.prepare('DELETE FROM temporal_metrics WHERE entry_id = ?').run(entryId);
   }
@@ -175,6 +298,104 @@ export class MetricsIndex implements MetricsReader {
    * tolerance `EntryStore.discardIfBlank` has. */
   remove(id: string): void {
     this.#db.prepare('DELETE FROM temporal_metrics WHERE id = ?').run(id);
+  }
+
+  /** Edits content and marks the record touched (`requirements.md` §2). Only
+   * the fields present in `input` change; everything else is left as
+   * stored. `null` if `id` does not exist. */
+  // `now` is unused here — `extractedAt` is provenance of the original
+  // extraction, not of this edit, and is left exactly as stored.
+  update(id: string, input: UpdateMetricInput, _now: string): TemporalMetricRecord | null {
+    const existing = this.#db.prepare('SELECT * FROM temporal_metrics WHERE id = ?').get(id) as RawRow | undefined;
+    if (!existing) return null;
+
+    const eventTimeExplicit = input.eventTimeExplicit ?? existing.event_time_explicit === 1;
+    const next: RawRow = {
+      ...existing,
+      detail: input.detail ?? existing.detail,
+      fields: input.fields ? JSON.stringify(input.fields) : existing.fields,
+      event_time: input.eventTime ?? existing.event_time,
+      event_epoch_ms: input.eventTime ? Date.parse(input.eventTime) : existing.event_epoch_ms,
+      event_time_explicit: eventTimeExplicit ? 1 : 0,
+      touched: 1,
+    };
+    this.#db
+      .prepare(
+        `UPDATE temporal_metrics
+           SET detail = @detail, fields = @fields, event_time = @event_time,
+               event_epoch_ms = @event_epoch_ms, event_time_explicit = @event_time_explicit, touched = 1
+         WHERE id = @id`,
+      )
+      .run(next);
+    return fromRaw(next);
+  }
+
+  /** Marks a record touched with no content change (`requirements.md` §2 —
+   * "making sure it is all correct"). Tolerant no-op if `id` is gone. */
+  validate(id: string, _now: string): void {
+    this.#db.prepare('UPDATE temporal_metrics SET touched = 1 WHERE id = ?').run(id);
+  }
+
+  /** Reverts a record to untouched/AI-owned (`requirements.md` §6.2).
+   * Tolerant no-op if `id` is gone. */
+  untouch(id: string, _now: string): void {
+    this.#db.prepare('UPDATE temporal_metrics SET touched = 0 WHERE id = ?').run(id);
+  }
+
+  /** Records that the fresh extraction for `entryId` would now produce
+   * something different from a touched record — never applied automatically
+   * (`plan.md` M10). A no-op if this exact record already has a pending
+   * suggestion, the same double-check `MetricFieldsIndex.suggest` does. */
+  proposeUpdate(input: ProposeMetricUpdateInput): void {
+    const alreadyPending = this.#db
+      .prepare("SELECT 1 FROM metric_update_suggestions WHERE record_id = ? AND status = 'pending'")
+      .get(input.recordId);
+    if (alreadyPending) return;
+
+    this.#db
+      .prepare(
+        `INSERT INTO metric_update_suggestions
+           (id, record_id, entry_id, detail, fields, event_time, event_epoch_ms, event_time_explicit, reason, status, suggested_at, decided_at)
+         VALUES (@id, @recordId, @entryId, @detail, @fields, @eventTime, @eventEpochMs, @eventTimeExplicit, @reason, 'pending', @now, NULL)`,
+      )
+      .run({ ...input, fields: JSON.stringify(input.fields), eventTimeExplicit: input.eventTimeExplicit ? 1 : 0 });
+  }
+
+  listUpdateSuggestions(options: { status?: MetricUpdateSuggestion['status'] } = {}): MetricUpdateSuggestion[] {
+    const rows = (
+      options.status
+        ? this.#db
+            .prepare('SELECT * FROM metric_update_suggestions WHERE status = ? ORDER BY suggested_at DESC')
+            .all(options.status)
+        : this.#db.prepare('SELECT * FROM metric_update_suggestions ORDER BY suggested_at DESC').all()
+    ) as RawSuggestionRow[];
+    return rows.map(suggestionFromRaw);
+  }
+
+  /** Approving applies the suggestion's own fields via `update()`
+   * (staying touched — approving is itself a review act); rejecting leaves
+   * the touched record exactly as it was. No-op if `id` is not pending. */
+  decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void {
+    const apply = this.#db.transaction(() => {
+      const row = this.#db
+        .prepare("SELECT * FROM metric_update_suggestions WHERE id = ? AND status = 'pending'")
+        .get(id) as RawSuggestionRow | undefined;
+      if (!row) return;
+
+      this.#db
+        .prepare('UPDATE metric_update_suggestions SET status = ?, decided_at = ? WHERE id = ?')
+        .run(decision, now, id);
+
+      if (decision === 'approved') {
+        this.update(row.record_id, {
+          detail: row.detail,
+          fields: JSON.parse(row.fields) as Record<string, string | number | null>,
+          eventTime: row.event_time,
+          eventTimeExplicit: row.event_time_explicit === 1,
+        }, now);
+      }
+    });
+    apply();
   }
 
   list(options: ListMetricsOptions): TemporalMetricRecord[] {
@@ -291,10 +512,18 @@ export class MetricsIndex implements MetricsReader {
     return { metricCount };
   }
 
-  /** Wipe every row — the first step of a reprocess-from-scratch
-   * (`requirements.md` §6.4), mirroring `SqliteIndex.clear()`. */
+  /** Wipe every row, touched or not. Kept as the literal full-wipe primitive
+   * it always was; `reprocessAll` no longer calls this directly — see
+   * `clearUntouched` (`plan.md` M10). */
   clear(): void {
     this.#db.exec('DELETE FROM temporal_metrics;');
+  }
+
+  /** The reprocess-from-scratch entry point since M10: wipes only untouched
+   * rows, so a from-scratch reprocess can never regenerate away a record the
+   * user has reviewed or edited (`requirements.md` §6.4). */
+  clearUntouched(): void {
+    this.#db.exec('DELETE FROM temporal_metrics WHERE touched = 0;');
   }
 
   close(): void {
@@ -312,6 +541,7 @@ interface RawRow {
   detail: string;
   fields: string;
   extracted_at: string;
+  touched: number;
 }
 
 function fromRaw(row: RawRow): TemporalMetricRecord {
@@ -325,6 +555,39 @@ function fromRaw(row: RawRow): TemporalMetricRecord {
     detail: row.detail,
     fields: JSON.parse(row.fields) as Record<string, string | number | null>,
     extractedAt: row.extracted_at,
+    touched: row.touched === 1,
+  };
+}
+
+interface RawSuggestionRow {
+  id: string;
+  record_id: string;
+  entry_id: string;
+  detail: string;
+  fields: string;
+  event_time: string;
+  event_epoch_ms: number;
+  event_time_explicit: number;
+  reason: string;
+  status: MetricUpdateSuggestion['status'];
+  suggested_at: string;
+  decided_at: string | null;
+}
+
+function suggestionFromRaw(row: RawSuggestionRow): MetricUpdateSuggestion {
+  return {
+    id: row.id,
+    recordId: row.record_id,
+    entryId: row.entry_id,
+    detail: row.detail,
+    fields: JSON.parse(row.fields) as Record<string, string | number | null>,
+    eventTime: row.event_time,
+    eventEpochMs: row.event_epoch_ms,
+    eventTimeExplicit: row.event_time_explicit === 1,
+    reason: row.reason,
+    status: row.status,
+    suggestedAt: row.suggested_at,
+    decidedAt: row.decided_at,
   };
 }
 

@@ -18,6 +18,7 @@ const record = (overrides: Partial<Omit<QuestionRecord, 'entryId'>> = {}): Omit<
   resolvedEntryId: null,
   resolution: null,
   resolvedAt: null,
+  touched: false,
   ...overrides,
 });
 
@@ -94,6 +95,16 @@ describe('resolve', () => {
       index.resolve('never-existed', { resolvedEntryId: 'e2', resolution: 'x', resolvedAt: '2026-08-01T00:00:00Z' }),
     ).not.toThrow();
   });
+
+  it('never auto-resolves a touched question (`plan.md` M10)', () => {
+    index.replaceRaised('e1', [record({ id: 'm1' })]);
+    index.validate('m1', 'now');
+
+    index.resolve('m1', { resolvedEntryId: 'e2', resolution: 'x', resolvedAt: '2026-08-01T00:00:00Z' });
+
+    const [row] = index.list({ limit: 10 });
+    expect(row).toMatchObject({ status: 'open', resolvedEntryId: null, touched: true });
+  });
 });
 
 describe('reopen', () => {
@@ -105,6 +116,78 @@ describe('reopen', () => {
 
     const [row] = index.list({ limit: 10 });
     expect(row).toMatchObject({ status: 'open', resolvedEntryId: null, resolution: null, resolvedAt: null });
+  });
+
+  it('touches the question — a future reprocess must not silently re-resolve it the same way (`plan.md` M10)', () => {
+    index.replaceRaised('e1', [record({ id: 'm1' })]);
+    index.resolve('m1', { resolvedEntryId: 'e2', resolution: 'wrong match', resolvedAt: '2026-08-01T00:00:00Z' });
+
+    index.reopen('m1');
+
+    expect(index.list({ limit: 10 })[0]!.touched).toBe(true);
+  });
+});
+
+describe('touching a record directly (`plan.md` M10)', () => {
+  it('update() edits given fields and sets touched', () => {
+    index.replaceRaised('e1', [record({ id: 'm1', question: 'first' })]);
+    const updated = index.update('m1', { question: 'corrected' }, 'now');
+    expect(updated).toMatchObject({ question: 'corrected', touched: true });
+  });
+
+  it('update() returns null for an id that does not exist', () => {
+    expect(index.update('never-existed', { question: 'x' }, 'now')).toBeNull();
+  });
+
+  it('validate() and untouch() flip the flag with no content change', () => {
+    index.replaceRaised('e1', [record({ id: 'm1' })]);
+    index.validate('m1', 'now');
+    expect(index.list({ limit: 10 })[0]!.touched).toBe(true);
+    index.untouch('m1', 'now');
+    expect(index.list({ limit: 10 })[0]!.touched).toBe(false);
+  });
+});
+
+describe('replaceUntouchedRaised / touchedOpenRaisedBy (`plan.md` M10)', () => {
+  it('protects a touched, still-open question raised by this entry', () => {
+    index.replaceRaised('e1', [record({ id: 'm1', question: 'keep' }), record({ id: 'm2', question: 'stale' })]);
+    index.validate('m1', 'now');
+
+    index.replaceUntouchedRaised('e1', [record({ id: 'm3', question: 'fresh' })]);
+
+    expect(index.list({ limit: 10 }).map((r) => r.id).sort()).toEqual(['m1', 'm3']);
+  });
+
+  it('touchedOpenRaisedBy returns only touched, open questions raised by this entry', () => {
+    index.replaceRaised('e1', [record({ id: 'm1' }), record({ id: 'm2' })]);
+    index.validate('m1', 'now');
+    expect(index.touchedOpenRaisedBy('e1').map((r) => r.id)).toEqual(['m1']);
+  });
+
+  it('a resolved question is never in touchedOpenRaisedBy, touched or not', () => {
+    index.replaceRaised('e1', [record({ id: 'm1' })]);
+    index.resolve('m1', { resolvedEntryId: 'e2', resolution: 'x', resolvedAt: '2026-08-01T00:00:00Z' });
+    expect(index.touchedOpenRaisedBy('e1')).toEqual([]);
+  });
+});
+
+describe('update suggestions (`plan.md` M10)', () => {
+  it('propose, then approve, applies the proposed question text and stays touched', () => {
+    index.replaceRaised('e1', [record({ id: 'm1', question: 'original' })]);
+    index.validate('m1', 'now');
+    index.proposeUpdate({
+      id: 's1',
+      recordId: 'm1',
+      entryId: 'e1',
+      question: 'reprocessed question',
+      eventTime: record().eventTime,
+      eventEpochMs: record().eventEpochMs,
+      eventTimeExplicit: true,
+      reason: 'reason',
+      now: 'now',
+    });
+    index.decideUpdate('s1', 'approved', 'now');
+    expect(index.list({ limit: 10 })[0]).toMatchObject({ question: 'reprocessed question', touched: true });
   });
 });
 
@@ -173,5 +256,13 @@ describe('summarize / stats / clear', () => {
     index.replaceRaised('e1', [record({ id: 'm1' })]);
     index.clear();
     expect(index.stats()).toEqual({ questionCount: 0, openCount: 0, resolvedCount: 0 });
+  });
+
+  it('clearUntouched wipes untouched rows but leaves a touched one in place (`plan.md` M10)', () => {
+    index.replaceRaised('e1', [record({ id: 'm1' })]);
+    index.replaceRaised('e2', [record({ id: 'm2' })]);
+    index.validate('m1', 'now');
+    index.clearUntouched();
+    expect(index.list({ limit: 10 }).map((r) => r.id)).toEqual(['m1']);
   });
 });

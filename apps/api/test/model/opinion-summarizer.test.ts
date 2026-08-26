@@ -43,6 +43,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     modelClient.result = { parts: [{ text: 'Values living deliberately.', sourceStatementIds: ['s1'] }] };
@@ -86,6 +87,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     modelClient.result = {
@@ -109,6 +111,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     modelClient.result = {
@@ -135,6 +138,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
       {
         id: 's2',
@@ -144,6 +148,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 1300,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     modelClient.result = { parts: [{ text: 'Combined.', sourceStatementIds: ['s1', 's2'] }] };
@@ -164,6 +169,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     modelClient.result = { parts: [{ text: 'First run.', sourceStatementIds: ['s1'] }] };
@@ -187,6 +193,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 2000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     statementsIndex.replaceEntry('e2', [
@@ -198,6 +205,7 @@ describe('summarizeSubject', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-19T21:00:00+01:00',
+        touched: false,
       },
     ]);
 
@@ -219,6 +227,7 @@ describe('summarizeAll', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     statementsIndex.replaceEntry('e2', [
@@ -230,6 +239,7 @@ describe('summarizeAll', () => {
         eventEpochMs: 1000,
         eventTimeExplicit: true,
         extractedAt: '2026-07-20T21:00:00+01:00',
+        touched: false,
       },
     ]);
     summariesIndex.replaceSubject('career', [

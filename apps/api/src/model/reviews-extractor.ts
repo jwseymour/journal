@@ -49,10 +49,47 @@ export class ReviewsExtractor {
         opinion: review.opinion,
         ...resolved,
         extractedAt,
+        touched: false,
       };
     });
 
-    this.#reviewsIndex.replaceEntry(entry.id, records);
+    // See `Extractor.extractEntry` for the full reasoning — touched records
+    // are protected from reprocess; a clean 1:1 match against fresh output
+    // proposes an update instead of applying it and inserts nothing new
+    // untouched (`plan.md` M10).
+    const touched = this.#reviewsIndex.touchedForEntry(entry.id);
+    let untouchedRecords = records;
+    if (touched.length > 0 && touched.length === records.length) {
+      for (let i = 0; i < touched.length; i += 1) {
+        const before = touched[i];
+        const after = records[i];
+        if (!before || !after) continue;
+        if (
+          before.title !== after.title ||
+          before.rating !== after.rating ||
+          before.progress !== after.progress ||
+          before.opinion !== after.opinion ||
+          before.eventTime !== after.eventTime
+        ) {
+          this.#reviewsIndex.proposeUpdate({
+            id: ulid(Date.now()),
+            recordId: before.id,
+            entryId: entry.id,
+            title: after.title,
+            rating: after.rating,
+            progress: after.progress,
+            opinion: after.opinion,
+            eventTime: after.eventTime,
+            eventEpochMs: after.eventEpochMs,
+            eventTimeExplicit: after.eventTimeExplicit,
+            reason: 'Reprocessing this entry now extracts different content.',
+            now: extractedAt,
+          });
+        }
+      }
+      untouchedRecords = [];
+    }
+    this.#reviewsIndex.replaceUntouchedForEntry(entry.id, untouchedRecords);
 
     if (result.suggestedCategory) {
       this.#categoriesIndex.suggest({
@@ -73,7 +110,7 @@ export class ReviewsExtractor {
   /** Reprocess-from-scratch (`requirements.md` §6.4) — see `Extractor`'s
    * identical method for the full reasoning. */
   async reprocessAll(store: EntryStore): Promise<{ entryCount: number; reviewCount: number }> {
-    this.#reviewsIndex.clear();
+    this.#reviewsIndex.clearUntouched();
     let cursor: string | undefined;
     let entryCount = 0;
     do {

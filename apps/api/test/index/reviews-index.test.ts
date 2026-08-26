@@ -18,6 +18,7 @@ const record = (overrides: Partial<Omit<ReviewRecord, 'entryId'>> = {}): Omit<Re
   eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
   eventTimeExplicit: true,
   extractedAt: '2026-07-20T21:00:00+01:00',
+  touched: false,
   ...overrides,
 });
 
@@ -92,6 +93,68 @@ describe('stats / clear', () => {
     expect(index.stats()).toEqual({ reviewCount: 2 });
     index.clear();
     expect(index.stats()).toEqual({ reviewCount: 0 });
+  });
+});
+
+describe('touching a record (`plan.md` M10)', () => {
+  it('update() edits given fields and sets touched', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', opinion: 'first take' })]);
+    const updated = index.update('m1', { opinion: 'revised take', rating: 5 }, 'now');
+    expect(updated).toMatchObject({ opinion: 'revised take', rating: 5, touched: true });
+  });
+
+  it('update() returns null for an id that does not exist', () => {
+    expect(index.update('never-existed', { opinion: 'x' }, 'now')).toBeNull();
+  });
+
+  it('validate() and untouch() flip the flag with no content change', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' })]);
+    index.validate('m1', 'now');
+    expect(index.list({ limit: 10 })[0]!.touched).toBe(true);
+    index.untouch('m1', 'now');
+    expect(index.list({ limit: 10 })[0]!.touched).toBe(false);
+  });
+});
+
+describe('replaceUntouchedForEntry (`plan.md` M10)', () => {
+  it('protects a touched row while replacing the untouched ones', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', title: 'keep' }), record({ id: 'm2', title: 'stale' })]);
+    index.validate('m1', 'now');
+    index.replaceUntouchedForEntry('e1', [record({ id: 'm3', title: 'fresh' })]);
+    expect(index.list({ limit: 10 }).map((r) => r.id).sort()).toEqual(['m1', 'm3']);
+  });
+});
+
+describe('update suggestions (`plan.md` M10)', () => {
+  it('propose, then approve, applies the proposed fields and stays touched', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', opinion: 'original' })]);
+    index.validate('m1', 'now');
+    index.proposeUpdate({
+      id: 's1',
+      recordId: 'm1',
+      entryId: 'e1',
+      title: record().title,
+      rating: record().rating,
+      progress: record().progress,
+      opinion: 'reprocessed opinion',
+      eventTime: record().eventTime,
+      eventEpochMs: record().eventEpochMs,
+      eventTimeExplicit: true,
+      reason: 'reason',
+      now: 'now',
+    });
+    index.decideUpdate('s1', 'approved', 'now');
+    expect(index.list({ limit: 10 })[0]).toMatchObject({ opinion: 'reprocessed opinion', touched: true });
+  });
+});
+
+describe('clearUntouched (`plan.md` M10)', () => {
+  it('wipes untouched rows but leaves a touched row in place', () => {
+    index.replaceEntry('e1', [record({ id: 'm1' })]);
+    index.replaceEntry('e2', [record({ id: 'm2' })]);
+    index.validate('m1', 'now');
+    index.clearUntouched();
+    expect(index.list({ limit: 10 }).map((r) => r.id)).toEqual(['m1']);
   });
 });
 

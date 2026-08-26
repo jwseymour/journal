@@ -32,12 +32,22 @@ export const malformedEntry = (message: string, cause?: unknown): AppError =>
 export const journalUnavailable = (message: string, cause?: unknown): AppError =>
   new AppError('journal_unavailable', message, 503, cause === undefined ? undefined : { cause });
 
-export const editConflict = (): AppError =>
+/** `kind` names the record type, e.g. `'entry'` (the default) or
+ * `'document'` (`requirements.md` §9) — same parameterisation `recordNotFound`
+ * already uses, so the message never claims the wrong thing changed. */
+export const editConflict = (kind: string = 'entry'): AppError =>
   new AppError(
     'edit_conflict',
-    'This entry changed since it was last read — most likely edited outside the app. Nothing was overwritten.',
+    `This ${kind} changed since it was last read — most likely edited outside the app. Nothing was overwritten.`,
     409,
   );
+
+/** A `PUT` (an edit that actually carries content) naming an id that does
+ * not exist — unlike `DELETE`/`reopen`'s tolerant no-op, silently dropping
+ * an edit would be worse than telling the caller it landed nowhere
+ * (`plan.md` M10). `kind` names the record type, e.g. `'metric'`. */
+export const recordNotFound = (kind: string, id: string): AppError =>
+  new AppError('record_not_found', `No ${kind} with id ${id}.`, 404);
 
 export const attachmentConflict = (filename: string): AppError =>
   new AppError(

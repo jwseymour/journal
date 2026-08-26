@@ -54,9 +54,37 @@ export class QuestionsExtractor {
         resolvedEntryId: null,
         resolution: null,
         resolvedAt: null,
+        touched: false,
       };
     });
-    this.#questionsIndex.replaceRaised(entry.id, raised);
+    // See `Extractor.extractEntry` for the full reasoning (`plan.md` M10).
+    // Only the still-open questions this entry raised are in scope for
+    // comparison — a resolved one is never revisited by `replaceRaised`
+    // either, touched or not.
+    const touched = this.#questionsIndex.touchedOpenRaisedBy(entry.id);
+    let untouchedRaised = raised;
+    if (touched.length > 0 && touched.length === raised.length) {
+      for (let i = 0; i < touched.length; i += 1) {
+        const before = touched[i];
+        const after = raised[i];
+        if (!before || !after) continue;
+        if (before.question !== after.question || before.eventTime !== after.eventTime) {
+          this.#questionsIndex.proposeUpdate({
+            id: ulid(Date.now()),
+            recordId: before.id,
+            entryId: entry.id,
+            question: after.question,
+            eventTime: after.eventTime,
+            eventEpochMs: after.eventEpochMs,
+            eventTimeExplicit: after.eventTimeExplicit,
+            reason: 'Reprocessing this entry now extracts different content.',
+            now: extractedAt,
+          });
+        }
+      }
+      untouchedRaised = [];
+    }
+    this.#questionsIndex.replaceUntouchedRaised(entry.id, untouchedRaised);
 
     // Never trust a citation blindly — the same posture `OpinionSummarizer`
     // applies to its own citations, applied here to question ids instead: a
@@ -82,7 +110,7 @@ export class QuestionsExtractor {
    * need, since none of them has a notion of "before" and "after" between
    * entries the way a resolution does. */
   async reprocessAll(store: EntryStore): Promise<{ entryCount: number; questionCount: number; openCount: number; resolvedCount: number }> {
-    this.#questionsIndex.clear();
+    this.#questionsIndex.clearUntouched();
 
     const entries: StoredEntry[] = [];
     let cursor: string | undefined;

@@ -42,10 +42,42 @@ export class ListsExtractor {
         importance: item.importance,
         ...resolved,
         extractedAt,
+        touched: false,
       };
     });
 
-    this.#listsIndex.replaceEntry(entry.id, records);
+    // See `Extractor.extractEntry` for the full reasoning (`plan.md` M10).
+    const touched = this.#listsIndex.touchedForEntry(entry.id);
+    let untouchedRecords = records;
+    if (touched.length > 0 && touched.length === records.length) {
+      for (let i = 0; i < touched.length; i += 1) {
+        const before = touched[i];
+        const after = records[i];
+        if (!before || !after) continue;
+        if (
+          before.text !== after.text ||
+          before.context !== after.context ||
+          before.importance !== after.importance ||
+          before.eventTime !== after.eventTime
+        ) {
+          this.#listsIndex.proposeUpdate({
+            id: ulid(Date.now()),
+            recordId: before.id,
+            entryId: entry.id,
+            text: after.text,
+            context: after.context,
+            importance: after.importance,
+            eventTime: after.eventTime,
+            eventEpochMs: after.eventEpochMs,
+            eventTimeExplicit: after.eventTimeExplicit,
+            reason: 'Reprocessing this entry now extracts different content.',
+            now: extractedAt,
+          });
+        }
+      }
+      untouchedRecords = [];
+    }
+    this.#listsIndex.replaceUntouchedForEntry(entry.id, untouchedRecords);
 
     if (result.suggestedCategory) {
       this.#categoriesIndex.suggest({
@@ -64,7 +96,7 @@ export class ListsExtractor {
   }
 
   async reprocessAll(store: EntryStore): Promise<{ entryCount: number; itemCount: number }> {
-    this.#listsIndex.clear();
+    this.#listsIndex.clearUntouched();
     let cursor: string | undefined;
     let entryCount = 0;
     do {

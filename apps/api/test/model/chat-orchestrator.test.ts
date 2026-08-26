@@ -53,6 +53,7 @@ const record = (overrides: Partial<Omit<TemporalMetricRecord, 'entryId'>> = {}):
   detail: 'a run',
   fields: {},
   extractedAt: new Date().toISOString(),
+  touched: false,
   ...overrides,
 });
 
@@ -67,6 +68,7 @@ const reviewRecord = (overrides: Partial<Omit<ReviewRecord, 'entryId'>> = {}): O
   eventEpochMs: Date.now(),
   eventTimeExplicit: true,
   extractedAt: new Date().toISOString(),
+  touched: false,
   ...overrides,
 });
 
@@ -80,6 +82,7 @@ const listItemRecord = (overrides: Partial<Omit<ListItemRecord, 'entryId'>> = {}
   eventEpochMs: Date.now(),
   eventTimeExplicit: true,
   extractedAt: new Date().toISOString(),
+  touched: false,
   ...overrides,
 });
 
