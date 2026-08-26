@@ -64,14 +64,20 @@ data "aws_iam_policy_document" "journal_bucket_access" {
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["journal/*"]
+      # `documents/` sits alongside `journal/` at the bucket root
+      # (`format.md` §6, `S3DocumentStore`) — same instance role, same
+      # scoping approach, just a second prefix.
+      values = ["journal/*", "documents/*"]
     }
   }
 
   statement {
-    sid       = "ReadWriteJournalObjects"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = ["${aws_s3_bucket.journal.arn}/journal/*"]
+    sid     = "ReadWriteJournalObjects"
+    actions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = [
+      "${aws_s3_bucket.journal.arn}/journal/*",
+      "${aws_s3_bucket.journal.arn}/documents/*",
+    ]
   }
 }
 

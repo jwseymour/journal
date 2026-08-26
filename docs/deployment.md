@@ -104,10 +104,30 @@ caddy version
 id journal
 ```
 
-**Clone the repo** into the directory bootstrap prepared. This needs its own credential (a deploy key or a personal access token) if the repo is private — set that up however you normally do for private clones on a new machine (an SSH deploy key added to the repo's deploy keys is the cleanest option for a single always-on box):
+**Clone the repo.** GitHub no longer accepts a password over HTTPS for git operations, so this needs an SSH deploy key. Generate one as `ubuntu` (the `journal` account has no shell to run interactive commands with):
 
 ```
-sudo -u journal git clone <your-repo-url> /opt/journal/app
+ssh-keygen -t ed25519 -C "journal-ec2-deploy-key" -N "" -f ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+```
+
+Add the printed key at `https://github.com/<owner>/<repo>/settings/keys` → **Add deploy key** → paste it → leave "Allow write access" unchecked → Add key.
+
+Then give the `journal` user its own copy — its home directory is `/opt/journal` (set by `useradd --home-dir /opt/journal` in `bootstrap.sh`), not `/home/journal`:
+
+```
+sudo mkdir -p /opt/journal/.ssh
+sudo cp ~/.ssh/id_ed25519 ~/.ssh/id_ed25519.pub /opt/journal/.ssh/
+ssh-keyscan -H github.com | sudo tee -a /opt/journal/.ssh/known_hosts > /dev/null
+sudo chown -R journal:journal /opt/journal/.ssh
+sudo chmod 700 /opt/journal/.ssh
+sudo chmod 600 /opt/journal/.ssh/id_ed25519
+```
+
+`/opt/journal` itself isn't traversable by `ubuntu` (`journal`'s home is `750`), so clone with an explicit `sudo -u journal`, not a plain `cd` first — a bare `cd /opt/journal/app` as `ubuntu` fails with "Permission denied", which is expected:
+
+```
+sudo -u journal git clone git@github.com:<owner>/<repo>.git /opt/journal/app
 ```
 
 **Create `.env`:**
@@ -117,7 +137,7 @@ sudo -u journal cp /opt/journal/app/.env.example /opt/journal/app/.env
 sudo -u journal nano /opt/journal/app/.env
 ```
 
-Fill in, directly in that editor — never in a chat:
+Fill in, directly in that editor — never in a chat. Every line below is commented out (`# `) in `.env.example` — **uncomment it**, not just add a value after the `=`, or the app never sees it:
 
 - `JOURNAL_DIR=/opt/journal/data/journal-mirror` — still required even on `s3` (it's where the local git safety-net mirror lives, `requirements.md` §7.4). Create it first: `sudo -u journal mkdir -p /opt/journal/data/journal-mirror/journal && sudo -u journal git -C /opt/journal/data/journal-mirror init`.
 - `STORAGE_BACKEND=s3`
@@ -135,9 +155,13 @@ Fill in, directly in that editor — never in a chat:
   ```
   This is the line that turns auth on. Leaving it blank keeps auth off, same as local dev.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — from step 6 below; come back and fill these in after.
-- `AUTH_PASSWORD_HASH` — leave blank for now, generate it next:
+- `AUTH_PASSWORD_HASH` — leave blank for now, generate it next. This needs dependencies installed first (`npm run set-password` is a workspace script), which normally happens in step 7 — do it now instead:
   ```
-  cd /opt/journal/app && sudo -u journal npm run set-password -w @journal/api
+  sudo -u journal bash -c 'cd /opt/journal/app && npm ci'
+  ```
+  (`/opt/journal` isn't traversable by `ubuntu`, so wrap the `cd` inside the `sudo -u journal` shell — a bare `cd /opt/journal/app` first fails with "Permission denied".) Then:
+  ```
+  sudo -u journal bash -c 'cd /opt/journal/app && npm run set-password -w @journal/api'
   ```
   It prompts for a password and prints an argon2id hash. Paste the hash (not the password) into `.env`.
 
@@ -160,12 +184,13 @@ In the [Google Cloud Console](https://console.cloud.google.com/):
 
 ## 7. First deploy **[scripted, you run it]**
 
-Still on the box, as a sudo-capable user (not `journal`):
+Still on the box, as a sudo-capable user (not `journal` — it has no shell to run this with anyway):
 
 ```
-cd /opt/journal/app
-sudo ./infra/deploy.sh <your-domain>
+sudo /opt/journal/app/infra/deploy.sh <your-domain>
 ```
+
+(Run the script by its full path rather than `cd`-ing there first — `/opt/journal` isn't traversable by a non-`sudo` user, so a plain `cd /opt/journal/app` fails with "Permission denied.")
 
 This installs the `journal-api` systemd unit, installs Caddy's config for your domain (which requests its Let's Encrypt certificate — this is why DNS needed to already resolve), restarts everything, and polls `/health` until it responds or times out. It prints a clear pass/fail.
 
@@ -180,19 +205,34 @@ journalctl -u caddy -n 100 --no-pager
 
 ## 8. Migrate existing entries **[scripted, you run it — from your laptop]**
 
-From your own machine, with `JOURNAL_DIR` pointed at your existing local journal and the AWS credentials from step 2 still configured:
+From your own machine, with `JOURNAL_DIR` pointed at your existing local journal (already the case in your local `.env`) and the AWS credentials from step 2 still configured. The script itself needs `STORAGE_BACKEND=s3`/`S3_BUCKET`/`AWS_REGION` to know where to copy *to* — rather than permanently switching your local dev setup over to S3, set them just for this one command:
 
 ```
-npm run migrate-to-s3
+STORAGE_BACKEND=s3 S3_BUCKET=<bucket_name> AWS_REGION=<region> npm run migrate-to-s3
 ```
 
 It copies every entry into the bucket, then verifies entry count and a sampled set of content hashes match between source and destination. Your local `JOURNAL_DIR` is left untouched — this is a copy, not a move.
 
 Expect output ending in something like:
 ```
-migrated 412 entries, verified 412/412 hashes match
+[journal] copied 412 files
+[journal] verifying...
+[journal] entry count matches: 412
+[journal] content hash matches on 25 sampled entries
+[journal] migration verified. ...
 ```
-Anything less than a full match is worth stopping and investigating before treating the bucket as live.
+A thrown error at any point (a count mismatch, a sampled hash mismatch) is worth stopping and investigating before treating the bucket as live.
+
+**This alone doesn't make the entries show up on the running server** — its index (`index.db`) was already built empty, before the migration, and won't notice new S3 objects on its own. Rebuild it, back on the box:
+
+```
+sudo systemctl stop journal-api
+sudo -u journal rm -f /opt/journal/data/index.db /opt/journal/data/index.db-shm /opt/journal/data/index.db-wal
+sudo -u journal bash -c 'cd /opt/journal/app && npm run rebuild -w @journal/api'
+sudo systemctl start journal-api
+```
+
+(Stop the service first — deleting the database out from under a running process leaves stale `-shm`/`-wal` files behind that confuse the next open, surfacing as a `SQLITE_IOERR_SHORT_READ`.) Confirm with `curl https://<your-domain>/health` — `entryCount` should match what step 8 just reported.
 
 ---
 

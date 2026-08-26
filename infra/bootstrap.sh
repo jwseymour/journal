@@ -22,6 +22,13 @@ apt-get upgrade -y
 log "installing base packages"
 apt-get install -y ca-certificates curl gnupg git
 
+# `better-sqlite3`, `sqlite-vec` and `argon2` all compile native addons on
+# install (`npm ci`) — nothing upstream of this script depends on them being
+# prebuilt for arm64, so a real toolchain has to be here already, not added
+# ad hoc later.
+log "installing build toolchain for native npm modules (better-sqlite3, argon2, ...)"
+apt-get install -y build-essential python3
+
 # ── Node 20.x, matching this repo's engines constraint (>=20.9.0) ─────────
 log "installing Node 20.x"
 mkdir -p /etc/apt/keyrings
@@ -51,5 +58,21 @@ fi
 mkdir -p /opt/journal/app          # the cloned repo goes here
 mkdir -p /opt/journal/data         # index.db, model caches, the local git mirror (JOURNAL_DIR)
 chown -R journal:journal /opt/journal
+
+# ── Swap ─────────────────────────────────────────────────────────────────
+#
+# `t4g.micro` (the default `instance_type`) has ~900MB of RAM, and `npm ci`
+# compiling three native addons at once reliably gets OOM-killed without
+# this — observed directly, not a theoretical concern. Cheap and harmless
+# on a bigger instance type too, so it's unconditional rather than sized to
+# `var.instance_type`.
+if ! swapon --show | grep -q /swapfile; then
+  log "creating 2GB swap file"
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
 
 log "bootstrap complete. Next: SSH in, clone the repo into /opt/journal/app, fill in /opt/journal/app/.env, then run infra/deploy.sh (see docs/deployment.md)."

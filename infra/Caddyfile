@@ -4,7 +4,16 @@
 # Caddy handles the Let's Encrypt certificate and renewal automatically; the
 # only job here is reverse-proxying to the API process on localhost. Caddy
 # forwards X-Forwarded-For/Proto by default — nothing extra to configure.
+#
+# The Host header is rewritten to `localhost` before proxying upstream:
+# the API's own Host-allowlist (apps/api/src/http/app.ts, `allowedHosts`)
+# only trusts its own bind address, as a DNS-rebinding defence — it never
+# heard of the public domain, and shouldn't need to. That's safe to do
+# here because Caddy is the only way in; the API port isn't reachable from
+# outside this box at all (not in the security group).
 
 {{DOMAIN}} {
-	reverse_proxy 127.0.0.1:4319
+	reverse_proxy 127.0.0.1:4319 {
+		header_up Host localhost
+	}
 }
