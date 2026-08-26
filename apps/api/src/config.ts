@@ -35,6 +35,18 @@ export interface Config {
   readonly port: number;
   /** Browser origins permitted to call this API. Never a wildcard. */
   readonly allowedOrigins: readonly string[];
+  /** This API's own externally-reachable origin, e.g. `https://api.example.com`
+   * — `undefined` in local dev, where there is no reverse proxy in front of
+   * it to make this ambiguous. Reconstructing this from the request itself
+   * (`Host` header, `X-Forwarded-Proto`) would mean trusting whatever a
+   * proxy chose to forward — fragile, and wrong for one specific reason
+   * here: Caddy terminates TLS and speaks plain HTTP to this process, so
+   * the request's own scheme is always `http` regardless of what the
+   * browser used. Set explicitly instead, the same way `WEB_ORIGIN`
+   * already is, and used for exactly two things that must be unambiguous:
+   * the OAuth `redirect_uri` Google is told to trust, and one more entry
+   * in `allowedHosts` below. */
+  readonly publicUrl: string | undefined;
   /** The Hugging Face model id the local `Transcriber` loads. One config line,
    * per `plan.md` M4 — swapping it is the entire cost of trying a bigger model. */
   readonly whisperModel: string;
@@ -179,6 +191,17 @@ function readOrigins(raw: string | undefined): readonly string[] {
   return origins;
 }
 
+function readPublicUrl(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.origin;
+  } catch {
+    throw new ConfigError(`PUBLIC_URL must be a full URL, e.g. 'https://api.example.com' — got '${value}'.`);
+  }
+}
+
 function readStorageBackend(raw: string | undefined): 'fs' | 's3' {
   const value = raw?.trim() || 'fs';
   if (value !== 'fs' && value !== 's3') {
@@ -230,6 +253,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     host: env['HOST']?.trim() || DEFAULT_HOST,
     port: readPort(env['PORT']),
     allowedOrigins: readOrigins(env['WEB_ORIGIN']),
+    publicUrl: readPublicUrl(env['PUBLIC_URL']),
     whisperModel: env['WHISPER_MODEL']?.trim() || DEFAULT_WHISPER_MODEL,
     whisperCacheDir: expandHome(
       env['WHISPER_CACHE_DIR']?.trim() || resolve(homedir(), '.cache', 'journal', 'whisper-models'),

@@ -148,6 +148,7 @@ Fill in, directly in that editor — never in a chat. Every line below is commen
 - `WHISPER_CACHE_DIR=/opt/journal/data/whisper-models`
 - `EMBEDDING_CACHE_DIR=/opt/journal/data/embedding-models`
 - `WEB_ORIGIN=https://<your-vercel-domain>` — the Vercel URL `apps/web` is served from, so the tightened Origin check (`docs/plan.md` M11) accepts it.
+- `PUBLIC_URL=https://<your-domain>` — this server's own address (the one from step 4's DNS record, e.g. `https://api.example.com`), used to build the Google OAuth redirect and to accept requests proxied under this domain. Without it, Google sign-in fails with `redirect_uri_mismatch` and every request gets rejected as `forbidden_origin` once behind a real domain.
 - `AUTHORIZED_EMAIL=` — your Google account's address (defaults to `seymour.w.jack@gmail.com` if left unset).
 - `SESSION_SECRET=` — generate one and paste it in, right there in the editor:
   ```

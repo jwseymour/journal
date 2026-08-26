@@ -63,14 +63,25 @@ import type {
  * because going online later must be a deployment change rather than a rewrite
  * (`design.md` §6.4, `requirements.md` §7.2).
  *
- * As of `plan.md` M11, the default is the relative `/api` path — proxied by
- * `next.config.ts`'s rewrite to the real backend — so the browser's request
- * is same-origin and the auth cookie the API sets needs no CORS to reach it.
- * `NEXT_PUBLIC_API_URL` still overrides this for a deploy that genuinely
- * puts the two on separate origins.
+ * As of `plan.md` M11, the default for the *browser* is the relative `/api`
+ * path — proxied by `next.config.ts`'s rewrite to the real backend — so the
+ * browser's request is same-origin and the auth cookie the API sets needs
+ * no CORS to reach it. `NEXT_PUBLIC_API_URL` still overrides this for a
+ * deploy that genuinely puts the two on separate origins.
+ *
+ * On the server (a Server Component doing its own data fetch, e.g. the
+ * home page), a relative path isn't an option at all — Node's `fetch`
+ * has no page origin to resolve one against and throws immediately, which
+ * this module was catching and reporting as "the backend is not
+ * answering" regardless of whether it actually was. The server reaches
+ * the backend directly instead, via the same `API_INTERNAL_URL`
+ * `next.config.ts`'s rewrite already uses for exactly this — same value,
+ * same reasoning, just read a second place.
  */
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+export const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (typeof window === 'undefined' ? (process.env.API_INTERNAL_URL ?? 'http://127.0.0.1:4319') : '/api');
 
 /** A failure that reached us as a structured error, or as no response at all. */
 export class ApiRequestError extends Error {
@@ -89,8 +100,24 @@ const UNREACHABLE =
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
+    const headers = new Headers(init?.headers);
+    // A Server Component's own fetch (the home page's server-rendered read,
+    // e.g.) goes straight to the API, not through the browser — so unlike a
+    // browser-native fetch, it carries no cookie at all unless forwarded by
+    // hand. `next/headers` is dynamically imported so this file stays safe
+    // to import from client components too, which cannot import it at all.
+    if (typeof window === 'undefined') {
+      const { cookies } = await import('next/headers');
+      const cookieHeader = (await cookies())
+        .getAll()
+        .map((cookie) => `${cookie.name}=${cookie.value}`)
+        .join('; ');
+      if (cookieHeader) headers.set('Cookie', cookieHeader);
+    }
+
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
+      headers,
       // Never a cached read. What is on disk is the truth, and a journal must
       // not show a stale copy of it.
       cache: 'no-store',

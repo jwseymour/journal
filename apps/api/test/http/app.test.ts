@@ -590,6 +590,7 @@ const config = (journalDir: string): Config => ({
   host: '127.0.0.1',
   port: 4319,
   allowedOrigins: [ORIGIN],
+  publicUrl: undefined,
   whisperModel: 'Xenova/whisper-tiny.en',
   whisperCacheDir: join(journalDir, '.whisper-cache-unused-in-tests'),
   indexDbPath: ':memory:',

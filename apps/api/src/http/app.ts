@@ -103,7 +103,18 @@ const MAX_FIELD_SUMMARY_WINDOW_DAYS = 3650;
  * which is what this catches.
  */
 function allowedHosts(config: Config): ReadonlySet<string> {
-  return new Set([config.host, 'localhost', '127.0.0.1', '[::1]', '::1']);
+  const hosts = new Set([config.host, 'localhost', '127.0.0.1', '[::1]', '::1']);
+  if (config.publicUrl) hosts.add(new URL(config.publicUrl).hostname);
+  return hosts;
+}
+
+/** The redirect URI Google is told to send the browser back to. Built from
+ * `config.publicUrl` when set — the only value this can safely trust behind
+ * a reverse proxy (see its doc comment in `config.ts`) — falling back to
+ * the request's own URL for local dev, where there is no proxy to get this
+ * wrong. */
+function googleRedirectUri(config: Config, requestUrl: string): string {
+  return new URL('/auth/google/callback', config.publicUrl ?? requestUrl).toString();
 }
 
 const CoordinatesSchema = z
@@ -434,7 +445,7 @@ export function createApp(
       path: '/',
     });
 
-    const redirectUri = new URL('/auth/google/callback', c.req.url).toString();
+    const redirectUri = googleRedirectUri(config, c.req.url);
     return c.redirect(authorizationUrl(config.googleClientId, redirectUri, flow));
   });
 
@@ -456,7 +467,7 @@ export function createApp(
 
     let identity;
     try {
-      const redirectUri = new URL('/auth/google/callback', c.req.url).toString();
+      const redirectUri = googleRedirectUri(config, c.req.url);
       identity = await exchangeCodeForIdentity(
         config.googleClientId,
         config.googleClientSecret,
