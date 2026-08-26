@@ -69,19 +69,41 @@ import type {
  * no CORS to reach it. `NEXT_PUBLIC_API_URL` still overrides this for a
  * deploy that genuinely puts the two on separate origins.
  *
- * On the server (a Server Component doing its own data fetch, e.g. the
- * home page), a relative path isn't an option at all — Node's `fetch`
- * has no page origin to resolve one against and throws immediately, which
- * this module was catching and reporting as "the backend is not
- * answering" regardless of whether it actually was. The server reaches
- * the backend directly instead, via the same `API_INTERNAL_URL`
- * `next.config.ts`'s rewrite already uses for exactly this — same value,
- * same reasoning, just read a second place.
+ * `API_BASE` is exported for exactly one reason: client components that
+ * build a request or a link by hand rather than going through `request()`
+ * below (`/login`'s Google button `href`, its password-form `fetch`) still
+ * need the same value. It is **always** the browser-facing default —
+ * deliberately never the `typeof window` branch below — because a client
+ * component's initial render is also what Next.js uses to produce static
+ * HTML at build time, on the server, before any browser is involved. A
+ * version of this constant that depended on `typeof window` baked
+ * `API_INTERNAL_URL`'s absolute, cross-origin address straight into that
+ * static HTML's `href` — bypassing `next.config.ts`'s rewrite entirely, so
+ * the Google sign-in flow's cookie landed on the wrong origin and was
+ * silently never sent back. (Confirmed live: the prerendered `/login` page
+ * really did serve `href="https://api.example.com/auth/google/start"`.)
  */
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ??
-  (typeof window === 'undefined' ? (process.env.API_INTERNAL_URL ?? 'http://127.0.0.1:4319') : '/api');
+/**
+ * The base `request()` below actually uses — same as `API_BASE` for a
+ * browser call, but resolved fresh **inside** an async function body
+ * rather than baked into a module-level constant, so it's safe for the one
+ * case that legitimately differs by execution context: a Server
+ * Component's own data fetch (e.g. the home page) runs in Node, which has
+ * no page origin to resolve a relative path against and throws
+ * immediately — previously caught and misreported as "the backend is not
+ * answering" regardless of the real cause. Calling this from inside
+ * `request()`, itself only ever invoked at request/render time, means
+ * `typeof window` here reflects the execution context of the actual call,
+ * not of whatever happened to prerender a *different* component at build
+ * time.
+ */
+function resolveRequestBase(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window === 'undefined') return process.env.API_INTERNAL_URL ?? 'http://127.0.0.1:4319';
+  return '/api';
+}
 
 /** A failure that reached us as a structured error, or as no response at all. */
 export class ApiRequestError extends Error {
@@ -115,7 +137,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       if (cookieHeader) headers.set('Cookie', cookieHeader);
     }
 
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await fetch(`${resolveRequestBase()}${path}`, {
       ...init,
       headers,
       // Never a cached read. What is on disk is the truth, and a journal must
