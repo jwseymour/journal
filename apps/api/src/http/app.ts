@@ -343,7 +343,19 @@ function errorBody(code: ApiError['error']['code'], message: string): ApiError {
 
 const SESSION_COOKIE = 'journal_session';
 const FLOW_COOKIE = 'journal_oauth_flow';
-const SECURE_COOKIES = process.env['NODE_ENV'] === 'production';
+/** Whether cookies this process sets should carry the `Secure` attribute.
+ * Deliberately not tied to `NODE_ENV` — nothing in this deployment ever
+ * sets it (not `infra/journal-api.service`, not `.env`), so that check was
+ * silently always false in production. `config.publicUrl` is a more
+ * direct signal anyway: it's only ever set once this server is genuinely
+ * behind a real HTTPS domain (`docs/deployment.md`), which is exactly the
+ * condition `Secure` exists to key off. Missing `Secure` doesn't just miss
+ * a hardening opportunity here — some browsers (Safari's ITP notably)
+ * apply much stricter dropping rules to cookies without it across a
+ * cross-site redirect chain, which is exactly the shape of an OAuth flow. */
+function secureCookies(config: Config): boolean {
+  return config.publicUrl?.startsWith('https://') ?? false;
+}
 
 /** One key for the whole process (`plan.md` M11) — this is a single-user
  * system, so limiting the *total* guess rate matters more than trying to
@@ -459,7 +471,7 @@ export function createApp(
     const flow = beginFlow();
     setCookie(c, FLOW_COOKIE, sealFlow(config.sessionSecret, flow), {
       httpOnly: true,
-      secure: SECURE_COOKIES,
+      secure: secureCookies(config),
       sameSite: 'Lax',
       maxAge: 600,
       path: '/',
@@ -510,7 +522,7 @@ export function createApp(
 
     setCookie(c, SESSION_COOKIE, createSessionToken(config.sessionSecret, config.authorizedEmail), {
       httpOnly: true,
-      secure: SECURE_COOKIES,
+      secure: secureCookies(config),
       sameSite: 'Lax',
       maxAge: 30 * 24 * 60 * 60,
       path: '/',
@@ -534,7 +546,7 @@ export function createApp(
 
     setCookie(c, SESSION_COOKIE, createSessionToken(config.sessionSecret, config.authorizedEmail), {
       httpOnly: true,
-      secure: SECURE_COOKIES,
+      secure: secureCookies(config),
       sameSite: 'Lax',
       maxAge: 30 * 24 * 60 * 60,
       path: '/',
