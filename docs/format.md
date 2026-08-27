@@ -119,6 +119,7 @@ id: 01K3F9X2VQ8N7M4TQXYZ8ABCDE
 title: The greenhouse project
 created: 2026-07-26T22:55:13+01:00
 updated: 2026-08-25T14:03:11+01:00
+public: false
 citedEntries: [01K3ABCD1234567890ABCDEFG, 01K3EFGH1234567890ABCDEFG]
 ---
 
@@ -137,9 +138,7 @@ YAML frontmatter, then the body — same structure as an entry file, same delimi
 
 **`citedEntries`** — a list of entry ids, present only when non-empty. **Absent, not `[]`, when there are none** — the same convention `location` uses on an entry. Added and edited by hand; never populated automatically, never a derivation (`requirements.md` §9.2). Citing an entry is a pointer, not a copy — the cited entry's content is never pulled into the document.
 
-### Not in the file
-
-No visibility flag yet (`requirements.md` §9.3) — deliberately deferred until the system-wide public/private decision is made, not designed around in advance beyond keeping the frontmatter additive-safe for one.
+**`public`** — a boolean, always present, defaulting to `false` on creation. `requirements.md` §9.3's visibility flag. Flipped only by the explicit "Publish"/"Unpublish" action, never as a side effect of an ordinary edit. When `true`, the document is readable through the public-facing surface (`requirements.md` §10); when `false`, it is exactly as private as an entry.
 
 ### Writing safely
 

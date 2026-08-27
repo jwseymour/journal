@@ -300,11 +300,25 @@ A document may optionally reference specific entries it grew out of or relates t
 
 ### 9.3 Visibility
 
-Not yet decided in the specific mechanism, and deliberately not built yet — this waits on §10's public/private question being resolved for the whole system, not just documents. Until then, a document is exactly as private as an entry. When visibility is built, a document takes the same flag as everything else; there is no document-specific visibility mechanism.
+A document has a `public` field: a boolean, defaulting to `false`. Setting it to `true` is a deliberate, explicit act — a "Publish" action distinct from an ordinary save, never a side effect of any other edit. A public document is readable through the public-facing surface described in §10; a private one is exactly as private as an entry.
+
+This resolves visibility for documents specifically, ahead of the system-wide question in §11. Entries and derived structures (§5) remain entirely private, with no visibility mechanism of their own, for as long as §11's broader public/private question stays open. A public document exposes only what it directly contains — citing an entry (§9.2) never exposes the entry itself, so nothing about publishing a document requires deciding entry-level visibility first.
 
 ---
 
-## 10. Deferred — not yet decided
+## 10. The public-facing surface
+
+A separate, minimal, read-only surface exists to let documents marked public (§9.3) be read by anyone, without exposing anything else in the system.
+
+- It is a distinct application from the private journal — its own frontend, on its own domain, calling its own small API — not a public mode bolted onto the authenticated one. §7.1's frontend/backend divide applies here too: this stays swappable and separable from everything else.
+- The public API only ever serves documents where `public` is `true`, and, at the infrastructure level, has no access to entries or to anything outside the `documents/` storage location — privacy here does not depend solely on application logic getting a check right.
+- It is read-only. Nothing about publishing happens through this surface; a document is written and marked public entirely from the private, authenticated side, the same place it is written in the first place (§9's "nothing but me ever writes to one" applies without exception).
+- What a public document looks like when read — layout, URL, ordering, whether it groups with anything else — is a presentation concern for this surface to decide, not something the canonical document format (`format.md` §6) needs to encode. A document's identity and content are unaffected by whether it is ever read publicly.
+- Grouping documents into a series, or organising them by kind (a project write-up versus a standalone piece), is not addressed here. Nothing above blocks it later; it simply isn't needed yet.
+
+---
+
+## 11. Deferred — not yet decided
 
 The following have been raised and deliberately set aside for later consideration. They are open, not rejected.
 
@@ -316,11 +330,11 @@ The following have been raised and deliberately set aside for later consideratio
 
 **Multi-device use.** Still deferred — M11 makes the API reachable and adds single-user auth, but a phone/laptop-writing client is separate, later work. See §7.5.
 
-**Public/private access levels.** Still deferred, and not precluded by M11's single-user auth design. A future concern, not addressed here — including for documents (§9.3), which default to private in the meantime.
+**Public/private access levels, beyond documents.** §9.3 resolves this narrowly for documents (a boolean, defaulting to private) and §10 covers how a public document is read. Entries and derived structures (§5) remain undecided and unaddressed — not precluded by M11's single-user auth design, but not designed here either.
 
 ---
 
-## 11. Summary of what must remain true
+## 12. Summary of what must remain true
 
 - The journal entries are plain markdown and are the only thing I write.
 - What I write persists for life, safely, exportably, and simply.
@@ -329,6 +343,7 @@ The following have been raised and deliberately set aside for later consideratio
 - Spoken entries always become plaintext; audio is optional and additional.
 - No user markup, ever; structuring is the AI's job.
 - Documents are a third content type, alongside entries and derived structures — directly authored like an entry, but titled, revised over time, and organised by subject rather than by when they were written (§9).
+- A document may be marked public and read through a separate, minimal, read-only surface with no access to anything else in the system; entries and derived structures stay private (§9.3, §10).
 - All structured data originates from the entries and links back to them.
 - Derived data is rebuildable until I touch it; once reviewed or edited, a record is mine and is never silently overwritten.
 - Many kinds of structure exist, more will be added, and the design assumes this.

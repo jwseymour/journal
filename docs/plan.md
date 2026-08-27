@@ -310,6 +310,45 @@ Everything before M5 is strictly sequential. Nothing derived begins until the re
 - Frontend: `lib/api.ts` gained `listDocuments`/`getDocument`/`createDocument`/`updateDocument`. Three pages — `app/documents` (list), `app/documents/new` (a plain title-and-body form with an explicit Create button, deliberately *not* autosave-on-keystroke like `entry/new`, since creation here is a deliberate act gated on a title rather than incidental to typing), and `app/documents/[id]` (mirrors `entry/[id]`'s read/edit toggle and conflict-banner UX exactly). Nav link, command palette entry, and keyboard chord added the same way every existing section was.
 - Wiring: `index.ts` and `rebuild.ts` construct `DocumentsIndex`/`createDocumentStore` alongside the existing per-feature indexes. `reprocess.ts` is untouched — documents are never AI-derived, so there is nothing to extract or reprocess. Documents are not wrapped in `SearchingEntryStore` and are not search-indexed in this milestone.
 
-**Not in this milestone.** Visibility/public-private (`requirements.md` §9.3 — waits on the system-wide access-level decision), the blog/public-facing surface itself, a citation-picker UI beyond raw entry ids, search indexing over documents, any extraction/reprocessing involvement, attachments, deletion.
+**Not in this milestone.** Visibility/public-private (`requirements.md` §9.3 — see M13), the blog/public-facing surface itself (see M14), a citation-picker UI beyond raw entry ids, search indexing over documents, any extraction/reprocessing involvement, attachments, deletion.
 
 **Done when.** `npm run typecheck` is clean across `contract`, `api` and `web`; the `api` test suite passes, including the document frontmatter round-trip, the store contract run against both backends, the index ordering test, and the representative HTTP tests; and, verified live against an isolated server and a real browser session: a document created through the UI lands at `documents/<id>.md` with the documented frontmatter shape, an edit round-trips and shows the new `updated` time, and a stale-hash edit (opened in two tabs) produces the same conflict banner entries already have.
+
+---
+
+## M13 — Document visibility
+
+**Goal.** A document can be marked public or private, explicitly and durably, through the existing private application — no public surface yet, just the flag and the control for it (`requirements.md` §9.3).
+
+**Build**
+
+- Contract: `public: boolean` added to `DocumentMetadata`/`Document`/`DocumentSummary`; always present, `false` on creation. Not part of `UpdateDocumentRequest` — flipping it is a distinct action from an ordinary edit, not a side effect of one.
+- `record/document-frontmatter.ts`: serialises/parses `public` per `format.md` §6.
+- `DocumentStore`: a `setPublic(id, contentHash, public: boolean)` method alongside `create`/`get`/`update`/`list`, guarded by the same `contentHash` optimistic-concurrency check as `update` — publishing a stale copy should conflict exactly like editing one.
+- `DocumentsIndex`: a `public` column; existing rows default to `false` on rebuild.
+- HTTP: `POST /documents/:id/publish`, `POST /documents/:id/unpublish` — dedicated action routes, the same shape as the M10 `validate`/`untouch` endpoints, reusing `edit_conflict` for a stale-hash call.
+- Frontend: on `app/documents/[id]`, a "Publish" control separate from Save, gated behind a confirmation step (unpublishing needs none — it's the safe direction). `app/documents` list gets a public/private badge per row, matching the existing touched-badge pattern.
+- `reprocess.ts`/`rebuild.ts`: unaffected — `public` is directly authored, never derived.
+
+**Not in this milestone.** The public-facing surface itself (M14), any grouping/series concept, slugs, document attachments.
+
+**Done when.** `npm run typecheck` is clean; the frontmatter round-trip test covers `public`; a store-contract case confirms `setPublic` conflicts on a stale hash the same way `update` does; verified live: clicking Publish on a document flips `public: true` in the underlying S3/fs object and the list badge, and Unpublish reverses it.
+
+---
+
+## M14 — The public-facing surface
+
+**Goal.** Documents marked public (M13) are readable by anyone, through a new application with no access to anything else in the system (`requirements.md` §10).
+
+**Build**
+
+- `apps/public-api` — a new, minimal, read-only service, its own process, its own IAM role scoped to the `documents/` S3 prefix only — never `journal/`. Routes: `GET /documents` (public ones only, newest-*created*-first — a blog reads chronologically, unlike the private list's newest-updated-first), `GET /documents/:slug`.
+- Filtering (`public = 1`) happens against a read-only connection to the same `index.db`/`DocumentsIndex`, colocated on the host — never a per-request full-content S3 scan.
+- Slugs are derived at read time from the title plus a short id suffix for uniqueness, and are never stored — `format.md` §6 stays untouched by presentation concerns (`requirements.md` §10).
+- `apps/public-api` has no auth, no cookies, no session code at all — there is nothing behind it that needs protecting beyond the IAM scoping above.
+- `apps/blog` — a new, minimal Next.js frontend, its own domain, calling only `apps/public-api`. Two pages: a list and a read view. Styled independently of `apps/web` — disposable the same way, but under no obligation to share its design system.
+- Infra: a second small process (systemd unit or equivalent) alongside the existing API on the host, its own Caddy site block and subdomain/domain.
+
+**Not in this milestone.** Series/album grouping, categorisation by kind, comments or any interactivity, search over public documents, making any derived-data surface (metrics, reviews, etc.) public — all still deferred per `requirements.md` §11.
+
+**Done when.** With a document published via M13: an unauthenticated request to `apps/public-api` returns it, and a private document is both omitted from the list and 404s on direct fetch; the public API's IAM role is confirmed, directly, to be denied access to `journal/*` (not merely assumed from routing); the blog frontend renders the list and a full document, read-only, live against the deployed host.
