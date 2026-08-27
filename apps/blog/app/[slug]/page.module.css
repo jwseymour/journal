@@ -1,0 +1,16 @@
+.title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-xl);
+  font-weight: bold;
+}
+
+.when {
+  display: block;
+  margin-top: var(--space-3xs);
+  margin-bottom: var(--space-lg);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}

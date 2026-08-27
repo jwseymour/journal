@@ -1,0 +1,19 @@
+.shell {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md) var(--space-xl);
+}
+
+.header {
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-sm);
+  border-bottom: var(--hairline) solid var(--rule);
+}
+
+.siteName {
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+  font-weight: bold;
+  color: var(--ink);
+  text-decoration: none;
+}

@@ -1,0 +1,56 @@
+/*
+ * Every value this app uses, in one place (`plan.md` standing rule 2's
+ * discipline, applied here even though M14 explicitly frees this app from
+ * sharing `apps/web`'s design system — the discipline is worth keeping on
+ * its own merits, not because the private app's palette applies).
+ *
+ * Deliberately small and generic: this is a placeholder look, easy to
+ * replace wholesale by editing only this file, exactly as `design.md` §6.1
+ * intends for the private app's own tokens.
+ */
+
+:root {
+  --ground: #ffffff;
+  --ground-raised: #f4f2ee;
+  --ink: #1c1a17;
+  --ink-muted: #6b655c;
+  --ink-faint: #a39c90;
+  --rule: #e4e0d8;
+  --accent: #8a5a34;
+
+  --font-serif: Georgia, 'Times New Roman', serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+
+  --text-xs: 0.8rem;
+  --text-sm: 0.9rem;
+  --text-base: 1.05rem;
+  --text-lg: 1.3rem;
+  --text-xl: 1.8rem;
+
+  --leading-normal: 1.6;
+  --tracking-wide: 0.04em;
+
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2.5rem;
+  --space-xl: 4rem;
+
+  --hairline: 1px;
+  --radius-sm: 0.25rem;
+  --measure: 38rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #17140f;
+    --ground-raised: #1f1b15;
+    --ink: #ece7de;
+    --ink-muted: #a39c90;
+    --ink-faint: #6b655c;
+    --rule: #322c22;
+    --accent: #c98b56;
+  }
+}
