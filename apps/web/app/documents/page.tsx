@@ -45,7 +45,10 @@ export default function DocumentsPage() {
           {documents.map((document) => (
             <li key={document.id} className={styles.row}>
               <Link href={`/documents/${document.id}`} className={styles.main}>
-                <span className={styles.title}>{document.title}</span>
+                <span className={styles.titleRow}>
+                  <span className={styles.title}>{document.title}</span>
+                  {document.public && <span className={styles.publicBadge}>Public</span>}
+                </span>
                 <span className={styles.excerpt}>{document.excerpt}</span>
                 <span className={styles.when}>Updated {formatDate(document.updated)}</span>
               </Link>

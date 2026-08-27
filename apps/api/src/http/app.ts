@@ -42,6 +42,7 @@ import type {
   ReviewsSummaryResponse,
   ReviewUpdateSuggestionsResponse,
   SearchResponse,
+  SetDocumentPublicResponse,
   StructureType,
   SuggestionsResponse,
   TranscribeResponse,
@@ -178,6 +179,11 @@ const UpdateDocumentSchema = z
     contentHash: z.string().min(1),
   })
   .strict();
+
+/** `POST /documents/:id/publish` and `.../unpublish` bodies — visibility is
+ * flipped by which route was called, not by a field in here, so this is
+ * only ever the concurrency precondition (`requirements.md` §9.3). */
+const SetDocumentPublicSchema = z.object({ contentHash: z.string().min(1) }).strict();
 
 const ApproveCategorySchema = z
   .object({
@@ -321,6 +327,7 @@ function documentResponse(document: {
   created: string;
   updated: string;
   citedEntries?: string[];
+  public: boolean;
   body: string;
   contentHash: string;
 }): Document {
@@ -332,6 +339,7 @@ function documentResponse(document: {
     ...(document.citedEntries && document.citedEntries.length > 0
       ? { citedEntries: document.citedEntries }
       : {}),
+    public: document.public,
     body: document.body,
     contentHash: document.contentHash,
   };
@@ -781,6 +789,27 @@ export function createApp(
       ...(citedEntries !== undefined ? { citedEntries } : {}),
     });
     const response: UpdateDocumentResponse = documentResponse(document);
+    return c.json(response);
+  });
+
+  // Visibility (`requirements.md` §9.3, `plan.md` M13) — a deliberate action
+  // distinct from the PUT above, so a stale-hash publish/unpublish conflicts
+  // exactly like a stale-hash edit rather than silently landing nowhere.
+  app.post('/documents/:id/publish', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) throw recordNotFound('document', id);
+    const { contentHash } = await parseUpdateBody(c, SetDocumentPublicSchema);
+    const document = await documentStore.setPublic(id, { public: true, contentHash });
+    const response: SetDocumentPublicResponse = documentResponse(document);
+    return c.json(response);
+  });
+
+  app.post('/documents/:id/unpublish', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) throw recordNotFound('document', id);
+    const { contentHash } = await parseUpdateBody(c, SetDocumentPublicSchema);
+    const document = await documentStore.setPublic(id, { public: false, contentHash });
+    const response: SetDocumentPublicResponse = documentResponse(document);
     return c.json(response);
   });
 

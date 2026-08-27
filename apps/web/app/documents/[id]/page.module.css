@@ -44,7 +44,16 @@
   letter-spacing: var(--tracking-wide);
 }
 
-.editButton {
+.headActions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.editButton,
+.visibilityButton,
+.cancelLink {
   flex-shrink: 0;
   padding: 0;
   border: 0;
@@ -58,8 +67,37 @@
   cursor: pointer;
 }
 
-.editButton:hover {
+.editButton:hover,
+.visibilityButton:hover:not(:disabled),
+.cancelLink:hover:not(:disabled) {
   color: var(--accent);
+}
+
+.visibilityButton:disabled,
+.cancelLink:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.publicBadge {
+  padding: 0 var(--space-3xs);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.confirmGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.confirmText {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
 }
 
 .citations {

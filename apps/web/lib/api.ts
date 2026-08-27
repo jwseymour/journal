@@ -37,6 +37,8 @@ import type {
   ReviewsSummaryResponse,
   ReviewUpdateSuggestionsResponse,
   SearchResponse,
+  SetDocumentPublicRequest,
+  SetDocumentPublicResponse,
   StructureType,
   SuggestionsResponse,
   TranscribeResponse,
@@ -288,6 +290,27 @@ export function createDocument(document: CreateDocumentRequest): Promise<CreateD
 export function updateDocument(id: string, input: UpdateDocumentRequest): Promise<UpdateDocumentResponse> {
   return request<UpdateDocumentResponse>(`/documents/${encodeURIComponent(id)}`, {
     method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * Flip a document's visibility (`requirements.md` §9.3) — a deliberate
+ * action distinct from `updateDocument`. Throws `ApiRequestError` with code
+ * `edit_conflict` if `input.contentHash` no longer matches what is stored.
+ */
+export function publishDocument(id: string, input: SetDocumentPublicRequest): Promise<SetDocumentPublicResponse> {
+  return request<SetDocumentPublicResponse>(`/documents/${encodeURIComponent(id)}/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function unpublishDocument(id: string, input: SetDocumentPublicRequest): Promise<SetDocumentPublicResponse> {
+  return request<SetDocumentPublicResponse>(`/documents/${encodeURIComponent(id)}/unpublish`, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });

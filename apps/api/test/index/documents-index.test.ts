@@ -23,6 +23,7 @@ function row(overrides: Partial<DocumentIndexRow> = {}): DocumentIndexRow {
     updated: '2026-07-20T10:00:00+01:00',
     excerpt: 'Notes so far.',
     contentHash: 'abc123',
+    public: false,
     ...overrides,
   };
 }
@@ -49,6 +50,14 @@ describe('upsert and lookup', () => {
     index.markUnreadable(row().absPath);
     index.upsert(row());
     expect(index.stats()).toEqual({ documentCount: 1, unreadableCount: 0 });
+  });
+
+  it('round-trips public through the same 0/1 storage `touched` uses elsewhere (`requirements.md` §9.3)', () => {
+    index.upsert(row({ public: true }));
+    expect(index.getById(row().id)?.public).toBe(true);
+
+    index.upsert(row({ public: false }));
+    expect(index.getById(row().id)?.public).toBe(false);
   });
 });
 

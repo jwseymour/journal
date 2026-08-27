@@ -17,6 +17,7 @@ import type {
   DocumentStoreStats,
   ListDocumentsOptions,
   ListDocumentsResult,
+  SetDocumentPublicInput,
   StoredDocument,
   UpdateDocumentInput,
 } from './document-store.js';
@@ -36,7 +37,14 @@ const CURSOR_VERSION = 'd1';
 const toPosix = (path: string): string => (sep === '/' ? path : path.split(sep).join('/'));
 
 function summarise(row: DocumentIndexRow): DocumentSummary {
-  return { id: row.id, title: row.title, created: row.created, updated: row.updated, excerpt: row.excerpt };
+  return {
+    id: row.id,
+    title: row.title,
+    created: row.created,
+    updated: row.updated,
+    excerpt: row.excerpt,
+    public: row.public,
+  };
 }
 
 export class FsDocumentStore implements DocumentStore {
@@ -74,6 +82,7 @@ export class FsDocumentStore implements DocumentStore {
         title,
         created: now.canonical,
         updated: now.canonical,
+        public: false,
         ...(input.citedEntries && input.citedEntries.length > 0 ? { citedEntries: input.citedEntries } : {}),
       };
 
@@ -96,6 +105,7 @@ export class FsDocumentStore implements DocumentStore {
         updated: metadata.updated,
         excerpt: excerpt(body),
         contentHash: hash,
+        public: false,
       });
 
       return { ...metadata, body, path: relPath, contentHash: hash };
@@ -136,6 +146,7 @@ export class FsDocumentStore implements DocumentStore {
         updated: parsed.metadata.updated,
         excerpt: excerpt(parsed.body),
         contentHash: hash,
+        public: parsed.metadata.public,
       });
     }
 
@@ -171,7 +182,9 @@ export class FsDocumentStore implements DocumentStore {
       throw invalidRequest('A document must have a title.');
     }
 
-    // id and created never move. updated always advances to now — that is
+    // id, created and public never move on an ordinary edit — visibility is
+    // flipped only by `setPublic` (`requirements.md` §9.3), never as a side
+    // effect of editing content. updated always advances to now — that is
     // the entire point of a document being revised (`requirements.md` §9.1).
     const now = nowTimestamp();
     const metadata: DocumentMetadata = {
@@ -179,6 +192,7 @@ export class FsDocumentStore implements DocumentStore {
       title,
       created: parsed.metadata.created,
       updated: now.canonical,
+      public: parsed.metadata.public,
       ...(input.citedEntries && input.citedEntries.length > 0 ? { citedEntries: input.citedEntries } : {}),
     };
 
@@ -198,9 +212,62 @@ export class FsDocumentStore implements DocumentStore {
       updated: metadata.updated,
       excerpt: excerpt(newBody),
       contentHash: newHash,
+      public: metadata.public,
     });
 
     return { ...metadata, body: newBody, path: cached.relPath, contentHash: newHash };
+  }
+
+  /**
+   * Flip visibility only (`requirements.md` §9.3) — title, body and
+   * citedEntries are carried through unchanged from what's on disk right
+   * now, never from caller input. Mirrors `update`'s concurrency and
+   * not-found handling exactly.
+   */
+  async setPublic(id: string, input: SetDocumentPublicInput): Promise<StoredDocument> {
+    await this.#refresh();
+    const cached = this.#index.getById(id);
+    if (!cached) throw recordNotFound('document', id);
+
+    let text: string;
+    try {
+      text = await readFile(cached.absPath, 'utf8');
+    } catch (cause) {
+      if (isNotFound(cause)) {
+        this.#index.remove(cached.absPath);
+        throw recordNotFound('document', id);
+      }
+      throw journalUnavailable(`Could not read ${cached.relPath}.`, cause);
+    }
+
+    const parsed = parseDocumentFile(text, cached.relPath);
+    if (parsed.metadata.id !== id) {
+      this.#index.remove(cached.absPath);
+      throw recordNotFound('document', id);
+    }
+
+    if (contentHash(text) !== input.contentHash) throw editConflict('document');
+
+    const now = nowTimestamp();
+    const metadata: DocumentMetadata = { ...parsed.metadata, updated: now.canonical, public: input.public };
+
+    const fileText = serialiseDocumentFile(metadata, parsed.body);
+    try {
+      await writeFileAtomic(cached.absPath, fileText, this.#journalRoot);
+    } catch (cause) {
+      throw journalUnavailable(`Could not write ${cached.relPath}.`, cause);
+    }
+
+    const newHash = contentHash(fileText);
+    this.#index.upsert({
+      ...cached,
+      updatedEpochMs: now.epochMs,
+      updated: metadata.updated,
+      contentHash: newHash,
+      public: metadata.public,
+    });
+
+    return { ...metadata, body: parsed.body, path: cached.relPath, contentHash: newHash };
   }
 
   async list(options: ListDocumentsOptions): Promise<ListDocumentsResult> {
@@ -298,6 +365,7 @@ export class FsDocumentStore implements DocumentStore {
         updated: parsed.metadata.updated,
         excerpt: excerpt(parsed.body),
         contentHash: contentHash(text),
+        public: parsed.metadata.public,
       });
     }
   }

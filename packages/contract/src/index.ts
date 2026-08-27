@@ -210,6 +210,15 @@ export interface DocumentMetadata {
    * `EntryMetadata.location` uses.
    */
   citedEntries?: string[];
+
+  /**
+   * Whether this document is readable through the public-facing surface
+   * (`requirements.md` §9.3, §10). Always present; `false` on creation.
+   * Flipped only by `POST /documents/:id/publish` or `.../unpublish` — a
+   * deliberate act distinct from an ordinary edit, never a side effect of
+   * `UpdateDocumentRequest`.
+   */
+  public: boolean;
 }
 
 /** A document as it appears in a list: metadata plus enough prose to recognise it. */
@@ -273,6 +282,20 @@ export interface UpdateDocumentRequest {
 
 /** The document as it stands after the edit, including its new `contentHash`. */
 export type UpdateDocumentResponse = Document;
+
+/**
+ * Publishing or unpublishing a document (`requirements.md` §9.3) — its own
+ * request/response pair, not a field on `UpdateDocumentRequest`, because
+ * flipping visibility is a deliberate act distinct from an ordinary edit.
+ * Title, body and citations are untouched; only `public` and `updated` move.
+ */
+export interface SetDocumentPublicRequest {
+  /** Must match the current `Document.contentHash`, or the write is rejected. */
+  contentHash: string;
+}
+
+/** The document as it stands after publishing/unpublishing, including its new `contentHash`. */
+export type SetDocumentPublicResponse = Document;
 
 /**
  * The result of transcribing a recording (`requirements.md` §4.7).

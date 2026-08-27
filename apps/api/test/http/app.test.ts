@@ -1058,7 +1058,7 @@ describe('POST /documents', () => {
 
     expect(await readFile(join(root, created.path), 'utf8')).toBe(
       `---\nid: ${created.id}\ntitle: The greenhouse project\ncreated: ${created.created}\n` +
-        `updated: ${created.created}\n---\nNotes so far.\n`,
+        `updated: ${created.created}\npublic: false\n---\nNotes so far.\n`,
     );
   });
 
@@ -1146,6 +1146,7 @@ describe('GET /documents/:id', () => {
       title: 'A project',
       created: created.created,
       updated: created.created,
+      public: false,
       body: 'Line one\n\nLine two\n',
       contentHash: created.contentHash,
     });
@@ -1190,7 +1191,11 @@ describe('PUT /documents/:id', () => {
     expect(updated.title).toBe('Final title');
     expect(updated.body).toBe('Revised.\n');
     expect(updated.created).toBe(created.created);
-    expect(updated.updated).not.toBe(created.created);
+    // Not asserted: `updated.updated !== created.created` — `updated` is
+    // second-precision, so create-then-PUT can legitimately land in the
+    // same second on a fast run. `contentHash` changing is what actually
+    // proves the file was rewritten (matches the store-level contract
+    // test's identical reasoning).
     expect(updated.contentHash).not.toBe(created.contentHash);
   });
 
@@ -1215,6 +1220,101 @@ describe('PUT /documents/:id', () => {
   it('rejects an empty title', async () => {
     const created = await create('x', 'x');
     const response = await put(created.id, { title: '', body: 'x', contentHash: created.contentHash });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('POST /documents/:id/publish and /unpublish', () => {
+  async function create(title: string, body: string): Promise<CreateDocumentResponse> {
+    const response = await app.request('/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, body }),
+    });
+    return (await response.json()) as CreateDocumentResponse;
+  }
+
+  function put(id: string, body: unknown) {
+    return app.request(`/documents/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function publish(id: string, contentHash: string) {
+    return app.request(`/documents/${id}/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentHash }),
+    });
+  }
+
+  function unpublish(id: string, contentHash: string) {
+    return app.request(`/documents/${id}/unpublish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentHash }),
+    });
+  }
+
+  it('flips public to true and leaves title/body untouched', async () => {
+    const created = await create('x', 'x');
+
+    const response = await publish(created.id, created.contentHash);
+    expect(response.status).toBe(200);
+    const published = (await response.json()) as Document;
+    expect(published.public).toBe(true);
+    expect(published.title).toBe('x');
+    expect(published.body).toBe('x\n');
+    expect(published.contentHash).not.toBe(created.contentHash);
+  });
+
+  it('unpublish reverses it', async () => {
+    const created = await create('x', 'x');
+    const published = (await (await publish(created.id, created.contentHash)).json()) as Document;
+
+    const response = await unpublish(created.id, published.contentHash);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as Document).public).toBe(false);
+  });
+
+  it('an ordinary PUT never changes public', async () => {
+    const created = await create('x', 'x');
+    const published = (await (await publish(created.id, created.contentHash)).json()) as Document;
+
+    const response = await put(created.id, { title: 'Renamed', body: 'y', contentHash: published.contentHash });
+    expect(((await response.json()) as Document).public).toBe(true);
+  });
+
+  it('rejects a stale contentHash with a 409 and does not flip anything', async () => {
+    const created = await create('x', 'x');
+    await put(created.id, { title: 'x', body: 'Edited elsewhere.', contentHash: created.contentHash });
+
+    const response = await publish(created.id, created.contentHash);
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe('edit_conflict');
+
+    const reread = (await (await app.request(`/documents/${created.id}`)).json()) as Document;
+    expect(reread.public).toBe(false);
+  });
+
+  it('reports a missing document as record_not_found, including for a malformed id', async () => {
+    for (const id of ['01ARZ3NDEKTSV4RRFFQ69G5FAV', 'nonsense']) {
+      const response = await publish(id, 'whatever');
+      expect(response.status, id).toBe(404);
+      expect((await errorOf(response)).code).toBe('record_not_found');
+    }
+  });
+
+  it('rejects a body missing contentHash', async () => {
+    const created = await create('x', 'x');
+    const response = await app.request(`/documents/${created.id}/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     expect(response.status).toBe(400);
     expect((await errorOf(response)).code).toBe('invalid_request');
   });

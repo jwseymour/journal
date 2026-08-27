@@ -5,7 +5,7 @@ import Link from 'next/link';
 import type { Document } from '@journal/contract';
 import { Composer } from '@/components/composer';
 import { Markdown } from '@/components/markdown';
-import { ApiRequestError, updateDocument } from '@/lib/api';
+import { ApiRequestError, publishDocument, unpublishDocument, updateDocument } from '@/lib/api';
 import { formatTimestamp } from '@/lib/format';
 import { useGlobalKey } from '@/lib/keyboard';
 import styles from './page.module.css';
@@ -26,6 +26,9 @@ export function DocumentView({ document: initial }: { document: Document }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  const [confirmingPublish, setConfirmingPublish] = useState(false);
+  const [visibilityBusy, setVisibilityBusy] = useState(false);
+  const [visibilityError, setVisibilityError] = useState<string | null>(null);
 
   const startEditing = () => {
     setTitleDraft(document.title);
@@ -70,6 +73,38 @@ export function DocumentView({ document: initial }: { document: Document }) {
     }
   };
 
+  /**
+   * Publishing is gated behind an explicit confirmation step; unpublishing
+   * is not — it is the safe direction (`requirements.md` §9.3, `plan.md`
+   * M13). Neither is a side effect of the ordinary Save above.
+   */
+  const publish = async (): Promise<void> => {
+    setVisibilityBusy(true);
+    setVisibilityError(null);
+    try {
+      const result = await publishDocument(document.id, { contentHash: document.contentHash });
+      setDocument(result);
+      setConfirmingPublish(false);
+    } catch (cause) {
+      setVisibilityError(cause instanceof ApiRequestError ? cause.message : 'Could not publish.');
+    } finally {
+      setVisibilityBusy(false);
+    }
+  };
+
+  const unpublish = async (): Promise<void> => {
+    setVisibilityBusy(true);
+    setVisibilityError(null);
+    try {
+      const result = await unpublishDocument(document.id, { contentHash: document.contentHash });
+      setDocument(result);
+    } catch (cause) {
+      setVisibilityError(cause instanceof ApiRequestError ? cause.message : 'Could not unpublish.');
+    } finally {
+      setVisibilityBusy(false);
+    }
+  };
+
   // `e`, outside a text field: edit the open document — same key entries use.
   useGlobalKey('e', startEditing, !editing);
 
@@ -83,10 +118,54 @@ export function DocumentView({ document: initial }: { document: Document }) {
               Updated {formatTimestamp(document.updated)}
             </time>
           </div>
-          <button type="button" className={styles.editButton} onClick={startEditing}>
-            Edit
-          </button>
+          <div className={styles.headActions}>
+            {document.public && <span className={styles.publicBadge}>Public</span>}
+            {confirmingPublish ? (
+              <span className={styles.confirmGroup}>
+                <span className={styles.confirmText}>Publish this document?</span>
+                <button
+                  type="button"
+                  className={styles.visibilityButton}
+                  onClick={() => void publish()}
+                  disabled={visibilityBusy}
+                >
+                  {visibilityBusy ? 'Publishing' : 'Confirm'}
+                </button>
+                <button
+                  type="button"
+                  className={styles.cancelLink}
+                  onClick={() => setConfirmingPublish(false)}
+                  disabled={visibilityBusy}
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className={styles.visibilityButton}
+                onClick={() => (document.public ? void unpublish() : setConfirmingPublish(true))}
+                disabled={visibilityBusy}
+              >
+                {visibilityBusy
+                  ? document.public
+                    ? 'Unpublishing'
+                    : 'Publishing'
+                  : document.public
+                    ? 'Unpublish'
+                    : 'Publish'}
+              </button>
+            )}
+            <button type="button" className={styles.editButton} onClick={startEditing}>
+              Edit
+            </button>
+          </div>
         </header>
+        {visibilityError && (
+          <p className={styles.error} role="alert">
+            {visibilityError}
+          </p>
+        )}
         <Markdown>{document.body}</Markdown>
         {document.citedEntries && document.citedEntries.length > 0 && (
           <footer className={styles.citations}>

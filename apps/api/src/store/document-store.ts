@@ -36,6 +36,12 @@ export interface UpdateDocumentInput {
   contentHash: string;
 }
 
+export interface SetDocumentPublicInput {
+  public: boolean;
+  /** Must match the document's current `contentHash`, or the write is refused. */
+  contentHash: string;
+}
+
 export interface ListDocumentsOptions {
   cursor?: string;
   limit: number;
@@ -69,6 +75,15 @@ export interface DocumentStore {
 
   /** One page of documents, newest-updated-first. */
   list(options: ListDocumentsOptions): Promise<ListDocumentsResult>;
+
+  /**
+   * Flip a document's visibility (`requirements.md` §9.3) — a deliberate
+   * action distinct from `update`: title, body and citedEntries are
+   * untouched, only `public` and `updated` move. Guarded by the same
+   * `contentHash` optimistic-concurrency precondition as `update`; throws
+   * `record_not_found`/`edit_conflict` the same way.
+   */
+  setPublic(id: string, input: SetDocumentPublicInput): Promise<StoredDocument>;
 
   stats(): Promise<DocumentStoreStats>;
 }
