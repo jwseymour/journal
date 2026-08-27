@@ -1,5 +1,11 @@
 /* No literal values. Everything references a token (`design.md` §6.2). */
 
+.seeAll {
+  display: inline-block;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
 .section {
   margin-top: var(--space-lg);
 }

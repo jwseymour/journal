@@ -10,6 +10,8 @@ import type {
   OpenQuestion,
   QuestionsSummaryResponse,
   ReviewMediumSummary,
+  Todo,
+  TodosSummaryResponse,
 } from '@journal/contract';
 import {
   analysisLists,
@@ -17,18 +19,21 @@ import {
   analysisMetrics,
   analysisQuestions,
   analysisReviews,
+  analysisTodos,
   ApiRequestError,
   listMetricFields,
   listMetricFieldValues,
   listMetrics,
   listQuestions,
   listReviews,
+  listTodos,
 } from '@/lib/api';
 import { formatDate, formatRating } from '@/lib/format';
 import { CalendarHeatmap, LineSparkline, ScatterPlot, type ScatterPoint } from '@/components/analysis-charts';
 import styles from './page.module.css';
 
 const RECENT_OPEN_QUESTIONS = 5;
+const RECENT_OPEN_TODOS = 5;
 /** The backend's own per-request cap (`apps/api/src/http/app.ts`'s
  * `MAX_LIMIT`) — asking for more just to plot every raw record still hits
  * this ceiling, so the charts below read "at most the 200 most recent". */
@@ -79,6 +84,8 @@ interface AnalysisData {
   ratingPoints: ScatterPoint[];
   questions: QuestionsSummaryResponse;
   recentOpenQuestions: OpenQuestion[];
+  todos: TodosSummaryResponse;
+  recentOpenTodos: Todo[];
 }
 
 /**
@@ -108,11 +115,13 @@ export default function AnalysisPage() {
       analysisReviews(),
       analysisLists(),
       analysisQuestions(),
+      analysisTodos(),
       listMetricFields(),
       listQuestions({ status: 'open', limit: RECENT_OPEN_QUESTIONS }),
+      listTodos({ status: 'open', limit: RECENT_OPEN_TODOS }),
       listReviews({ limit: RAW_RECORD_LIMIT }),
     ])
-      .then(async ([metricsResponse, reviewsResponse, listsResponse, questionsResponse, fieldsResponse, openQuestionsResponse, reviewsRaw]) => {
+      .then(async ([metricsResponse, reviewsResponse, listsResponse, questionsResponse, todosResponse, fieldsResponse, openQuestionsResponse, openTodosResponse, reviewsRaw]) => {
         const windowDays = metricsResponse.windowDays;
         const numericFields = fieldsResponse.fields.filter((f) => f.fieldType === 'numeric' || f.fieldType === 'score');
         const enumFields = fieldsResponse.fields.filter((f) => f.fieldType === 'enum');
@@ -225,6 +234,8 @@ export default function AnalysisPage() {
           ratingPoints,
           questions: questionsResponse,
           recentOpenQuestions: openQuestionsResponse.questions,
+          todos: todosResponse,
+          recentOpenTodos: openTodosResponse.todos,
         });
       })
       .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not load analysis.'));
@@ -418,6 +429,35 @@ export default function AnalysisPage() {
                     <Link href={`/entry/${question.entryId}`} className={styles.link}>
                       Source entry
                     </Link>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          <section className={styles.section}>
+            <div className={styles.headingRow}>
+              <h2 className={styles.heading}>Todos</h2>
+              <Link href="/todos" className={styles.seeAll}>
+                All todos →
+              </Link>
+            </div>
+            <p className={styles.empty}>
+              {data.todos.openCount} open, {data.todos.doneCount} done.
+            </p>
+            {data.recentOpenTodos.length > 0 && (
+              <ol className={styles.feed}>
+                {data.recentOpenTodos.map((todo) => (
+                  <li key={todo.id} className={styles.feedRow}>
+                    <time dateTime={todo.eventTime} className={styles.feedWhen}>
+                      {formatDate(todo.eventTime)}
+                    </time>
+                    <span className={styles.feedText}>{todo.text}</span>
+                    {todo.entryId && (
+                      <Link href={`/entry/${todo.entryId}`} className={styles.link}>
+                        Source entry
+                      </Link>
+                    )}
                   </li>
                 ))}
               </ol>

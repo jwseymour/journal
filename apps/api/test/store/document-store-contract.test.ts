@@ -107,13 +107,8 @@ describe.each(backends)('%s — DocumentStore contract', (_name, makeHarness) =>
       expect(document.path).toBe(`documents/${document.id}.md`);
       expect(await h.readRaw(document.path)).toBe(
         `---\nid: ${document.id}\ntitle: The greenhouse project\ncreated: ${document.created}\n` +
-          `updated: ${document.created}\npublic: false\n---\nNotes so far.\n`,
+          `updated: ${document.created}\n---\nNotes so far.\n`,
       );
-    });
-
-    it('is private by default', async () => {
-      const document = await h.store.create({ title: 'x', body: 'x' });
-      expect(document.public).toBe(false);
     });
 
     it('returns the body exactly as it was stored', async () => {
@@ -267,81 +262,6 @@ describe.each(backends)('%s — DocumentStore contract', (_name, makeHarness) =>
       );
       expect(error.code).toBe('invalid_request');
     });
-
-    it('never changes public — visibility is flipped only by setPublic (`requirements.md` §9.3)', async () => {
-      const document = await h.store.create({ title: 'x', body: 'x' });
-      const published = await h.store.setPublic(document.id, { public: true, contentHash: document.contentHash });
-
-      const updated = await h.store.update(published.id, {
-        title: 'Renamed',
-        body: 'Rewritten.',
-        contentHash: published.contentHash,
-      });
-      expect(updated.public).toBe(true);
-    });
-  });
-
-  describe('setPublic', () => {
-    it('publishes a document — flips public, advances updated, changes nothing else', async () => {
-      const document = await h.store.create({ title: 'x', body: 'x', citedEntries: ['01ARZ3NDEKTSV4RRFFQ69G5FAV'] });
-      const published = await h.store.setPublic(document.id, { public: true, contentHash: document.contentHash });
-
-      expect(published.public).toBe(true);
-      expect(published.title).toBe(document.title);
-      expect(published.body).toBe(document.body);
-      expect(published.citedEntries).toEqual(document.citedEntries);
-      expect(published.created).toBe(document.created);
-      // Not asserted: `published.updated !== document.updated` — `updated`
-      // is second-precision, so two operations in one fast test can
-      // legitimately land in the same second (`update`'s own "advances
-      // updated" test above has the same reasoning). `contentHash` changing
-      // is what actually proves the file was rewritten.
-      expect(published.contentHash).not.toBe(document.contentHash);
-    });
-
-    it('unpublishing reverses it', async () => {
-      const document = await h.store.create({ title: 'x', body: 'x' });
-      const published = await h.store.setPublic(document.id, { public: true, contentHash: document.contentHash });
-      const unpublished = await h.store.setPublic(published.id, {
-        public: false,
-        contentHash: published.contentHash,
-      });
-      expect(unpublished.public).toBe(false);
-    });
-
-    it('rejects a stale hash rather than flipping visibility it never saw', async () => {
-      const document = await h.store.create({ title: 'x', body: 'x' });
-      await h.store.update(document.id, { title: 'x', body: 'Someone changed this.', contentHash: document.contentHash });
-
-      const error = await catchError(() =>
-        h.store.setPublic(document.id, { public: true, contentHash: document.contentHash }),
-      );
-      expect(error.code).toBe('edit_conflict');
-      expect((await h.store.get(document.id))?.public).toBe(false);
-    });
-
-    it('rejects publishing a document that does not exist', async () => {
-      const error = await catchError(() =>
-        h.store.setPublic('01ARZ3NDEKTSV4RRFFQ69G5FAV', { public: true, contentHash: 'whatever' }),
-      );
-      expect(error.code).toBe('record_not_found');
-    });
-
-    it('is reflected in list() without a full rebuild', async () => {
-      const document = await h.store.create({ title: 'Findable', body: 'x' });
-      await h.store.setPublic(document.id, { public: true, contentHash: document.contentHash });
-
-      const { documents } = await h.store.list({ limit: 10 });
-      expect(documents.find((d) => d.id === document.id)?.public).toBe(true);
-    });
-
-    it('picks up a visibility flip made by hand on disk, same as any other field (`requirements.md` §7.4)', async () => {
-      const document = await h.store.create({ title: 'x', body: 'x' });
-      const onDisk = await h.readRaw(document.path);
-      await h.writeRaw(document.path, onDisk.replace('public: false', 'public: true'));
-
-      expect((await h.store.get(document.id))?.public).toBe(true);
-    });
   });
 
   describe('rebuild', () => {
@@ -358,18 +278,6 @@ describe.each(backends)('%s — DocumentStore contract', (_name, makeHarness) =>
       expect(result).toEqual(beforeStats);
       const { documents: after } = await h.store.list({ limit: 10 });
       expect(new Set(after.map((d) => d.id))).toEqual(new Set(before.map((d) => d.id)));
-    });
-
-    it('preserves public across a full rescan (`requirements.md` §9.3)', async () => {
-      await h.writeRaw(
-        'documents/01ARZ3NDEKTSV4RRFFQ69G5FAV.md',
-        '---\nid: 01ARZ3NDEKTSV4RRFFQ69G5FAV\ntitle: Published\ncreated: 2020-01-01T09:00:00Z\nupdated: 2020-01-01T09:00:00Z\npublic: true\n---\nx\n',
-      );
-
-      await h.store.rebuild();
-
-      const { documents } = await h.store.list({ limit: 10 });
-      expect(documents.find((d) => d.id === '01ARZ3NDEKTSV4RRFFQ69G5FAV')?.public).toBe(true);
     });
   });
 });

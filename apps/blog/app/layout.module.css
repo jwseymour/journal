@@ -17,3 +17,17 @@
   color: var(--ink);
   text-decoration: none;
 }
+
+.nav {
+  display: inline-flex;
+  gap: var(--space-sm);
+  margin-left: var(--space-md);
+}
+
+.nav a {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-decoration: none;
+}

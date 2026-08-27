@@ -1,8 +1,8 @@
-import { S3Client } from '@aws-sdk/client-s3';
 import type { Config } from '../config.js';
 import type { SqliteIndex } from '../index/sqlite-index.js';
 import { FsEntryStore } from './fs-entry-store.js';
 import { S3EntryStore } from './s3-entry-store.js';
+import { createS3Client } from './s3-client.js';
 
 /**
  * Constructs the one `EntryStore` implementation `config.storageBackend`
@@ -18,13 +18,7 @@ export function createEntryStore(config: Config, index: SqliteIndex): FsEntrySto
     return new FsEntryStore(config.journalDir, index);
   }
 
-  // Validated at boot (`config.ts`) — both are guaranteed set once
-  // `storageBackend` is `s3`.
-  const s3 = new S3Client({
-    region: config.awsRegion!,
-    ...(config.awsAccessKeyId && config.awsSecretAccessKey
-      ? { credentials: { accessKeyId: config.awsAccessKeyId, secretAccessKey: config.awsSecretAccessKey } }
-      : {}),
-  });
-  return new S3EntryStore(s3, config.s3Bucket!, index);
+  // s3Bucket/awsRegion validated at boot (`config.ts`) — both are
+  // guaranteed set once `storageBackend` is `s3`.
+  return new S3EntryStore(createS3Client(config), config.s3Bucket!, index);
 }

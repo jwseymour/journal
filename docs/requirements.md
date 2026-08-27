@@ -300,21 +300,21 @@ A document may optionally reference specific entries it grew out of or relates t
 
 ### 9.3 Visibility
 
-A document has a `public` field: a boolean, defaulting to `false`. Setting it to `true` is a deliberate, explicit act — a "Publish" action distinct from an ordinary save, never a side effect of any other edit. A public document is readable through the public-facing surface described in §10; a private one is exactly as private as an entry.
+A document can be made readable through the public-facing surface described in §10. Doing so is a deliberate, explicit act — a "Publish" action distinct from an ordinary save, never a side effect of any other edit — and unpublishing reverses it just as explicitly. An unpublished document is exactly as private as an entry.
 
-This resolves visibility for documents specifically, ahead of the system-wide question in §11. Entries and derived structures (§5) remain entirely private, with no visibility mechanism of their own, for as long as §11's broader public/private question stays open. A public document exposes only what it directly contains — citing an entry (§9.2) never exposes the entry itself, so nothing about publishing a document requires deciding entry-level visibility first.
+A document does not carry a `public` field of its own. §11 resolves *how* visibility is tracked, for documents and everything else alike: a document is not a special case of that mechanism, just its first user. A public document exposes only what it directly contains — citing an entry (§9.2) never exposes the entry itself, so nothing about publishing a document requires deciding entry-level visibility first.
 
 ---
 
 ## 10. The public-facing surface
 
-A separate, minimal, read-only surface exists to let documents marked public (§9.3) be read by anyone, without exposing anything else in the system.
+A separate, minimal, read-only surface exists to let published content (§11) be read by anyone, without exposing anything else in the system.
 
 - It is a distinct application from the private journal — its own frontend, on its own domain, calling its own small API — not a public mode bolted onto the authenticated one. §7.1's frontend/backend divide applies here too: this stays swappable and separable from everything else.
-- The public API only ever serves documents where `public` is `true`, and, at the infrastructure level, has no access to entries or to anything outside the `documents/` storage location — privacy here does not depend solely on application logic getting a check right.
-- It is read-only. Nothing about publishing happens through this surface; a document is written and marked public entirely from the private, authenticated side, the same place it is written in the first place (§9's "nothing but me ever writes to one" applies without exception).
-- What a public document looks like when read — layout, URL, ordering, whether it groups with anything else — is a presentation concern for this surface to decide, not something the canonical document format (`format.md` §6) needs to encode. A document's identity and content are unaffected by whether it is ever read publicly.
-- Grouping documents into a series, or organising them by kind (a project write-up versus a standalone piece), is not addressed here. Nothing above blocks it later; it simply isn't needed yet.
+- The public API only ever reads from the `public/` mirror (§11), and, at the infrastructure level, has no access to entries, documents, or anything outside that one location — privacy here does not depend solely on application logic getting a check right. It does not read `journal/` or `documents/` at all, even to double-check anything: the mirror's own contents are the complete and only answer to "what is public."
+- It is read-only. Nothing about publishing happens through this surface; content is written and published entirely from the private, authenticated side, the same place it is written in the first place (§9's "nothing but me ever writes to one" applies without exception, and applies equally to entries).
+- What published content looks like when read — layout, URL, ordering, whether it groups with anything else — is a presentation concern for this surface to decide, not something the canonical entry or document format (`format.md` §6) needs to encode. A document or entry's identity and content are unaffected by whether it is ever read publicly.
+- Grouping published content into a series, or organising it by kind (a project write-up versus a standalone piece), is not addressed here. Nothing above blocks it later; it simply isn't needed yet.
 
 ---
 
@@ -330,7 +330,11 @@ The following have been raised and deliberately set aside for later consideratio
 
 **Multi-device use.** Still deferred — M11 makes the API reachable and adds single-user auth, but a phone/laptop-writing client is separate, later work. See §7.5.
 
-**Public/private access levels, beyond documents.** §9.3 resolves this narrowly for documents (a boolean, defaulting to private) and §10 covers how a public document is read. Entries and derived structures (§5) remain undecided and unaddressed — not precluded by M11's single-user auth design, but not designed here either.
+**Public/private access levels, beyond documents — resolved.** Making an entry, a document, or a derived record (§5 — metrics, reviews, opinions, lists, questions) public copies a rendered, privacy-safe snapshot into a separate `public/` storage location; the public-facing surface (§10) reads only from there. Visibility is never a field on the entry or document itself — for an entry that would directly violate §4.3's "nothing else," and keeping every content type on the same mechanism means there is exactly one way anything ever becomes public, not a special case for the first content type that needed it. Publishing an entry never carries its coordinates into the mirror, deliberately: location is a private-by-default fact about the act of writing, not something a "Publish" click should ever have to remember to strip. Editing a published record keeps its public copy in sync automatically, so a stale mirror is never a possibility a click was needed to prevent. A published derived record carries only its own semantic content — never the id of the private entry it came from, and never `touched`/extraction provenance. For a derived structure, publishing can also be set to a category-level default ("all reviews of this medium," "all metrics of this kind") — but a default only ever stages matching records into a confirmation queue, one click away from actually publishing; nothing is ever made public without that explicit, final act, the same "AI suggests, I approve" shape §5.3 already uses for categories themselves.
+
+**An AI-organised public site.** An idea, not yet designed: describing in plain prose how the public surface should be arranged — "put the coding projects together, at the top" — and having a system carry out that arrangement across published documents, rather than hand-maintaining a manual order or a taxonomy field on each one. Raised specifically because a fixed `kind`/category field on a document felt like the wrong shape for something this presentational and this likely to change. On hold until there is enough real published content to know what arranging it actually needs.
+
+**Grouping entries and documents into a project or collection.** An entry must never carry a citation or relation of its own (§4.3, §9's "an entry should just be for a day") — so grouping content around a subject that spans several days of writing has to be derived, not authored on the entry. The likely shape is close to the opinion model (§5.2): extract the parts of an entry that belong to a given subject, linked back to their source, rather than citing whole entries by hand. What's unresolved is presentation — showing a project's worth of extracted fragments needs something better than a bare list of paragraphs pulled from different days. On hold; revisit once the public/private mechanism above is in everyday use.
 
 ---
 
@@ -343,7 +347,7 @@ The following have been raised and deliberately set aside for later consideratio
 - Spoken entries always become plaintext; audio is optional and additional.
 - No user markup, ever; structuring is the AI's job.
 - Documents are a third content type, alongside entries and derived structures — directly authored like an entry, but titled, revised over time, and organised by subject rather than by when they were written (§9).
-- A document may be marked public and read through a separate, minimal, read-only surface with no access to anything else in the system; entries and derived structures stay private (§9.3, §10).
+- An entry or a document may be published — a snapshot mirrored to a separate location the public-facing surface reads from, never a field on the record itself — and read through a minimal, read-only surface with no access to anything else in the system; unpublished content, and all derived structures, stay private (§9.3, §10, §11).
 - All structured data originates from the entries and links back to them.
 - Derived data is rebuildable until I touch it; once reviewed or edited, a record is mine and is never silently overwritten.
 - Many kinds of structure exist, more will be added, and the design assumes this.

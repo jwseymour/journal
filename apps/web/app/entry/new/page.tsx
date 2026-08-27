@@ -236,7 +236,10 @@ export default function NewEntryPage() {
     }
     if (entryIdRef.current) {
       endedRef.current = true;
-      router.push(`/entry/${entryIdRef.current}`);
+      // `?process=1`: `EntryView` reads this on arrival and runs the AI
+      // layer for this entry live (`plan.md` M15) — finishing a new entry
+      // is exactly the moment that pass should happen.
+      router.push(`/entry/${entryIdRef.current}?process=1`);
     } else {
       setFinishing(false);
     }

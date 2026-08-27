@@ -8,6 +8,7 @@ import { OpinionSummariesIndex } from './index/opinion-summaries-index.js';
 import { QuestionsIndex } from './index/questions-index.js';
 import { ReviewsIndex } from './index/reviews-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
+import { TodosIndex } from './index/todos-index.js';
 import { GatewayModelClient } from './model/gateway-model-client.js';
 import { Extractor } from './model/extractor.js';
 import { ListsExtractor } from './model/lists-extractor.js';
@@ -19,6 +20,7 @@ import { QuestionsExtractor } from './model/questions-extractor.js';
 import { ReviewsExtractor } from './model/reviews-extractor.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
 import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
+import { TodosExtractor } from './model/todos-extractor.js';
 import { createEntryStore } from './store/create-entry-store.js';
 import { nowTimestamp } from './record/time.js';
 
@@ -88,6 +90,9 @@ async function main(): Promise<void> {
   const questionsIndex = new QuestionsIndex(config.indexDbPath);
   const questionsExtractor = new QuestionsExtractor(questionsIndex, modelClient);
 
+  const todosIndex = new TodosIndex(config.indexDbPath);
+  const todosExtractor = new TodosExtractor(todosIndex, modelClient);
+
   const before = Date.now();
   const { entryCount, metricCount } = await extractor.reprocessAll(store);
   const { reviewCount } = await reviewsExtractor.reprocessAll(store);
@@ -103,15 +108,21 @@ async function main(): Promise<void> {
   // own terms rather than sharing an entry loop with siblings that don't
   // care about order.
   const { questionCount, openCount, resolvedCount } = await questionsExtractor.reprocessAll(store);
+  // To-dos are their own pass too, for the same reason questions are:
+  // completion-matching needs entries in chronological order
+  // (`TodosExtractor.reprocessAll`).
+  const { todoCount, openCount: openTodoCount, doneCount: doneTodoCount } = await todosExtractor.reprocessAll(store);
   const elapsedMs = Date.now() - before;
 
   console.log(
     `[journal] reprocessed in ${elapsedMs}ms: ${entryCount} entries — ` +
       `${metricCount} metrics, ${reviewCount} reviews, ${itemCount} list items, ` +
       `${statementCount} opinion statements (${subjectCount} subjects, ${partCount} summary parts), ` +
-      `${questionCount} questions (${openCount} open, ${resolvedCount} resolved)`,
+      `${questionCount} questions (${openCount} open, ${resolvedCount} resolved), ` +
+      `${todoCount} todos (${openTodoCount} open, ${doneTodoCount} done)`,
   );
 
+  todosIndex.close();
   questionsIndex.close();
   opinionSummariesIndex.close();
   opinionStatementsIndex.close();

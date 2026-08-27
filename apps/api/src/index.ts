@@ -8,22 +8,37 @@ import { MetricFieldsIndex } from './index/metric-fields-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
 import { OpinionStatementsIndex } from './index/opinion-statements-index.js';
 import { OpinionSummariesIndex } from './index/opinion-summaries-index.js';
+import { PublicSearchIndex } from './index/public-search-index.js';
+import { PublishedIndex } from './index/published-index.js';
 import { QuestionsIndex } from './index/questions-index.js';
 import { ReviewsIndex } from './index/reviews-index.js';
 import { SearchIndex } from './index/search-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
+import { TodosIndex } from './index/todos-index.js';
+import { VisibilityDefaultsIndex } from './index/visibility-defaults-index.js';
 import { ChatOrchestrator } from './model/chat-orchestrator.js';
+import { EntryProcessor } from './model/entry-processor.js';
+import { Extractor } from './model/extractor.js';
 import { GatewayChatClient, UnconfiguredChatClient } from './model/gateway-chat-client.js';
+import { GatewayModelClient, UnconfiguredModelClient } from './model/gateway-model-client.js';
+import { ListsExtractor } from './model/lists-extractor.js';
 import { LIST_TYPE_SEED_NAMES } from './model/lists.js';
+import { OpinionSummarizer } from './model/opinion-summarizer.js';
+import { OpinionsExtractor } from './model/opinions-extractor.js';
 import { OPINION_SUBJECT_SEED_NAMES } from './model/opinions.js';
+import { QuestionsExtractor } from './model/questions-extractor.js';
+import { ReviewsExtractor } from './model/reviews-extractor.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
 import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
+import { TodosExtractor } from './model/todos-extractor.js';
 import { nowTimestamp } from './record/time.js';
+import { createPublisher } from './publish/create-publisher.js';
 import { LocalEmbedder } from './search/local-embedder.js';
 import { SearchIndexer } from './search/indexer.js';
 import { HybridSearcher } from './search/searcher.js';
 import { createDocumentStore } from './store/create-document-store.js';
 import { createEntryStore } from './store/create-entry-store.js';
+import { SearchingDocumentStore } from './store/searching-document-store.js';
 import { SearchingEntryStore } from './store/searching-entry-store.js';
 import { LocalTranscriber } from './transcribe/local-transcriber.js';
 
@@ -51,19 +66,13 @@ async function main(): Promise<void> {
   const embedder = new LocalEmbedder(config.embeddingModel, config.embeddingCacheDir, config.embeddingDimensions);
   const indexer = new SearchIndexer(searchIndex, embedder);
   const store = new SearchingEntryStore(createEntryStore(config, index), indexer);
-  const searcher = new HybridSearcher(searchIndex, embedder, index);
-  // Never wrapped in `SearchingEntryStore` — documents aren't entries and
-  // aren't indexed for search in this milestone (`requirements.md` §9,
-  // "not in this milestone" in `plan.md` M12).
   const documentsIndex = new DocumentsIndex(config.indexDbPath);
-  const documentStore = createDocumentStore(config, documentsIndex);
+  const searcher = new HybridSearcher(searchIndex, embedder, index, documentsIndex);
+  // Wrapped in `SearchingDocumentStore` the same way entries are
+  // (`plan.md` M17) — documents are now indexed for search alongside
+  // entries, distinguished by `source_type` in the same `chunks` table.
+  const documentStore = new SearchingDocumentStore(createDocumentStore(config, documentsIndex), indexer);
   const transcriber = new LocalTranscriber(config.whisperModel, config.whisperCacheDir);
-  // No `ModelClient` is constructed here: extraction never runs live, only
-  // via `npm run reprocess` (`src/reprocess.ts`) — see that file for why
-  // (`plan.md` M7: extraction costs real money per call, unlike the free
-  // local embedder M6 wires into every write). The running server only ever
-  // reads what a past reprocess already wrote, via `GET /metrics` and
-  // friends.
   const metricsIndex = new MetricsIndex(config.indexDbPath);
   const metricFieldsIndex = new MetricFieldsIndex(config.indexDbPath);
   const reviewsIndex = new ReviewsIndex(config.indexDbPath);
@@ -71,6 +80,32 @@ async function main(): Promise<void> {
   const opinionStatementsIndex = new OpinionStatementsIndex(config.indexDbPath);
   const opinionSummariesIndex = new OpinionSummariesIndex(config.indexDbPath);
   const questionsIndex = new QuestionsIndex(config.indexDbPath);
+  const todosIndex = new TodosIndex(config.indexDbPath);
+  // The one durable record of what's public (`requirements.md` §9.3, §11,
+  // `plan.md` M15) — see `PublishedIndex`'s own doc comment for why this,
+  // unlike every other index here, is not a disposable cache.
+  const publishedIndex = new PublishedIndex(config.indexDbPath);
+  // "These are public by default" per category (`plan.md` M16) — a
+  // disposable settings cache, unlike `publishedIndex` itself: losing it
+  // only means re-ticking a default, never losing a publish decision.
+  const visibilityDefaultsIndex = new VisibilityDefaultsIndex(config.indexDbPath);
+  // The public search index (`plan.md` M17) — a disposable cache exactly
+  // like `searchIndex`, just scoped to whatever `Publisher` has mirrored to
+  // `public/`. Lives in the same `index.db` file as everything else so the
+  // whole derived layer stays one deletable artefact.
+  const publicSearchIndex = new PublicSearchIndex(config.indexDbPath);
+  const publisher = createPublisher(
+    config,
+    publishedIndex,
+    store,
+    documentStore,
+    metricsIndex,
+    reviewsIndex,
+    listsIndex,
+    opinionStatementsIndex,
+    questionsIndex,
+    publicSearchIndex,
+  );
   // Seeded on every boot too, not only in `reprocess.ts` — the approved-name
   // list has to exist before `GET /categories` can answer anything, and
   // boot is the one place guaranteed to run before that request can arrive.
@@ -82,10 +117,13 @@ async function main(): Promise<void> {
   categoriesIndex.seed('review_medium', REVIEW_MEDIUM_SEED_NAMES, seededAt);
   categoriesIndex.seed('list_type', LIST_TYPE_SEED_NAMES, seededAt);
   categoriesIndex.seed('opinion_subject', OPINION_SUBJECT_SEED_NAMES, seededAt);
-  // Unlike extraction, chat is the first subsystem that calls a model live
-  // from the running server — there is no offline batch step for it to hide
-  // behind, so it needs the same "absent key fails clearly at point of use,
-  // never at boot" gating extraction gets from `UnconfiguredModelClient`.
+  // Chat and single-entry extraction are the two subsystems that call a
+  // model live from the running server — both fail clearly at the point of
+  // use, via their own `Unconfigured*` client, rather than refusing to boot
+  // over an optional subsystem (`plan.md` M1's `JOURNAL_DIR` reasoning,
+  // applied here). `npm run reprocess` (`src/reprocess.ts`) still refuses
+  // outright instead, since a corpus-wide, real-money run with no key
+  // configured is never something to silently no-op through.
   const chatClient = config.aiGatewayApiKey
     ? new GatewayChatClient(config.aiGatewayApiKey, config.chatModel)
     : new UnconfiguredChatClient();
@@ -96,6 +134,18 @@ async function main(): Promise<void> {
     reviewsIndex,
     listsIndex,
     categoriesIndex,
+  );
+  const modelClient = config.aiGatewayApiKey
+    ? new GatewayModelClient(config.aiGatewayApiKey, config.extractionModel)
+    : new UnconfiguredModelClient();
+  const entryProcessor = new EntryProcessor(
+    new Extractor(metricsIndex, metricFieldsIndex, categoriesIndex, modelClient),
+    new ReviewsExtractor(reviewsIndex, categoriesIndex, modelClient),
+    new ListsExtractor(listsIndex, categoriesIndex, modelClient),
+    new OpinionsExtractor(opinionStatementsIndex, categoriesIndex, modelClient),
+    new OpinionSummarizer(opinionSummariesIndex, opinionStatementsIndex, modelClient),
+    new QuestionsExtractor(questionsIndex, modelClient),
+    new TodosExtractor(todosIndex, modelClient),
   );
   const app = createApp(
     store,
@@ -111,7 +161,11 @@ async function main(): Promise<void> {
     opinionStatementsIndex,
     opinionSummariesIndex,
     questionsIndex,
+    todosIndex,
+    entryProcessor,
     chatOrchestrator,
+    publisher,
+    visibilityDefaultsIndex,
   );
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
@@ -124,7 +178,7 @@ async function main(): Promise<void> {
     console.log(
       config.aiGatewayApiKey
         ? `[journal] extraction model: ${config.extractionModel}`
-        : '[journal] extraction: AI_GATEWAY_API_KEY not set — GET /metrics will be empty until `npm run reprocess` is run with it configured',
+        : '[journal] extraction: AI_GATEWAY_API_KEY not set — GET /metrics (and friends) will stay empty, and POST /entries/:id/process will return extraction_failed, until it is configured',
     );
     console.log(
       config.aiGatewayApiKey

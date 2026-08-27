@@ -38,8 +38,21 @@ resource "aws_s3_bucket_public_access_block" "journal" {
 # EC2 (rather than Lightsail) was chosen specifically so the server can
 # authenticate to S3 via its instance role — the AWS SDK's default credential
 # provider chain picks this up automatically from instance metadata, with no
-# key anywhere in `.env`. Scoped to exactly this bucket's `journal/` prefix,
-# nothing else.
+# key anywhere in `.env`.
+#
+# `apps/api` and `apps/public-api` both run as separate processes on this one
+# instance, and an EC2 instance can only ever have one instance profile — so
+# they necessarily share the same default (instance-metadata) credentials.
+# That shared default is deliberately the *narrow* role below: read-only on
+# `public/*`, nothing else. `apps/public-api` uses it unmodified, so its IAM
+# access is denied to `journal/*`/`documents/*` as a fact about the box, not
+# a promise its own routing has to keep (`requirements.md` §10 — "does not
+# depend solely on application logic getting a check right"). `apps/api`
+# needs the fuller access to do its job, so it explicitly assumes a second,
+# broader role (`journal_api_write`, below) via STS at boot
+# (`apps/api/src/store/s3-client.ts`, `S3_ASSUME_ROLE_ARN` in `.env`) — if
+# that assume-role call were ever skipped or broken, `apps/api` just fails
+# to reach S3, rather than silently reading or writing anything it shouldn't.
 
 data "aws_iam_policy_document" "assume_ec2" {
   statement {
@@ -56,6 +69,65 @@ resource "aws_iam_role" "journal_api" {
   assume_role_policy = data.aws_iam_policy_document.assume_ec2.json
 }
 
+# The instance's own default permissions — read-only on `public/*`, plus
+# permission to assume `journal_api_write` below. This is what any process
+# on the box gets automatically from instance metadata, `apps/public-api`
+# included.
+data "aws_iam_policy_document" "journal_instance_access" {
+  statement {
+    sid       = "ListPublicPrefix"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.journal.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["public/*"]
+    }
+  }
+
+  statement {
+    sid       = "ReadPublicObjects"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.journal.arn}/public/*"]
+  }
+
+  statement {
+    sid       = "AssumeJournalApiWriteRole"
+    actions   = ["sts:AssumeRole"]
+    resources = [aws_iam_role.journal_api_write.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "journal_api" {
+  name   = "${var.project_name}-api-s3-access"
+  role   = aws_iam_role.journal_api.id
+  policy = data.aws_iam_policy_document.journal_instance_access.json
+}
+
+resource "aws_iam_instance_profile" "journal_api" {
+  name = "${var.project_name}-api"
+  role = aws_iam_role.journal_api.name
+}
+
+# The broader role only `apps/api` ever assumes (trust policy below allows
+# only the instance role above to assume it — nothing else, on or off this
+# account, can). Read-write on `journal/*`/`documents/*`/`public/*`: the
+# full access the private API and the `Publisher` mirror-writer need.
+data "aws_iam_policy_document" "assume_by_journal_api" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.journal_api.arn]
+    }
+  }
+}
+
+resource "aws_iam_role" "journal_api_write" {
+  name               = "${var.project_name}-api-write"
+  assume_role_policy = data.aws_iam_policy_document.assume_by_journal_api.json
+}
+
 data "aws_iam_policy_document" "journal_bucket_access" {
   statement {
     sid       = "ListJournalPrefix"
@@ -65,9 +137,10 @@ data "aws_iam_policy_document" "journal_bucket_access" {
       test     = "StringLike"
       variable = "s3:prefix"
       # `documents/` sits alongside `journal/` at the bucket root
-      # (`format.md` §6, `S3DocumentStore`) — same instance role, same
-      # scoping approach, just a second prefix.
-      values = ["journal/*", "documents/*"]
+      # (`format.md` §6, `S3DocumentStore`), and `public/` alongside both —
+      # the mirror `Publisher` writes rendered snapshots into
+      # (`requirements.md` §11, `plan.md` M15).
+      values = ["journal/*", "documents/*", "public/*"]
     }
   }
 
@@ -77,19 +150,15 @@ data "aws_iam_policy_document" "journal_bucket_access" {
     resources = [
       "${aws_s3_bucket.journal.arn}/journal/*",
       "${aws_s3_bucket.journal.arn}/documents/*",
+      "${aws_s3_bucket.journal.arn}/public/*",
     ]
   }
 }
 
-resource "aws_iam_role_policy" "journal_api" {
-  name   = "${var.project_name}-api-s3-access"
-  role   = aws_iam_role.journal_api.id
+resource "aws_iam_role_policy" "journal_api_write" {
+  name   = "${var.project_name}-api-write-s3-access"
+  role   = aws_iam_role.journal_api_write.id
   policy = data.aws_iam_policy_document.journal_bucket_access.json
-}
-
-resource "aws_iam_instance_profile" "journal_api" {
-  name = "${var.project_name}-api"
-  role = aws_iam_role.journal_api.name
 }
 
 # ── Networking ───────────────────────────────────────────────────────────

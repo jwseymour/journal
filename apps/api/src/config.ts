@@ -96,6 +96,15 @@ export interface Config {
   readonly awsRegion: string | undefined;
   readonly awsAccessKeyId: string | undefined;
   readonly awsSecretAccessKey: string | undefined;
+  /** The broader role `apps/api` assumes via STS to reach `journal/*` and
+   * `documents/*` (`infra/terraform/main.tf`'s `journal_api_write` role).
+   * The instance's own default role is deliberately narrowed to `public/*`
+   * read-only, so `apps/public-api` — which never sets or reads this — can
+   * never reach those prefixes no matter what its own code does
+   * (`requirements.md` §10). `undefined` outside that deployment (local dev,
+   * or any host not using the assume-role split): the S3 client then just
+   * falls back to the default credential chain, as it always has. */
+  readonly s3AssumeRoleArn: string | undefined;
 
   /** The one identity auth ever accepts (`plan.md` M11) — this is a
    * single-user system, so there is no users table, only an allowlist of
@@ -122,7 +131,12 @@ export const DEFAULT_PORT = 4319;
 /** Loopback only. Going online is a deployment change, not a default. */
 const DEFAULT_HOST = '127.0.0.1';
 
-const DEFAULT_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+const DEFAULT_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3001',
+];
 
 /** The smallest English Whisper model — a deliberate default. Accuracy for a
  * larger model is one env var away; nobody should have to know that on day one. */
@@ -274,6 +288,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     awsRegion,
     awsAccessKeyId: env['AWS_ACCESS_KEY_ID']?.trim() || undefined,
     awsSecretAccessKey: env['AWS_SECRET_ACCESS_KEY']?.trim() || undefined,
+    s3AssumeRoleArn: env['S3_ASSUME_ROLE_ARN']?.trim() || undefined,
     authorizedEmail: env['AUTHORIZED_EMAIL']?.trim() || DEFAULT_AUTHORIZED_EMAIL,
     googleClientId: env['GOOGLE_CLIENT_ID']?.trim() || undefined,
     googleClientSecret: env['GOOGLE_CLIENT_SECRET']?.trim() || undefined,

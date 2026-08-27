@@ -30,7 +30,11 @@ export class OpinionsExtractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<void> {
+  /** Returns the distinct subjects this entry produced a statement for (or
+   * proposed an update against) — what a live single-entry caller needs to
+   * know which subjects' summaries (`OpinionSummarizer`) are now stale,
+   * without re-summarizing every subject in the corpus. */
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ statementCount: number; subjects: string[] }> {
     const approvedSubjects = this.#categoriesIndex.approvedNames('opinion_subject');
     const { schema, system } = buildOpinionExtractionRequest(approvedSubjects);
     const result = await this.#modelClient.extract({ schema, system, prompt: buildExtractionPrompt(entry) });
@@ -84,6 +88,8 @@ export class OpinionsExtractor {
         now: extractedAt,
       });
     }
+
+    return { statementCount: records.length, subjects: [...new Set(records.map((r) => r.subject))] };
   }
 
   removeEntry(entryId: string): void {

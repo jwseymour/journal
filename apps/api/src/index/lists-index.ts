@@ -103,6 +103,10 @@ export interface ListTypeSummary {
  * depends on. */
 export interface ListItemsReader {
   list(options: ListItemsOptions): ListItemRecord[];
+  /** One record by id, or `null` — see `MetricsReader.getById` (`plan.md` M16). */
+  getById(id: string): ListItemRecord | null;
+  /** Every record for one list type, unbounded — see `MetricsReader.allByMetric` (`plan.md` M16). */
+  allByListType(listType: string): ListItemRecord[];
   remove(id: string): void;
   summarize(approvedTypes: readonly string[]): ListTypeSummary[];
   update(id: string, input: UpdateListItemInput, now: string): ListItemRecord | null;
@@ -225,6 +229,18 @@ export class ListsIndex implements ListItemsReader {
 
   removeEntry(entryId: string): void {
     this.#db.prepare('DELETE FROM list_items WHERE entry_id = ?').run(entryId);
+  }
+
+  getById(id: string): ListItemRecord | null {
+    const row = this.#db.prepare('SELECT * FROM list_items WHERE id = ?').get(id) as RawRow | undefined;
+    return row ? fromRaw(row) : null;
+  }
+
+  allByListType(listType: string): ListItemRecord[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM list_items WHERE list_type = ? ORDER BY event_epoch_ms DESC')
+      .all(listType) as RawRow[];
+    return rows.map(fromRaw);
   }
 
   /** Discard one wrong record (`requirements.md` §6.2). */

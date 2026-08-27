@@ -20,6 +20,14 @@ const PAGE_SIZE = 100;
  * backward in time, so `reprocessAll` below sorts entries chronologically
  * before extracting, unlike every sibling extractor, which does not care
  * what order `store.list()` happens to hand entries back in.
+ *
+ * `extractEntry` alone (`EntryProcessor`'s live, one-entry path) is exactly
+ * correct for the common case — a just-finished entry is always the newest
+ * one, so "every question still open" is genuinely everything before it.
+ * Calling it live for an *edited*, older entry only re-checks against
+ * whatever is open *now*; it does not replay everything chronologically
+ * after that entry the way `reprocessAll` would. `reprocessAll` remains the
+ * authority for anything that needs that.
  */
 export class QuestionsExtractor {
   readonly #questionsIndex: QuestionsIndex;
@@ -30,7 +38,7 @@ export class QuestionsExtractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<void> {
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ questionCount: number }> {
     const openQuestions = this.#questionsIndex.listOpen();
     const prompt = buildQuestionExtractionPrompt(
       entry,
@@ -99,6 +107,8 @@ export class QuestionsExtractor {
         resolvedAt: extractedAt,
       });
     }
+
+    return { questionCount: raised.length };
   }
 
   removeEntry(entryId: string): void {

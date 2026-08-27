@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { formatDate, formatTime } from '@/lib/format';
+import { searchHitHref, searchHitKey } from '@/lib/search-hit';
 import { useSearch } from '@/lib/use-search';
 import styles from './page.module.css';
 
@@ -40,13 +41,17 @@ export default function SearchPage() {
 
       {hits && hits.length > 0 && (
         <ol className={styles.list}>
-          {hits.map((hit, index) => (
-            <li key={`${hit.entryId}-${index}`}>
-              <Link href={`/entry/${hit.entryId}`} className={styles.item}>
-                <span className={styles.when}>
-                  <time dateTime={hit.created}>{formatDate(hit.created)}</time>
-                  <span>{formatTime(hit.created)}</span>
-                </span>
+          {hits.map((hit) => (
+            <li key={searchHitKey(hit)}>
+              <Link href={searchHitHref(hit)} className={styles.item}>
+                {hit.sourceType === 'entry' ? (
+                  <span className={styles.when}>
+                    <time dateTime={hit.created}>{formatDate(hit.created)}</time>
+                    <span>{formatTime(hit.created)}</span>
+                  </span>
+                ) : (
+                  <span className={styles.when}>{hit.title}</span>
+                )}
                 <span className={styles.passage}>{hit.passage}</span>
               </Link>
             </li>

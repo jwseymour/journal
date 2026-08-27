@@ -4,10 +4,11 @@ import { dirname } from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 
 /**
- * The search index (`plan.md` M6): paragraph-level chunks, an FTS5 table for
- * BM25 text search, and a `sqlite-vec` table for vector kNN — all three
- * living in the same database file as `SqliteIndex`, so the whole derived
- * layer stays one deletable artefact (`requirements.md` §6.4).
+ * The search index (`plan.md` M6, generalised to documents in M17):
+ * paragraph-level chunks, an FTS5 table for BM25 text search, and a
+ * `sqlite-vec` table for vector kNN — all three living in the same database
+ * file as `SqliteIndex`, so the whole derived layer stays one deletable
+ * artefact (`requirements.md` §6.4).
  *
  * A second connection to the same file rather than a shared one: both
  * classes are synchronous (better-sqlite3 has no async API), so there is no
@@ -16,14 +17,25 @@ import * as sqliteVec from 'sqlite-vec';
  * vice versa.
  *
  * Like `SqliteIndex`, this is purely a cache. `chunks.text` duplicates a
- * fragment of the entry body — cheap, and what makes `removeEntry` a plain
+ * fragment of the source body — cheap, and what makes removal a plain
  * `DELETE` rather than a three-way sync between an external-content FTS5
  * table and its source of truth. Deleting this file loses nothing that
  * `rebuild --from-scratch` cannot regenerate from the journal files.
+ *
+ * `source_type` distinguishes an entry's chunks from a document's
+ * (`plan.md` M17) — the physical column is still named `entry_id` (an
+ * `ALTER TABLE ADD COLUMN` only ever adds; renaming an existing column
+ * carries more migration risk than this earns), but every row is now keyed
+ * by `(source_type, entry_id)`, never `entry_id` alone, so a document and
+ * an entry can never collide even though ids are drawn from the same ULID
+ * space.
  */
 
+export type SearchSourceType = 'entry' | 'document';
+
 export interface SearchIndexHit {
-  entryId: string;
+  sourceType: SearchSourceType;
+  sourceId: string;
   chunkIndex: number;
   text: string;
 }
@@ -62,27 +74,44 @@ export class SearchIndex {
         embedding float[${this.#dimensions}]
       );
     `);
+
+    // `source_type` (`plan.md` M17) — added after `chunks` already shipped
+    // entry-only, so an existing database needs it added in place, once,
+    // the same idempotent-migration shape every other index in this
+    // directory uses for a new column. Every row written before this ran
+    // is an entry's, so the default is exactly right, not a guess.
+    const columns = this.#db.prepare('PRAGMA table_info(chunks)').all() as { name: string }[];
+    if (!columns.some((c) => c.name === 'source_type')) {
+      this.#db.exec("ALTER TABLE chunks ADD COLUMN source_type TEXT NOT NULL DEFAULT 'entry';");
+    }
+    this.#db.exec('CREATE INDEX IF NOT EXISTS chunks_source ON chunks (source_type, entry_id);');
   }
 
   /**
-   * Replaces every chunk belonging to `entryId` with `chunks`/`embeddings` —
-   * always the full set for that entry, never a partial update, because an
-   * edit can change which paragraph is which without changing how many there
-   * are, and there is no cheap way to tell that apart from the outside.
+   * Replaces every chunk belonging to `(sourceType, sourceId)` with
+   * `chunks`/`embeddings` — always the full set, never a partial update,
+   * because an edit can change which paragraph is which without changing
+   * how many there are, and there is no cheap way to tell that apart from
+   * the outside.
    */
-  replaceEntry(entryId: string, chunks: string[], embeddings: Float32Array[]): void {
+  replaceSource(
+    sourceType: SearchSourceType,
+    sourceId: string,
+    chunks: string[],
+    embeddings: Float32Array[],
+  ): void {
     if (chunks.length !== embeddings.length) {
-      throw new Error('SearchIndex.replaceEntry: chunks and embeddings must be the same length.');
+      throw new Error('SearchIndex.replaceSource: chunks and embeddings must be the same length.');
     }
     const insert = this.#db.transaction(() => {
-      this.#deleteEntry(entryId);
+      this.#deleteSource(sourceType, sourceId);
       const insertChunk = this.#db.prepare(
-        'INSERT INTO chunks (entry_id, chunk_index, text) VALUES (?, ?, ?)',
+        'INSERT INTO chunks (entry_id, chunk_index, text, source_type) VALUES (?, ?, ?, ?)',
       );
       const insertFts = this.#db.prepare('INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)');
       const insertVec = this.#db.prepare('INSERT INTO chunks_vec (rowid, embedding) VALUES (?, ?)');
       chunks.forEach((text, chunkIndex) => {
-        const { lastInsertRowid } = insertChunk.run(entryId, chunkIndex, text);
+        const { lastInsertRowid } = insertChunk.run(sourceId, chunkIndex, text, sourceType);
         insertFts.run(lastInsertRowid, text);
         insertVec.run(BigInt(lastInsertRowid), toVectorBuffer(embeddings[chunkIndex]!));
       });
@@ -90,13 +119,27 @@ export class SearchIndex {
     insert();
   }
 
-  removeEntry(entryId: string): void {
-    this.#db.transaction(() => this.#deleteEntry(entryId))();
+  removeSource(sourceType: SearchSourceType, sourceId: string): void {
+    this.#db.transaction(() => this.#deleteSource(sourceType, sourceId))();
   }
 
-  #deleteEntry(entryId: string): void {
+  /** Convenience wrapper kept for every existing entry call site
+   * (`SearchingEntryStore`, `SearchIndexer.indexEntry`/`rebuildAll`) —
+   * exactly `replaceSource('entry', ...)`. */
+  replaceEntry(entryId: string, chunks: string[], embeddings: Float32Array[]): void {
+    this.replaceSource('entry', entryId, chunks, embeddings);
+  }
+
+  /** Convenience wrapper — exactly `removeSource('entry', ...)`. */
+  removeEntry(entryId: string): void {
+    this.removeSource('entry', entryId);
+  }
+
+  #deleteSource(sourceType: SearchSourceType, sourceId: string): void {
     const ids = (
-      this.#db.prepare('SELECT id FROM chunks WHERE entry_id = ?').all(entryId) as { id: number }[]
+      this.#db
+        .prepare('SELECT id FROM chunks WHERE source_type = ? AND entry_id = ?')
+        .all(sourceType, sourceId) as { id: number }[]
     ).map((row) => row.id);
     if (ids.length === 0) return;
     const deleteFts = this.#db.prepare('DELETE FROM chunks_fts WHERE rowid = ?');
@@ -105,7 +148,7 @@ export class SearchIndex {
       deleteFts.run(id);
       deleteVec.run(BigInt(id));
     }
-    this.#db.prepare('DELETE FROM chunks WHERE entry_id = ?').run(entryId);
+    this.#db.prepare('DELETE FROM chunks WHERE source_type = ? AND entry_id = ?').run(sourceType, sourceId);
   }
 
   /** BM25 text search, best match first. A safe no-op on a query with no
@@ -115,7 +158,7 @@ export class SearchIndex {
     if (matchQuery === null) return [];
     const rows = this.#db
       .prepare(
-        `SELECT c.entry_id AS entryId, c.chunk_index AS chunkIndex, c.text AS text
+        `SELECT c.source_type AS sourceType, c.entry_id AS sourceId, c.chunk_index AS chunkIndex, c.text AS text
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
          WHERE chunks_fts MATCH ?
@@ -130,7 +173,7 @@ export class SearchIndex {
   searchVector(embedding: Float32Array, limit: number): SearchIndexHit[] {
     const rows = this.#db
       .prepare(
-        `SELECT c.entry_id AS entryId, c.chunk_index AS chunkIndex, c.text AS text
+        `SELECT c.source_type AS sourceType, c.entry_id AS sourceId, c.chunk_index AS chunkIndex, c.text AS text
          FROM chunks_vec v
          JOIN chunks c ON c.id = v.rowid
          WHERE v.embedding MATCH ? AND k = ?
@@ -170,7 +213,7 @@ function toVectorBuffer(vector: Float32Array): Buffer {
  * match without giving up FTS5's own tokenisation (stemming-free, but
  * case- and punctuation-insensitive within each quoted term).
  */
-function toFtsMatchQuery(query: string): string | null {
+export function toFtsMatchQuery(query: string): string | null {
   const terms = query
     .split(/\s+/)
     .map((term) => term.trim())

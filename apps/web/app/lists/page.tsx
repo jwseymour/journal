@@ -10,8 +10,10 @@ import {
   deleteListItem,
   listListItems,
   listListItemUpdateSuggestions,
+  publishListItem,
   rejectListItemUpdateSuggestion,
   untouchListItem,
+  unpublishListItem,
   updateListItem,
   validateListItem,
 } from '@/lib/api';
@@ -61,6 +63,18 @@ export default function ListsPage() {
     (item.touched ? untouchListItem(item.id) : validateListItem(item.id))
       .then(() =>
         setItems((current) => current?.map((i) => (i.id === item.id ? { ...i, touched: !item.touched } : i)) ?? current),
+      )
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
+      .finally(() => setBusyId(null));
+  };
+
+  const togglePublished = (item: ListItem) => {
+    setBusyId(item.id);
+    (item.published ? unpublishListItem(item.id) : publishListItem(item.id))
+      .then(() =>
+        setItems(
+          (current) => current?.map((i) => (i.id === item.id ? { ...i, published: !item.published } : i)) ?? current,
+        ),
       )
       .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
       .finally(() => setBusyId(null));
@@ -147,6 +161,7 @@ export default function ListsPage() {
                   <span>{formatTime(item.eventTime)}</span>
                   {!item.eventTimeExplicit && <span>(from the entry’s own time)</span>}
                   {item.touched && <span className={styles.touched}>touched</span>}
+                  {item.published && <span className={styles.published}>published</span>}
                 </span>
                 <span className={styles.type}>{item.listType}</span>
                 {editingId === item.id ? (
@@ -194,6 +209,14 @@ export default function ListsPage() {
                     disabled={busyId === item.id}
                   >
                     {item.touched ? 'Untouch' : 'Validate'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.editButton}
+                    onClick={() => togglePublished(item)}
+                    disabled={busyId === item.id}
+                  >
+                    {item.published ? 'Unpublish' : 'Publish'}
                   </button>
                   <button
                     type="button"

@@ -21,7 +21,14 @@ export interface CreateDocumentInput {
   citedEntries?: string[];
 }
 
-export interface StoredDocument extends Document {
+/**
+ * `published` is deliberately excluded here: it is computed at the HTTP
+ * layer from `PublishedIndex` (`plan.md` M15), never known to the store —
+ * a document's own storage has no concept of visibility any more than an
+ * entry's does (`requirements.md` §4.3's "nothing else," applied the same
+ * way to `DocumentMetadata`).
+ */
+export interface StoredDocument extends Omit<Document, 'published'> {
   /** Journal-root-relative, POSIX separators. Informational only — never a key. */
   path: string;
 }
@@ -36,19 +43,15 @@ export interface UpdateDocumentInput {
   contentHash: string;
 }
 
-export interface SetDocumentPublicInput {
-  public: boolean;
-  /** Must match the document's current `contentHash`, or the write is refused. */
-  contentHash: string;
-}
-
 export interface ListDocumentsOptions {
   cursor?: string;
   limit: number;
 }
 
+/** Same exclusion as `StoredDocument` — `published` is an HTTP-layer
+ * concern the store never computes. */
 export interface ListDocumentsResult {
-  documents: DocumentSummary[];
+  documents: Array<Omit<DocumentSummary, 'published'>>;
   nextCursor: string | null;
 }
 
@@ -75,15 +78,6 @@ export interface DocumentStore {
 
   /** One page of documents, newest-updated-first. */
   list(options: ListDocumentsOptions): Promise<ListDocumentsResult>;
-
-  /**
-   * Flip a document's visibility (`requirements.md` §9.3) — a deliberate
-   * action distinct from `update`: title, body and citedEntries are
-   * untouched, only `public` and `updated` move. Guarded by the same
-   * `contentHash` optimistic-concurrency precondition as `update`; throws
-   * `record_not_found`/`edit_conflict` the same way.
-   */
-  setPublic(id: string, input: SetDocumentPublicInput): Promise<StoredDocument>;
 
   stats(): Promise<DocumentStoreStats>;
 }

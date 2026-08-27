@@ -97,3 +97,14 @@
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
 }
+
+.processing {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.processError {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}

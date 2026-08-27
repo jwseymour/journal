@@ -11,8 +11,10 @@ import {
   listOpinionStatements,
   listOpinionStatementUpdateSuggestions,
   listOpinionSummaries,
+  publishOpinionStatement,
   rejectOpinionStatementUpdateSuggestion,
   untouchOpinionStatement,
+  unpublishOpinionStatement,
   updateOpinionStatement,
   validateOpinionStatement,
 } from '@/lib/api';
@@ -82,6 +84,24 @@ export default function OpinionsPage() {
               ...current,
               statements: current.statements.map((s) =>
                 s.id === statement.id ? { ...s, touched: !statement.touched } : s,
+              ),
+            },
+        ),
+      )
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
+      .finally(() => setBusyId(null));
+  };
+
+  const togglePublished = (statement: OpinionStatement) => {
+    setBusyId(statement.id);
+    (statement.published ? unpublishOpinionStatement(statement.id) : publishOpinionStatement(statement.id))
+      .then(() =>
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              statements: current.statements.map((s) =>
+                s.id === statement.id ? { ...s, published: !statement.published } : s,
               ),
             },
         ),
@@ -213,6 +233,7 @@ export default function OpinionsPage() {
                   <span>{formatTime(statement.eventTime)}</span>
                   {!statement.eventTimeExplicit && <span>(from the entry’s own time)</span>}
                   {statement.touched && <span className={styles.touched}>touched</span>}
+                  {statement.published && <span className={styles.published}>published</span>}
                 </span>
                 <span className={styles.subject}>{statement.subject}</span>
                 {editingId === statement.id ? (
@@ -256,6 +277,14 @@ export default function OpinionsPage() {
                     disabled={busyId === statement.id}
                   >
                     {statement.touched ? 'Untouch' : 'Validate'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.editButton}
+                    onClick={() => togglePublished(statement)}
+                    disabled={busyId === statement.id}
+                  >
+                    {statement.published ? 'Unpublish' : 'Publish'}
                   </button>
                   <button
                     type="button"

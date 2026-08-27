@@ -17,6 +17,32 @@ export interface PublicDocument extends PublicDocumentSummary {
   body: string;
 }
 
+export interface PublicEntrySummary {
+  slug: string;
+  created: string;
+  excerpt: string;
+}
+
+export interface PublicEntry extends PublicEntrySummary {
+  body: string;
+}
+
+export interface PublicSearchDocumentHit {
+  sourceType: 'document';
+  slug: string;
+  title: string;
+  passage: string;
+}
+
+export interface PublicSearchEntryHit {
+  sourceType: 'entry';
+  slug: string;
+  created: string;
+  passage: string;
+}
+
+export type PublicSearchHit = PublicSearchDocumentHit | PublicSearchEntryHit;
+
 /**
  * Same-origin by default — `next.config.ts`'s rewrite forwards `/api/*` to
  * `apps/public-api` server-side. But every route here is a Server Component
@@ -56,4 +82,30 @@ export async function getPublicDocument(slug: string): Promise<PublicDocument | 
     throw new Error(`Request for '${slug}' failed with status ${response.status}.`);
   }
   return (await response.json()) as PublicDocument;
+}
+
+/** Entries alongside documents (`plan.md` M15) — same shape, just no title:
+ * an entry's slug is derived from its date instead. */
+export async function listPublicEntries(): Promise<PublicEntrySummary[]> {
+  const { entries } = await request<{ entries: PublicEntrySummary[] }>('/entries');
+  return entries;
+}
+
+export async function getPublicEntry(slug: string): Promise<PublicEntry | null> {
+  const response = await fetch(`${resolveBase()}/entries/${encodeURIComponent(slug)}`, { cache: 'no-store' });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`Request for '${slug}' failed with status ${response.status}.`);
+  }
+  return (await response.json()) as PublicEntry;
+}
+
+/** `plan.md` M17 — searches only what is published, via `apps/public-api`'s
+ * own small BM25-only index (`requirements.md` §8, §10). The one function
+ * in this file called from a Client Component (`app/search/page.tsx`),
+ * since a live search box has no server-rendered equivalent — `resolveBase`
+ * already handles being called from either side. */
+export async function searchPublic(query: string): Promise<PublicSearchHit[]> {
+  const { hits } = await request<{ hits: PublicSearchHit[] }>(`/search?q=${encodeURIComponent(query)}`);
+  return hits;
 }

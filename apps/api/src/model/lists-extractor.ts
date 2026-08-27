@@ -26,7 +26,7 @@ export class ListsExtractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<void> {
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ itemCount: number }> {
     const approvedTypes = this.#categoriesIndex.approvedNames('list_type');
     const { schema, system } = buildListExtractionRequest(approvedTypes);
     const result = await this.#modelClient.extract({ schema, system, prompt: buildExtractionPrompt(entry) });
@@ -89,6 +89,8 @@ export class ListsExtractor {
         now: extractedAt,
       });
     }
+
+    return { itemCount: records.length };
   }
 
   removeEntry(entryId: string): void {

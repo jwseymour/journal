@@ -15,11 +15,13 @@ const PAGE_SIZE = 100;
  * drives the full-corpus reprocess (`plan.md` M7).
  *
  * Extraction is real money, not local compute — unlike `SearchIndexer`
- * (`plan.md` M6), nothing here is wired into the live write path. Autosave
- * fires on every debounced keystroke; a paid API call on every one of those
- * would be both wasteful and a surprise on the user's bill. `reprocessAll`
- * is the deliberate, explicit way this runs for now — batch, sequential,
- * and only ever something the user chooses to run.
+ * (`plan.md` M6), nothing here is wired into *autosave*: it fires on every
+ * debounced keystroke, and a paid API call on every one of those would be
+ * both wasteful and a surprise on the user's bill. `reprocessAll` (batch,
+ * corpus-wide, `npm run reprocess`) and `EntryProcessor` (live, one entry,
+ * `POST /entries/:id/process`) are the two deliberate, explicit ways this
+ * runs instead — both only ever something the user chooses to trigger, never
+ * a side effect of typing (`plan.md` M15).
  */
 export class Extractor {
   readonly #metricsIndex: MetricsIndex;
@@ -34,7 +36,7 @@ export class Extractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<void> {
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ metricCount: number }> {
     const approvedNames = this.#categoriesIndex.approvedNames('metric');
 
     const fieldsByMetric = new Map<string, MetricFieldDefinition[]>();
@@ -167,6 +169,8 @@ export class Extractor {
         });
       }
     }
+
+    return { metricCount: records.length };
   }
 
   removeEntry(entryId: string): void {

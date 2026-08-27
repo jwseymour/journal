@@ -1,4 +1,6 @@
+import type { SearchHit } from '@journal/contract';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { DocumentsIndex } from '../../src/index/documents-index.js';
 import { SearchIndex, type SearchIndexHit } from '../../src/index/search-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
 import type { Embedder } from '../../src/search/embedder.js';
@@ -25,11 +27,13 @@ class LookupEmbedder implements Embedder {
 
 let searchIndex: SearchIndex;
 let entryIndex: SqliteIndex;
+let documentsIndex: DocumentsIndex;
 let embedder: LookupEmbedder;
 
 beforeEach(() => {
   searchIndex = new SearchIndex(':memory:', DIMENSIONS);
   entryIndex = new SqliteIndex(':memory:');
+  documentsIndex = new DocumentsIndex(':memory:');
   embedder = new LookupEmbedder();
 });
 
@@ -46,9 +50,31 @@ function putEntry(id: string, created: string, location?: { lat: number; lon: nu
   });
 }
 
+function putDocument(id: string, title: string, created: string): void {
+  documentsIndex.upsert({
+    id,
+    absPath: `documents/${id}.md`,
+    relPath: `documents/${id}.md`,
+    title,
+    createdEpochMs: Date.parse(created),
+    created,
+    updatedEpochMs: Date.parse(created),
+    updated: created,
+    excerpt: 'excerpt',
+    contentHash: `hash-${id}`,
+  });
+}
+
+/** Every hit in these tests is an entry hit unless a test says otherwise —
+ * a small cast point rather than repeating the discriminant check everywhere. */
+function entryIdOf(hit: SearchHit): string {
+  if (hit.sourceType !== 'entry') throw new Error('expected an entry hit');
+  return hit.entryId;
+}
+
 describe('HybridSearcher', () => {
   it('returns nothing for an empty or whitespace-only query, without touching the embedder or index', async () => {
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
     expect(await searcher.search('', 10)).toEqual([]);
     expect(await searcher.search('   ', 10)).toEqual([]);
   });
@@ -58,11 +84,16 @@ describe('HybridSearcher', () => {
     searchIndex.replaceEntry('e1', ['the quick brown fox'], [new Float32Array(DIMENSIONS)]);
     embedder.set('fox', [0, 0, 0, 0]);
 
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
     const hits = await searcher.search('fox', 10);
 
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toEqual({ entryId: 'e1', created: '2026-07-01T09:00:00Z', passage: 'the quick brown fox' });
+    expect(hits[0]).toEqual({
+      sourceType: 'entry',
+      entryId: 'e1',
+      created: '2026-07-01T09:00:00Z',
+      passage: 'the quick brown fox',
+    });
   });
 
   it('finds a passage by meaning alone, when it shares no words with the query', async () => {
@@ -72,11 +103,11 @@ describe('HybridSearcher', () => {
     searchIndex.replaceEntry('e1', ['the cat sat on the mat'], [new Float32Array([1, 0, 0, 0])]);
     embedder.set('feline behaviour', [1, 0, 0, 0]);
 
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
     const hits = await searcher.search('feline behaviour', 10);
 
     expect(hits).toEqual([
-      { entryId: 'e1', created: '2026-07-01T09:00:00Z', passage: 'the cat sat on the mat' },
+      { sourceType: 'entry', entryId: 'e1', created: '2026-07-01T09:00:00Z', passage: 'the cat sat on the mat' },
     ]);
   });
 
@@ -87,10 +118,10 @@ describe('HybridSearcher', () => {
     searchIndex.replaceEntry('text-only', ['just the word fox'], [new Float32Array([0, 1, 0, 0])]);
     embedder.set('fox', [1, 0, 0, 0]); // close to "both", far from "text-only"
 
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
     const hits = await searcher.search('fox', 10);
 
-    expect(hits[0]!.entryId).toBe('both');
+    expect(entryIdOf(hits[0]!)).toBe('both');
   });
 
   it('includes the location when the entry has one', async () => {
@@ -98,10 +129,10 @@ describe('HybridSearcher', () => {
     searchIndex.replaceEntry('e1', ['a walk in the park'], [new Float32Array(DIMENSIONS)]);
     embedder.set('park', [0, 0, 0, 0]);
 
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
     const hits = await searcher.search('park', 10);
 
-    expect(hits[0]!.location).toEqual({ lat: 51.5072, lon: -0.1276 });
+    expect(hits[0]).toMatchObject({ location: { lat: 51.5072, lon: -0.1276 } });
   });
 
   it('skips a chunk whose entry no longer exists in the entry index', async () => {
@@ -110,7 +141,7 @@ describe('HybridSearcher', () => {
     searchIndex.replaceEntry('ghost', ['a passage with no entry behind it'], [new Float32Array(DIMENSIONS)]);
     embedder.set('passage', [0, 0, 0, 0]);
 
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
     expect(await searcher.search('passage', 10)).toEqual([]);
   });
 
@@ -121,7 +152,7 @@ describe('HybridSearcher', () => {
     }
     embedder.set('apple', [0, 0, 0, 0]);
 
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
     expect(await searcher.search('apple', 2)).toHaveLength(2);
   });
 
@@ -140,10 +171,54 @@ describe('HybridSearcher', () => {
       },
     };
 
-    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, reversingReranker);
-    const direct = await new HybridSearcher(searchIndex, embedder, entryIndex).search('apple', 10);
+    const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex, reversingReranker);
+    const direct = await new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex).search('apple', 10);
     const withReranker = await searcher.search('apple', 10);
 
-    expect(withReranker.map((h) => h.entryId)).toEqual([...direct.map((h) => h.entryId)].reverse());
+    expect(withReranker.map(entryIdOf)).toEqual([...direct.map(entryIdOf)].reverse());
+  });
+
+  describe('documents (`plan.md` M17)', () => {
+    it('finds a passage in a document, distinguished from an entry hit', async () => {
+      putDocument('d1', 'A project', '2026-07-01T09:00:00Z');
+      searchIndex.replaceSource('document', 'd1', ['notes about a lighthouse'], [new Float32Array(DIMENSIONS)]);
+      embedder.set('lighthouse', [0, 0, 0, 0]);
+
+      const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
+      const hits = await searcher.search('lighthouse', 10);
+
+      expect(hits).toEqual([
+        {
+          sourceType: 'document',
+          documentId: 'd1',
+          title: 'A project',
+          created: '2026-07-01T09:00:00Z',
+          passage: 'notes about a lighthouse',
+        },
+      ]);
+    });
+
+    it('returns both an entry hit and a document hit for the same query', async () => {
+      putEntry('e1', '2026-07-01T09:00:00Z');
+      putDocument('d1', 'A project', '2026-07-02T09:00:00Z');
+      searchIndex.replaceEntry('e1', ['a walk by the lighthouse'], [new Float32Array(DIMENSIONS)]);
+      searchIndex.replaceSource('document', 'd1', ['plans for the lighthouse'], [new Float32Array(DIMENSIONS)]);
+      embedder.set('lighthouse', [0, 0, 0, 0]);
+
+      const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
+      const hits = await searcher.search('lighthouse', 10);
+
+      expect(hits.map((h) => h.sourceType).sort()).toEqual(['document', 'entry']);
+    });
+
+    it('skips a document chunk whose document no longer exists in the documents index', async () => {
+      searchIndex.replaceSource('document', 'ghost', ['a passage with no document behind it'], [
+        new Float32Array(DIMENSIONS),
+      ]);
+      embedder.set('passage', [0, 0, 0, 0]);
+
+      const searcher = new HybridSearcher(searchIndex, embedder, entryIndex, documentsIndex);
+      expect(await searcher.search('passage', 10)).toEqual([]);
+    });
   });
 });

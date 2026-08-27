@@ -44,7 +44,6 @@ export function serialiseDocumentFile(metadata: DocumentMetadata, body: string):
     `title: ${YAML.stringify(metadata.title).trimEnd()}`,
     `created: ${metadata.created}`,
     `updated: ${metadata.updated}`,
-    `public: ${metadata.public}`,
   ];
   if (metadata.citedEntries && metadata.citedEntries.length > 0) {
     lines.push(`citedEntries: [${metadata.citedEntries.join(', ')}]`);
@@ -135,21 +134,6 @@ export function parseDocumentFile(text: string, sourceLabel: string): ParsedDocu
     throw malformedEntry(`${sourceLabel}: 'updated' is not an RFC 3339 timestamp with a UTC offset — got '${updatedRaw}'.`);
   }
 
-  // Absent, not an error: every document written before this field existed
-  // has no `public` key at all, and was exactly as private as an entry —
-  // `false` is the correct reading of that silence, not a guess
-  // (`requirements.md` §9.3). Present but not a boolean is still rejected,
-  // the same strictness `id`/`title`/`created`/`updated` get.
-  const publicRaw = fields['public'];
-  let isPublic: boolean;
-  if (publicRaw === undefined) {
-    isPublic = false;
-  } else if (typeof publicRaw === 'boolean') {
-    isPublic = publicRaw;
-  } else {
-    throw malformedEntry(`${sourceLabel}: 'public' is present but is not a boolean.`);
-  }
-
   const citedEntriesRaw = fields['citedEntries'];
   const citedEntries = isValidCitedEntries(citedEntriesRaw) ? citedEntriesRaw : undefined;
 
@@ -159,7 +143,6 @@ export function parseDocumentFile(text: string, sourceLabel: string): ParsedDocu
       title,
       created: created.canonical,
       updated: updated.canonical,
-      public: isPublic,
       ...(citedEntries && citedEntries.length > 0 ? { citedEntries } : {}),
     },
     created,

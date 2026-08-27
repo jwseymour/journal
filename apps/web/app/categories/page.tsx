@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import type {
   CategoriesResponse,
   CategorySuggestion,
@@ -212,6 +213,10 @@ export default function CategoriesPage() {
 
   return (
     <div>
+      <Link href="/publish-queue" className={styles.seeAll}>
+        Public-by-default settings and the publish queue →
+      </Link>
+
       <section className={styles.section}>
         <h2 className={styles.heading}>Approved</h2>
         {STRUCTURE_TYPES.map(({ value, label }) => (

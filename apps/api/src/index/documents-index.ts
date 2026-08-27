@@ -33,8 +33,6 @@ export interface DocumentIndexRow {
   updated: string;
   excerpt: string;
   contentHash: string;
-  /** `requirements.md` §9.3 — mirrors the document's own frontmatter field. */
-  public: boolean;
 }
 
 export interface DocumentIndexStats {
@@ -77,14 +75,6 @@ export class DocumentsIndex {
         abs_path TEXT PRIMARY KEY
       );
     `);
-
-    // `public` (`requirements.md` §9.3) — added after the table above
-    // already shipped, so existing databases need it added in place, once,
-    // the same idempotent-migration shape `MetricsIndex` uses for `touched`.
-    const columns = this.#db.prepare('PRAGMA table_info(documents)').all() as { name: string }[];
-    if (!columns.some((c) => c.name === 'public')) {
-      this.#db.exec('ALTER TABLE documents ADD COLUMN public INTEGER NOT NULL DEFAULT 0;');
-    }
   }
 
   /** Every path currently indexed, readable or not — for diffing against a fresh scan. */
@@ -105,13 +95,13 @@ export class DocumentsIndex {
   upsert(row: DocumentIndexRow): void {
     this.#db
       .prepare(
-        `INSERT INTO documents (id, abs_path, rel_path, title, created_epoch_ms, created, updated_epoch_ms, updated, excerpt, content_hash, public)
-         VALUES (@id, @absPath, @relPath, @title, @createdEpochMs, @created, @updatedEpochMs, @updated, @excerpt, @contentHash, @public)
+        `INSERT INTO documents (id, abs_path, rel_path, title, created_epoch_ms, created, updated_epoch_ms, updated, excerpt, content_hash)
+         VALUES (@id, @absPath, @relPath, @title, @createdEpochMs, @created, @updatedEpochMs, @updated, @excerpt, @contentHash)
          ON CONFLICT(abs_path) DO UPDATE SET
            id = excluded.id, rel_path = excluded.rel_path, title = excluded.title,
            created_epoch_ms = excluded.created_epoch_ms, created = excluded.created,
            updated_epoch_ms = excluded.updated_epoch_ms, updated = excluded.updated,
-           excerpt = excluded.excerpt, content_hash = excluded.content_hash, public = excluded.public`,
+           excerpt = excluded.excerpt, content_hash = excluded.content_hash`,
       )
       .run({
         id: row.id,
@@ -124,7 +114,6 @@ export class DocumentsIndex {
         updated: row.updated,
         excerpt: row.excerpt,
         contentHash: row.contentHash,
-        public: row.public ? 1 : 0,
       });
     this.#db.prepare('DELETE FROM documents_unreadable WHERE abs_path = ?').run(row.absPath);
   }
@@ -215,7 +204,6 @@ interface RawRow {
   updated: string;
   excerpt: string;
   content_hash: string;
-  public: number;
 }
 
 function fromRaw(row: RawRow): DocumentIndexRow {
@@ -230,6 +218,5 @@ function fromRaw(row: RawRow): DocumentIndexRow {
     updated: row.updated,
     excerpt: row.excerpt,
     contentHash: row.content_hash,
-    public: row.public !== 0,
   };
 }

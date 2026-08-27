@@ -11,8 +11,10 @@ import {
   listMetricFields,
   listMetrics,
   listMetricUpdateSuggestions,
+  publishMetric,
   rejectMetricUpdateSuggestion,
   untouchMetric,
+  unpublishMetric,
   updateMetric,
   validateMetric,
 } from '@/lib/api';
@@ -76,6 +78,19 @@ export default function MetricsPage() {
       .then(() =>
         setMetrics(
           (current) => current?.map((m) => (m.id === metric.id ? { ...m, touched: !metric.touched } : m)) ?? current,
+        ),
+      )
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
+      .finally(() => setBusyId(null));
+  };
+
+  const togglePublished = (metric: TemporalMetric) => {
+    setBusyId(metric.id);
+    (metric.published ? unpublishMetric(metric.id) : publishMetric(metric.id))
+      .then(() =>
+        setMetrics(
+          (current) =>
+            current?.map((m) => (m.id === metric.id ? { ...m, published: !metric.published } : m)) ?? current,
         ),
       )
       .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
@@ -174,6 +189,7 @@ export default function MetricsPage() {
                   <span>{formatTime(metric.eventTime)}</span>
                   {!metric.eventTimeExplicit && <span>(from the entry’s own time)</span>}
                   {metric.touched && <span className={styles.touched}>touched</span>}
+                  {metric.published && <span className={styles.published}>published</span>}
                 </span>
                 <span className={styles.metric}>{metric.metric}</span>
                 {editingId === metric.id ? (
@@ -222,6 +238,14 @@ export default function MetricsPage() {
                     disabled={busyId === metric.id}
                   >
                     {metric.touched ? 'Untouch' : 'Validate'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.editButton}
+                    onClick={() => togglePublished(metric)}
+                    disabled={busyId === metric.id}
+                  >
+                    {metric.published ? 'Unpublish' : 'Publish'}
                   </button>
                   <button
                     type="button"

@@ -10,8 +10,10 @@ import {
   deleteReview,
   listReviews,
   listReviewUpdateSuggestions,
+  publishReview,
   rejectReviewUpdateSuggestion,
   untouchReview,
+  unpublishReview,
   updateReview,
   validateReview,
 } from '@/lib/api';
@@ -64,6 +66,18 @@ export default function ReviewsPage() {
       .then(() =>
         setReviews(
           (current) => current?.map((r) => (r.id === review.id ? { ...r, touched: !review.touched } : r)) ?? current,
+        ),
+      )
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
+      .finally(() => setBusyId(null));
+  };
+
+  const togglePublished = (review: Review) => {
+    setBusyId(review.id);
+    (review.published ? unpublishReview(review.id) : publishReview(review.id))
+      .then(() =>
+        setReviews(
+          (current) => current?.map((r) => (r.id === review.id ? { ...r, published: !review.published } : r)) ?? current,
         ),
       )
       .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
@@ -151,6 +165,7 @@ export default function ReviewsPage() {
                   <span>{formatTime(review.eventTime)}</span>
                   {!review.eventTimeExplicit && <span>(from the entry’s own time)</span>}
                   {review.touched && <span className={styles.touched}>touched</span>}
+                  {review.published && <span className={styles.published}>published</span>}
                 </span>
                 <span className={styles.medium}>{review.medium}</span>
                 <span className={styles.title}>
@@ -199,6 +214,14 @@ export default function ReviewsPage() {
                     disabled={busyId === review.id}
                   >
                     {review.touched ? 'Untouch' : 'Validate'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.editButton}
+                    onClick={() => togglePublished(review)}
+                    disabled={busyId === review.id}
+                  >
+                    {review.published ? 'Unpublish' : 'Publish'}
                   </button>
                   <button
                     type="button"

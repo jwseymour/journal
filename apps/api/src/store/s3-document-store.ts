@@ -22,7 +22,6 @@ import type {
   DocumentStoreStats,
   ListDocumentsOptions,
   ListDocumentsResult,
-  SetDocumentPublicInput,
   StoredDocument,
   UpdateDocumentInput,
 } from './document-store.js';
@@ -37,14 +36,13 @@ import type {
 const MAX_ID_ATTEMPTS = 8;
 const CURSOR_VERSION = 'd1';
 
-function summarise(row: DocumentIndexRow): DocumentSummary {
+function summarise(row: DocumentIndexRow): Omit<DocumentSummary, 'published'> {
   return {
     id: row.id,
     title: row.title,
     created: row.created,
     updated: row.updated,
     excerpt: row.excerpt,
-    public: row.public,
   };
 }
 
@@ -93,7 +91,6 @@ export class S3DocumentStore implements DocumentStore {
         title,
         created: now.canonical,
         updated: now.canonical,
-        public: false,
         ...(input.citedEntries && input.citedEntries.length > 0 ? { citedEntries: input.citedEntries } : {}),
       };
 
@@ -123,7 +120,6 @@ export class S3DocumentStore implements DocumentStore {
         updated: metadata.updated,
         excerpt: excerpt(body),
         contentHash: hash,
-        public: false,
       });
 
       return { ...metadata, body, path: key, contentHash: hash };
@@ -165,7 +161,6 @@ export class S3DocumentStore implements DocumentStore {
         updated: parsed.metadata.updated,
         excerpt: excerpt(parsed.body),
         contentHash: hash,
-        public: parsed.metadata.public,
       });
     }
 
@@ -203,16 +198,15 @@ export class S3DocumentStore implements DocumentStore {
       throw invalidRequest('A document must have a title.');
     }
 
-    // id, created and public never move on an ordinary edit — visibility is
-    // flipped only by `setPublic` (`requirements.md` §9.3), never as a side
-    // effect of editing content.
+    // id and created never move on an ordinary edit; visibility is not a
+    // field here at all any more — it lives entirely in `PublishedIndex`
+    // (`requirements.md` §9.3, `plan.md` M15).
     const now = nowTimestamp();
     const metadata: DocumentMetadata = {
       id: parsed.metadata.id,
       title,
       created: parsed.metadata.created,
       updated: now.canonical,
-      public: parsed.metadata.public,
       ...(input.citedEntries && input.citedEntries.length > 0 ? { citedEntries: input.citedEntries } : {}),
     };
 
@@ -239,71 +233,9 @@ export class S3DocumentStore implements DocumentStore {
       updated: metadata.updated,
       excerpt: excerpt(newBody),
       contentHash: newHash,
-      public: metadata.public,
     });
 
     return { ...metadata, body: newBody, path: cached.relPath, contentHash: newHash };
-  }
-
-  /**
-   * Flip visibility only (`requirements.md` §9.3) — title, body and
-   * citedEntries are carried through unchanged from what's stored right
-   * now, never from caller input. Mirrors `update`'s concurrency and
-   * not-found handling exactly.
-   */
-  async setPublic(id: string, input: SetDocumentPublicInput): Promise<StoredDocument> {
-    await this.#refresh();
-    const cached = this.#index.getById(id);
-    if (!cached) throw recordNotFound('document', id);
-
-    let text: string;
-    try {
-      const maybe = await this.#getObjectText(cached.absPath);
-      if (maybe === NOT_FOUND) {
-        this.#index.remove(cached.absPath);
-        throw recordNotFound('document', id);
-      }
-      text = maybe;
-    } catch (cause) {
-      if (cause instanceof AppError) throw cause;
-      throw journalUnavailable(`Could not read ${cached.relPath}.`, cause);
-    }
-
-    const parsed = parseDocumentFile(text, cached.relPath);
-    if (parsed.metadata.id !== id) {
-      this.#index.remove(cached.absPath);
-      throw recordNotFound('document', id);
-    }
-
-    if (contentHash(text) !== input.contentHash) throw editConflict('document');
-
-    const now = nowTimestamp();
-    const metadata: DocumentMetadata = { ...parsed.metadata, updated: now.canonical, public: input.public };
-
-    const fileText = serialiseDocumentFile(metadata, parsed.body);
-    try {
-      await this.#s3.send(
-        new PutObjectCommand({
-          Bucket: this.#bucket,
-          Key: cached.absPath,
-          Body: fileText,
-          ContentType: 'text/markdown; charset=utf-8',
-        }),
-      );
-    } catch (cause) {
-      throw journalUnavailable(`Could not write ${cached.relPath}.`, cause);
-    }
-
-    const newHash = contentHash(fileText);
-    this.#index.upsert({
-      ...cached,
-      updatedEpochMs: now.epochMs,
-      updated: metadata.updated,
-      contentHash: newHash,
-      public: metadata.public,
-    });
-
-    return { ...metadata, body: parsed.body, path: cached.relPath, contentHash: newHash };
   }
 
   async list(options: ListDocumentsOptions): Promise<ListDocumentsResult> {
@@ -438,7 +370,6 @@ export class S3DocumentStore implements DocumentStore {
         updated: parsed.metadata.updated,
         excerpt: excerpt(parsed.body),
         contentHash: contentHash(text),
-        public: parsed.metadata.public,
       });
     }
   }

@@ -9,9 +9,10 @@ export const metadata: Metadata = {
 };
 
 /**
- * The whole shell (`requirements.md` §10, `plan.md` M14) — a name, a list,
- * and a read view. Nothing else: no navigation into anything private, no
- * search, no analysis surfaces, because none of that is public.
+ * The whole shell (`requirements.md` §10, `plan.md` M14/M17) — a name, a
+ * list, a read view, and search over exactly what's published. Nothing
+ * else: no navigation into anything private, no analysis surfaces, because
+ * none of that is public.
  */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -22,6 +23,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/" className={styles.siteName}>
               Journal
             </Link>
+            <nav className={styles.nav}>
+              <Link href="/">Documents</Link>
+              <Link href="/entries">Entries</Link>
+              <Link href="/search">Search</Link>
+            </nav>
           </header>
           <main>{children}</main>
         </div>

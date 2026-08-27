@@ -3,54 +3,40 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PublicDocumentsReader } from '../src/index-reader.js';
+import { PublishedIndexReader } from '../src/index-reader.js';
 
 /**
- * Built against the exact schema `apps/api/src/index/documents-index.ts`
+ * Built against the exact schema `apps/api/src/index/published-index.ts`
  * migrates to — this is the one place this package has to agree with that
  * schema by hand, since it deliberately does not import that module
  * (`src/index-reader.ts`'s doc comment explains why).
  */
 function seedSchema(db: Database.Database): void {
   db.exec(`
-    CREATE TABLE documents (
-      id TEXT PRIMARY KEY,
-      abs_path TEXT NOT NULL UNIQUE,
-      rel_path TEXT NOT NULL,
-      title TEXT NOT NULL,
-      created_epoch_ms INTEGER NOT NULL,
-      created TEXT NOT NULL,
-      updated_epoch_ms INTEGER NOT NULL,
-      updated TEXT NOT NULL,
-      excerpt TEXT NOT NULL,
-      content_hash TEXT NOT NULL,
-      public INTEGER NOT NULL DEFAULT 0
+    CREATE TABLE published (
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      mirror_key TEXT NOT NULL,
+      source_created_at TEXT NOT NULL,
+      published_at TEXT NOT NULL,
+      source_hash_at_publish TEXT NOT NULL,
+      PRIMARY KEY (source_type, source_id)
     );
   `);
 }
 
 function insert(
   db: Database.Database,
-  row: {
-    id: string;
-    title: string;
-    createdEpochMs: number;
-    excerpt?: string;
-    public: boolean;
-  },
+  row: { sourceType: string; sourceId: string; sourceCreatedAt: string },
 ): void {
   db.prepare(
-    `INSERT INTO documents (id, abs_path, rel_path, title, created_epoch_ms, created, updated_epoch_ms, updated, excerpt, content_hash, public)
-     VALUES (@id, @absPath, @relPath, @title, @createdEpochMs, @created, @createdEpochMs, @created, @excerpt, 'hash', @public)`,
+    `INSERT INTO published (source_type, source_id, mirror_key, source_created_at, published_at, source_hash_at_publish)
+     VALUES (@sourceType, @sourceId, @mirrorKey, @sourceCreatedAt, @sourceCreatedAt, 'hash')`,
   ).run({
-    id: row.id,
-    absPath: `documents/${row.id}.md`,
-    relPath: `documents/${row.id}.md`,
-    title: row.title,
-    createdEpochMs: row.createdEpochMs,
-    created: new Date(row.createdEpochMs).toISOString(),
-    excerpt: row.excerpt ?? 'Notes so far.',
-    public: row.public ? 1 : 0,
+    sourceType: row.sourceType,
+    sourceId: row.sourceId,
+    mirrorKey: `public/${row.sourceType}s/${row.sourceId}.json`,
+    sourceCreatedAt: row.sourceCreatedAt,
   });
 }
 
@@ -71,25 +57,26 @@ afterEach(async () => {
 });
 
 describe('list', () => {
-  it('returns only public documents, newest-created-first', () => {
-    insert(seedDb, { id: '01K3F9X2VQ8N7M4TQXYZ8ABC01', title: 'Old public', createdEpochMs: 1_000, public: true });
-    insert(seedDb, { id: '01K3F9X2VQ8N7M4TQXYZ8ABC02', title: 'Private', createdEpochMs: 3_000, public: false });
-    insert(seedDb, { id: '01K3F9X2VQ8N7M4TQXYZ8ABC03', title: 'New public', createdEpochMs: 2_000, public: true });
+  it('returns only rows of the requested source type, newest source-created-first', () => {
+    insert(seedDb, { sourceType: 'document', sourceId: '01K3F9X2VQ8N7M4TQXYZ8ABC01', sourceCreatedAt: '2026-01-01T00:00:00Z' });
+    insert(seedDb, { sourceType: 'entry', sourceId: '01K3F9X2VQ8N7M4TQXYZ8ABC02', sourceCreatedAt: '2026-06-01T00:00:00Z' });
+    insert(seedDb, { sourceType: 'document', sourceId: '01K3F9X2VQ8N7M4TQXYZ8ABC03', sourceCreatedAt: '2026-03-01T00:00:00Z' });
 
-    const reader = new PublicDocumentsReader(dbPath);
+    const reader = new PublishedIndexReader(dbPath);
     try {
-      expect(reader.list().map((r) => r.title)).toEqual(['New public', 'Old public']);
+      expect(reader.list('document').map((r) => r.sourceId)).toEqual([
+        '01K3F9X2VQ8N7M4TQXYZ8ABC03',
+        '01K3F9X2VQ8N7M4TQXYZ8ABC01',
+      ]);
     } finally {
       reader.close();
     }
   });
 
-  it('is an empty list, not an error, when nothing is public', () => {
-    insert(seedDb, { id: '01K3F9X2VQ8N7M4TQXYZ8ABC01', title: 'Private', createdEpochMs: 1_000, public: false });
-
-    const reader = new PublicDocumentsReader(dbPath);
+  it('is an empty list, not an error, when nothing is published', () => {
+    const reader = new PublishedIndexReader(dbPath);
     try {
-      expect(reader.list()).toEqual([]);
+      expect(reader.list('document')).toEqual([]);
     } finally {
       reader.close();
     }
@@ -97,46 +84,82 @@ describe('list', () => {
 });
 
 describe('findBySuffix', () => {
-  it('finds a public document by the last 6 characters of its id', () => {
-    insert(seedDb, { id: '01K3F9X2VQ8N7M4TQXYZABCDEF', title: 'Findable', createdEpochMs: 1_000, public: true });
+  it('finds a published row by the last 6 characters of its id', () => {
+    insert(seedDb, { sourceType: 'document', sourceId: '01K3F9X2VQ8N7M4TQXYZABCDEF', sourceCreatedAt: '2026-01-01T00:00:00Z' });
 
-    const reader = new PublicDocumentsReader(dbPath);
+    const reader = new PublishedIndexReader(dbPath);
     try {
-      expect(reader.findBySuffix('abcdef')?.title).toBe('Findable');
-      expect(reader.findBySuffix('ABCDEF')?.title).toBe('Findable');
+      expect(reader.findBySuffix('document', 'abcdef')?.sourceId).toBe('01K3F9X2VQ8N7M4TQXYZABCDEF');
+      expect(reader.findBySuffix('document', 'ABCDEF')?.sourceId).toBe('01K3F9X2VQ8N7M4TQXYZABCDEF');
     } finally {
       reader.close();
     }
   });
 
-  it('returns null for a private document, even with the right suffix', () => {
-    insert(seedDb, { id: '01K3F9X2VQ8N7M4TQXYZABCDEF', title: 'Private', createdEpochMs: 1_000, public: false });
+  it('never matches across source types', () => {
+    insert(seedDb, { sourceType: 'entry', sourceId: '01K3F9X2VQ8N7M4TQXYZABCDEF', sourceCreatedAt: '2026-01-01T00:00:00Z' });
 
-    const reader = new PublicDocumentsReader(dbPath);
+    const reader = new PublishedIndexReader(dbPath);
     try {
-      expect(reader.findBySuffix('abcdef')).toBeNull();
+      expect(reader.findBySuffix('document', 'abcdef')).toBeNull();
+      expect(reader.findBySuffix('entry', 'abcdef')?.sourceId).toBe('01K3F9X2VQ8N7M4TQXYZABCDEF');
     } finally {
       reader.close();
     }
   });
 
   it('returns null for a suffix that matches nothing', () => {
-    const reader = new PublicDocumentsReader(dbPath);
+    const reader = new PublishedIndexReader(dbPath);
     try {
-      expect(reader.findBySuffix('zzzzzz')).toBeNull();
+      expect(reader.findBySuffix('document', 'zzzzzz')).toBeNull();
     } finally {
       reader.close();
     }
   });
 
   it('returns null for a malformed suffix rather than querying with it', () => {
-    insert(seedDb, { id: '01K3F9X2VQ8N7M4TQXYZABCDEF', title: 'Findable', createdEpochMs: 1_000, public: true });
+    insert(seedDb, { sourceType: 'document', sourceId: '01K3F9X2VQ8N7M4TQXYZABCDEF', sourceCreatedAt: '2026-01-01T00:00:00Z' });
 
-    const reader = new PublicDocumentsReader(dbPath);
+    const reader = new PublishedIndexReader(dbPath);
     try {
       for (const bad of ['', 'abcd', 'abcdefg', "abc%de", "abc'de"]) {
-        expect(reader.findBySuffix(bad)).toBeNull();
+        expect(reader.findBySuffix('document', bad)).toBeNull();
       }
+    } finally {
+      reader.close();
+    }
+  });
+});
+
+describe('getBySourceId', () => {
+  it('finds a published row by its exact id', () => {
+    insert(seedDb, { sourceType: 'document', sourceId: '01K3F9X2VQ8N7M4TQXYZABCDEF', sourceCreatedAt: '2026-01-01T00:00:00Z' });
+
+    const reader = new PublishedIndexReader(dbPath);
+    try {
+      expect(reader.getBySourceId('document', '01K3F9X2VQ8N7M4TQXYZABCDEF')?.mirrorKey).toBe(
+        'public/documents/01K3F9X2VQ8N7M4TQXYZABCDEF.json',
+      );
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('never matches across source types', () => {
+    insert(seedDb, { sourceType: 'entry', sourceId: '01K3F9X2VQ8N7M4TQXYZABCDEF', sourceCreatedAt: '2026-01-01T00:00:00Z' });
+
+    const reader = new PublishedIndexReader(dbPath);
+    try {
+      expect(reader.getBySourceId('document', '01K3F9X2VQ8N7M4TQXYZABCDEF')).toBeNull();
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('returns null for an id that is not published', () => {
+    const reader = new PublishedIndexReader(dbPath);
+    try {
+      expect(reader.getBySourceId('document', 'nope')).toBeNull();
     } finally {
       reader.close();
     }
@@ -145,6 +168,6 @@ describe('findBySuffix', () => {
 
 describe('opening the database', () => {
   it('refuses to create an index that does not exist', () => {
-    expect(() => new PublicDocumentsReader(join(dir, 'does-not-exist.db'))).toThrow();
+    expect(() => new PublishedIndexReader(join(dir, 'does-not-exist.db'))).toThrow();
   });
 });

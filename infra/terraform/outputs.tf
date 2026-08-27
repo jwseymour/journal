@@ -17,3 +17,8 @@ output "iam_instance_profile" {
   description = "Confirms the instance role attached — no static AWS keys should be needed on the box."
   value       = aws_iam_instance_profile.journal_api.name
 }
+
+output "s3_assume_role_arn" {
+  description = "Paste into S3_ASSUME_ROLE_ARN in apps/api's .env — the broader role apps/api assumes for journal/*/documents/* access. apps/public-api needs no such setting: it reads public/* directly via the instance role."
+  value       = aws_iam_role.journal_api_write.arn
+}

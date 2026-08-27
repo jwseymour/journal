@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1117.0",
+    "@aws-sdk/credential-providers": "^3.1117.0",
     "@hono/node-server": "^2.0.12",
     "@huggingface/transformers": "^3.4.0",
     "@journal/contract": "*",

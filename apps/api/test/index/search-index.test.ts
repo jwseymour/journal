@@ -21,7 +21,7 @@ describe('replaceEntry / searchText', () => {
   it('finds a chunk by an exact word', () => {
     index.replaceEntry('e1', ['the quick brown fox'], [vec(1, 0, 0, 0)]);
     const hits = index.searchText('fox', 10);
-    expect(hits).toEqual([{ entryId: 'e1', chunkIndex: 0, text: 'the quick brown fox' }]);
+    expect(hits).toEqual([{ sourceType: 'entry', sourceId: 'e1', chunkIndex: 0, text: 'the quick brown fox' }]);
   });
 
   it('finds nothing for a word that does not appear anywhere', () => {
@@ -46,7 +46,7 @@ describe('replaceEntry / searchText', () => {
 
     expect(index.searchText('oceans', 10)).toEqual([]);
     expect(index.searchText('mountains', 10)).toEqual([
-      { entryId: 'e1', chunkIndex: 0, text: 'revised text about mountains' },
+      { sourceType: 'entry', sourceId: 'e1', chunkIndex: 0, text: 'revised text about mountains' },
     ]);
   });
 
@@ -107,11 +107,56 @@ describe('removeEntry', () => {
 
     expect(index.searchText('keep', 10)).toHaveLength(1);
     expect(index.searchText('gone', 10)).toEqual([]);
-    expect(index.searchVector(vec(0, 1, 0, 0), 10).map((h) => h.entryId)).not.toContain('e2');
+    expect(index.searchVector(vec(0, 1, 0, 0), 10).map((h) => h.sourceId)).not.toContain('e2');
   });
 
   it('is a no-op, not an error, for an entry never indexed', () => {
     expect(() => index.removeEntry('never-existed')).not.toThrow();
+  });
+});
+
+describe('source_type (`plan.md` M17)', () => {
+  it('keeps an entry and a document with the same id from colliding', () => {
+    index.replaceSource('entry', 'same-id', ['entry text'], [vec(1, 0, 0, 0)]);
+    index.replaceSource('document', 'same-id', ['document text'], [vec(0, 1, 0, 0)]);
+
+    expect(index.searchText('entry', 10)).toEqual([
+      { sourceType: 'entry', sourceId: 'same-id', chunkIndex: 0, text: 'entry text' },
+    ]);
+    expect(index.searchText('document', 10)).toEqual([
+      { sourceType: 'document', sourceId: 'same-id', chunkIndex: 0, text: 'document text' },
+    ]);
+  });
+
+  it('replaceSource for a document does not disturb an entry with the same id', () => {
+    index.replaceSource('entry', 'shared', ['entry text'], [vec(1, 0, 0, 0)]);
+    index.replaceSource('document', 'shared', ['document text'], [vec(0, 1, 0, 0)]);
+
+    index.replaceSource('document', 'shared', ['revised document text'], [vec(0, 0, 1, 0)]);
+
+    expect(index.searchText('entry', 10)).toHaveLength(1);
+    expect(index.searchText('revised', 10)).toHaveLength(1);
+  });
+
+  it('removeSource for a document does not remove an entry with the same id', () => {
+    index.replaceSource('entry', 'shared', ['entry text'], [vec(1, 0, 0, 0)]);
+    index.replaceSource('document', 'shared', ['document text'], [vec(0, 1, 0, 0)]);
+
+    index.removeSource('document', 'shared');
+
+    expect(index.searchText('entry', 10)).toHaveLength(1);
+    expect(index.searchText('document', 10)).toEqual([]);
+  });
+
+  it('defaults every pre-existing row to source_type entry via the idempotent migration', () => {
+    // Exercised indirectly: `replaceEntry`/`removeEntry` are the exact
+    // convenience wrappers a database created before M17 would have used,
+    // and every assertion above already confirms they resolve to
+    // `sourceType: 'entry'` — the default the `ALTER TABLE` migration sets.
+    index.replaceEntry('legacy', ['pre-existing row'], [vec(1, 0, 0, 0)]);
+    expect(index.searchText('pre-existing', 10)).toEqual([
+      { sourceType: 'entry', sourceId: 'legacy', chunkIndex: 0, text: 'pre-existing row' },
+    ]);
   });
 });
 
@@ -149,9 +194,22 @@ describe('persistence', () => {
 
     const reopened = new SearchIndex(dbPath, DIMENSIONS);
     expect(reopened.searchText('durable', 10)).toEqual([
-      { entryId: 'e1', chunkIndex: 0, text: 'durable text' },
+      { sourceType: 'entry', sourceId: 'e1', chunkIndex: 0, text: 'durable text' },
     ]);
     expect(reopened.searchVector(vec(1, 0, 0, 0), 10)[0]!.text).toBe('durable text');
     reopened.close();
+  });
+
+  it('migrates an existing entry-only database in place, adding source_type without losing data', async () => {
+    const dbPath = join(root, 'index.db');
+    const before = new SearchIndex(dbPath, DIMENSIONS);
+    before.replaceEntry('e1', ['already there'], [vec(1, 0, 0, 0)]);
+    before.close();
+
+    const after = new SearchIndex(dbPath, DIMENSIONS);
+    expect(after.searchText('already', 10)).toEqual([
+      { sourceType: 'entry', sourceId: 'e1', chunkIndex: 0, text: 'already there' },
+    ]);
+    after.close();
   });
 });

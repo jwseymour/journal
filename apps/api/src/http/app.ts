@@ -35,6 +35,9 @@ import type {
   OpinionStatementsResponse,
   OpinionStatementUpdateSuggestionsResponse,
   OpinionSummariesResponse,
+  ProcessEntryResponse,
+  PublishDocumentResponse,
+  PublishQueueResponse,
   QuestionsResponse,
   QuestionsSummaryResponse,
   QuestionUpdateSuggestionsResponse,
@@ -42,24 +45,34 @@ import type {
   ReviewsSummaryResponse,
   ReviewUpdateSuggestionsResponse,
   SearchResponse,
-  SetDocumentPublicResponse,
   StructureType,
   SuggestionsResponse,
+  VisibilityDefaultsResponse,
+  Todo,
+  TodoCompletionSuggestionsResponse,
+  TodosResponse,
+  TodosSummaryResponse,
+  TodoUpdateSuggestionsResponse,
   TranscribeResponse,
   UpdateDocumentResponse,
   UpdateEntryResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
 import { AppError, invalidRequest, recordNotFound, unauthorized } from '../errors.js';
-import type { CategoriesReader } from '../index/categories-index.js';
+import type { CategoriesReader, CoreStructureType } from '../index/categories-index.js';
 import type { ListItemsReader } from '../index/lists-index.js';
 import { resolveNumericField, type MetricFieldsReader } from '../index/metric-fields-index.js';
 import type { MetricsReader } from '../index/metrics-index.js';
 import type { OpinionStatementsReader } from '../index/opinion-statements-index.js';
 import type { OpinionSummariesReader } from '../index/opinion-summaries-index.js';
+import type { PublishableSourceType } from '../index/published-index.js';
 import type { QuestionsReader } from '../index/questions-index.js';
 import type { ReviewsReader } from '../index/reviews-index.js';
+import type { TodosReader } from '../index/todos-index.js';
+import type { VisibilityDefaultsReader } from '../index/visibility-defaults-index.js';
 import type { ChatAnswerer } from '../model/chat-orchestrator.js';
+import type { EntryProcessing } from '../model/entry-processor.js';
+import type { Publisher } from '../publish/publisher.js';
 import { isUlid, ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
 import type { Searcher } from '../search/searcher.js';
@@ -180,15 +193,21 @@ const UpdateDocumentSchema = z
   })
   .strict();
 
-/** `POST /documents/:id/publish` and `.../unpublish` bodies — visibility is
- * flipped by which route was called, not by a field in here, so this is
- * only ever the concurrency precondition (`requirements.md` §9.3). */
-const SetDocumentPublicSchema = z.object({ contentHash: z.string().min(1) }).strict();
-
 const ApproveCategorySchema = z
   .object({
     structureType: z.enum(['metric', 'review_medium', 'list_type', 'opinion_subject']),
     name: z.string().min(1),
+  })
+  .strict();
+
+/** Setting a category's "public by default" flag (`requirements.md` §11,
+ * `plan.md` M16) — the same four core structure types `ApproveCategorySchema`
+ * validates against; questions have no category and so never appear here. */
+const SetVisibilityDefaultSchema = z
+  .object({
+    structureType: z.enum(['metric', 'review_medium', 'list_type', 'opinion_subject']),
+    category: z.string().min(1),
+    defaultPublic: z.boolean(),
   })
   .strict();
 
@@ -259,6 +278,19 @@ const UpdateQuestionSchema = z
   })
   .strict();
 
+const UpdateTodoSchema = z
+  .object({
+    text: z.string().min(1).optional(),
+    eventTime: z.string().optional(),
+    eventTimeExplicit: z.boolean().optional(),
+  })
+  .strict();
+
+/** A to-do created directly in the UI, not extracted — the deliberate
+ * exception to every other structure type, which only ever originates from
+ * an entry (`requirements.md` §2, §11). */
+const CreateTodoSchema = z.object({ text: z.string().min(1) }).strict();
+
 /** Parses and validates a `PUT` body against one of the schemas above,
  * throwing the same `invalid_request` shape every other body-validating
  * route in this file throws. Shared because all five follow the identical
@@ -321,16 +353,21 @@ function entryResponse(entry: {
   };
 }
 
-function documentResponse(document: {
-  id: string;
-  title: string;
-  created: string;
-  updated: string;
-  citedEntries?: string[];
-  public: boolean;
-  body: string;
-  contentHash: string;
-}): Document {
+/** `published` is passed in rather than read off `document`, because the
+ * store never knows it — it comes from `Publisher.isPublished`
+ * (`requirements.md` §9.3, `plan.md` M15). */
+function documentResponse(
+  document: {
+    id: string;
+    title: string;
+    created: string;
+    updated: string;
+    citedEntries?: string[];
+    body: string;
+    contentHash: string;
+  },
+  published: boolean,
+): Document {
   return {
     id: document.id,
     title: document.title,
@@ -339,7 +376,7 @@ function documentResponse(document: {
     ...(document.citedEntries && document.citedEntries.length > 0
       ? { citedEntries: document.citedEntries }
       : {}),
-    public: document.public,
+    published,
     body: document.body,
     contentHash: document.contentHash,
   };
@@ -387,7 +424,11 @@ export function createApp(
   opinionStatements: OpinionStatementsReader,
   opinionSummaries: OpinionSummariesReader,
   questions: QuestionsReader,
+  todos: TodosReader,
+  processor: EntryProcessing,
   chat: ChatAnswerer,
+  publisher: Publisher,
+  visibilityDefaults: VisibilityDefaultsReader,
 ): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
@@ -691,6 +732,10 @@ export function createApp(
     }
 
     const entry = await store.update(id, parsed.data);
+    // If this entry is currently published, the mirror copy is kept in
+    // sync inline — a published entry that changes should never silently
+    // drift from what the public surface serves (`plan.md` M15).
+    await publisher.resyncIfPublished('entry', id);
     const response: UpdateEntryResponse = entryResponse(entry);
     return c.json(response);
   });
@@ -700,6 +745,24 @@ export function createApp(
     // Deleting something that was never there is not an error — see
     // EntryStore.discardIfBlank. A malformed id is simply "nothing to do."
     if (isUlid(id)) await store.discardIfBlank(id);
+    return c.body(null, 204);
+  });
+
+  // Visibility (`requirements.md` §9.3, §11, `plan.md` M15) — an entry
+  // never carries a field for this (§4.3's "nothing else" is absolute); a
+  // publish/unpublish action route, tolerant of a malformed or already
+  // published/unpublished id, matching `validate`/`untouch`'s convention
+  // (`plan.md` M10) rather than the strict `record_not_found` a `PUT`
+  // carrying content would deserve.
+  app.post('/entries/:id/publish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.publish('entry', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/entries/:id/unpublish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.unpublish('entry', id);
     return c.body(null, 204);
   });
 
@@ -730,6 +793,26 @@ export function createApp(
     const result = await store.addAttachment(id, { filename: file.name, data });
     const response: AddAttachmentResponse = result;
     return c.json(response, 201);
+  });
+
+  /**
+   * Live, single-entry extraction (`plan.md` M15) — every structure type,
+   * for this one entry. Safe to call more than once on the same entry: a
+   * touched record is never silently overwritten, only ever offered an
+   * update suggestion (`requirements.md` §6.4), so this is exactly what
+   * runs both right after finishing a new entry and after finishing an edit
+   * to an existing one. Fails as `extraction_failed` (503) if
+   * `AI_GATEWAY_API_KEY` is not configured — see `UnconfiguredModelClient`.
+   */
+  app.post('/entries/:id/process', async (c) => {
+    const id = c.req.param('id');
+    const entry = isUlid(id) ? await store.get(id) : null;
+    if (!entry) {
+      return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
+    }
+
+    const response: ProcessEntryResponse = await processor.processEntry(entry);
+    return c.json(response);
   });
 
   app.post('/documents', async (c) => {
@@ -765,7 +848,13 @@ export function createApp(
       limit,
       ...(cursor !== undefined && cursor !== '' ? { cursor } : {}),
     });
-    const page: DocumentPage = { documents: result.documents, nextCursor: result.nextCursor };
+    const page: DocumentPage = {
+      documents: result.documents.map((document) => ({
+        ...document,
+        published: publisher.isPublished('document', document.id),
+      })),
+      nextCursor: result.nextCursor,
+    };
     return c.json(page);
   });
 
@@ -774,7 +863,7 @@ export function createApp(
     if (!isUlid(id)) throw recordNotFound('document', id);
     const document = await documentStore.get(id);
     if (!document) throw recordNotFound('document', id);
-    return c.json(documentResponse(document));
+    return c.json(documentResponse(document, publisher.isPublished('document', id)));
   });
 
   app.put('/documents/:id', async (c) => {
@@ -788,28 +877,34 @@ export function createApp(
       contentHash,
       ...(citedEntries !== undefined ? { citedEntries } : {}),
     });
-    const response: UpdateDocumentResponse = documentResponse(document);
+    // Same inline resync a published entry gets above (`plan.md` M15).
+    await publisher.resyncIfPublished('document', id);
+    const response: UpdateDocumentResponse = documentResponse(document, publisher.isPublished('document', id));
     return c.json(response);
   });
 
-  // Visibility (`requirements.md` §9.3, `plan.md` M13) — a deliberate action
-  // distinct from the PUT above, so a stale-hash publish/unpublish conflicts
-  // exactly like a stale-hash edit rather than silently landing nowhere.
+  // Visibility (`requirements.md` §9.3, §11, `plan.md` M15) — publishing
+  // copies a snapshot into the `public/` mirror rather than flipping a
+  // field on the document itself (`Publisher`'s own doc comment explains
+  // why); no request body, since there is nothing to submit and nothing to
+  // guard with a `contentHash` — publishing never writes to the document.
   app.post('/documents/:id/publish', async (c) => {
     const id = c.req.param('id');
     if (!isUlid(id)) throw recordNotFound('document', id);
-    const { contentHash } = await parseUpdateBody(c, SetDocumentPublicSchema);
-    const document = await documentStore.setPublic(id, { public: true, contentHash });
-    const response: SetDocumentPublicResponse = documentResponse(document);
+    await publisher.publish('document', id);
+    const document = await documentStore.get(id);
+    if (!document) throw recordNotFound('document', id);
+    const response: PublishDocumentResponse = documentResponse(document, true);
     return c.json(response);
   });
 
   app.post('/documents/:id/unpublish', async (c) => {
     const id = c.req.param('id');
     if (!isUlid(id)) throw recordNotFound('document', id);
-    const { contentHash } = await parseUpdateBody(c, SetDocumentPublicSchema);
-    const document = await documentStore.setPublic(id, { public: false, contentHash });
-    const response: SetDocumentPublicResponse = documentResponse(document);
+    await publisher.unpublish('document', id);
+    const document = await documentStore.get(id);
+    if (!document) throw recordNotFound('document', id);
+    const response: PublishDocumentResponse = documentResponse(document, false);
     return c.json(response);
   });
 
@@ -858,6 +953,7 @@ export function createApp(
         detail: record.detail,
         fields: record.fields,
         touched: record.touched,
+        published: publisher.isPublished('metric', record.id),
       })),
     };
     return c.json(response);
@@ -892,6 +988,22 @@ export function createApp(
   app.post('/metrics/:id/untouch', async (c) => {
     const id = c.req.param('id');
     if (isUlid(id)) metrics.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  // Visibility (`requirements.md` §11, `plan.md` M16) — same tolerant
+  // action-route shape as `validate`/`untouch` above and the entry
+  // publish/unpublish routes (`plan.md` M15): a malformed or
+  // already-published/unpublished id is simply nothing to do.
+  app.post('/metrics/:id/publish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.publish('metric', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/metrics/:id/unpublish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.unpublish('metric', id);
     return c.body(null, 204);
   });
 
@@ -1079,6 +1191,7 @@ export function createApp(
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
         touched: record.touched,
+        published: publisher.isPublished('review', record.id),
       })),
     };
     return c.json(response);
@@ -1107,6 +1220,19 @@ export function createApp(
   app.post('/reviews/:id/untouch', async (c) => {
     const id = c.req.param('id');
     if (isUlid(id)) reviews.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  // Visibility (`requirements.md` §11, `plan.md` M16) — see `/metrics/:id/publish`.
+  app.post('/reviews/:id/publish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.publish('review', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/reviews/:id/unpublish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.unpublish('review', id);
     return c.body(null, 204);
   });
 
@@ -1158,6 +1284,7 @@ export function createApp(
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
         touched: record.touched,
+        published: publisher.isPublished('list_item', record.id),
       })),
     };
     return c.json(response);
@@ -1186,6 +1313,19 @@ export function createApp(
   app.post('/lists/:id/untouch', async (c) => {
     const id = c.req.param('id');
     if (isUlid(id)) lists.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  // Visibility (`requirements.md` §11, `plan.md` M16) — see `/metrics/:id/publish`.
+  app.post('/lists/:id/publish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.publish('list_item', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/lists/:id/unpublish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.unpublish('list_item', id);
     return c.body(null, 204);
   });
 
@@ -1229,6 +1369,7 @@ export function createApp(
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
         touched: record.touched,
+        published: publisher.isPublished('opinion_statement', record.id),
       })),
     };
     return c.json(response);
@@ -1259,6 +1400,19 @@ export function createApp(
   app.post('/opinions/statements/:id/untouch', async (c) => {
     const id = c.req.param('id');
     if (isUlid(id)) opinionStatements.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  // Visibility (`requirements.md` §11, `plan.md` M16) — see `/metrics/:id/publish`.
+  app.post('/opinions/statements/:id/publish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.publish('opinion_statement', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/opinions/statements/:id/unpublish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.unpublish('opinion_statement', id);
     return c.body(null, 204);
   });
 
@@ -1335,6 +1489,7 @@ export function createApp(
         resolvedEntryId: record.resolvedEntryId,
         resolution: record.resolution,
         touched: record.touched,
+        published: publisher.isPublished('question', record.id),
       })),
     };
     return c.json(response);
@@ -1374,6 +1529,21 @@ export function createApp(
     return c.body(null, 204);
   });
 
+  // Visibility (`requirements.md` §11, `plan.md` M16) — see
+  // `/metrics/:id/publish`. Questions have no category, so unlike the other
+  // four structures there is no default/`/publish-queue` participation.
+  app.post('/questions/:id/publish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.publish('question', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/questions/:id/unpublish', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await publisher.unpublish('question', id);
+    return c.body(null, 204);
+  });
+
   app.get('/questions/update-suggestions', async (c) => {
     const status = optionalStatus(c.req.query('status'));
     const suggestions = questions.listUpdateSuggestions(status ? { status } : {});
@@ -1388,6 +1558,136 @@ export function createApp(
 
   app.post('/questions/update-suggestions/:id/reject', async (c) => {
     questions.decideUpdate(c.req.param('id'), 'rejected', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/todos', async (c) => {
+    const rawStatus = c.req.query('status');
+    if (rawStatus !== undefined && rawStatus !== 'open' && rawStatus !== 'done') {
+      throw invalidRequest(`'status' must be 'open' or 'done'.`);
+    }
+    const status = rawStatus as 'open' | 'done' | undefined;
+
+    const rawLimit = c.req.query('limit');
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const records = todos.list({ limit, ...(status ? { status } : {}) });
+    const response: TodosResponse = {
+      todos: records.map((record) => ({
+        id: record.id,
+        entryId: record.entryId,
+        text: record.text,
+        eventTime: record.eventTime,
+        eventTimeExplicit: record.eventTimeExplicit,
+        status: record.status,
+        doneEntryId: record.doneEntryId,
+        resolution: record.resolution,
+        origin: record.origin,
+        touched: record.touched,
+      })),
+    };
+    return c.json(response);
+  });
+
+  // Not a copy of any AI-only route — the closest real precedent is
+  // `POST /documents`, a genuinely user-authored record. This is the
+  // deliberate, named exception to "origination is always automatic"
+  // (`requirements.md` §2, §11).
+  app.post('/todos', async (c) => {
+    const { text } = await parseUpdateBody(c, CreateTodoSchema);
+    const now = nowTimestamp().canonical;
+    const record = todos.createDirect({ id: ulid(Date.now()), text, now });
+    const response: Todo = {
+      id: record.id,
+      entryId: record.entryId,
+      text: record.text,
+      eventTime: record.eventTime,
+      eventTimeExplicit: record.eventTimeExplicit,
+      status: record.status,
+      doneEntryId: record.doneEntryId,
+      resolution: record.resolution,
+      origin: record.origin,
+      touched: record.touched,
+    };
+    return c.json(response, 201);
+  });
+
+  app.delete('/todos/:id', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) todos.remove(id);
+    return c.body(null, 204);
+  });
+
+  app.post('/todos/:id/reopen', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) todos.reopen(id);
+    return c.body(null, 204);
+  });
+
+  app.post('/todos/:id/complete', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) todos.completeDirect(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.put('/todos/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = await parseUpdateBody(c, UpdateTodoSchema);
+    const updated = todos.update(id, body, nowTimestamp().canonical);
+    if (!updated) throw recordNotFound('todo', id);
+    return c.body(null, 204);
+  });
+
+  app.post('/todos/:id/validate', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) todos.validate(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/todos/:id/untouch', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) todos.untouch(id, nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/todos/update-suggestions', async (c) => {
+    const status = optionalStatus(c.req.query('status'));
+    const suggestions = todos.listUpdateSuggestions(status ? { status } : {});
+    const response: TodoUpdateSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/todos/update-suggestions/:id/approve', async (c) => {
+    todos.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/todos/update-suggestions/:id/reject', async (c) => {
+    todos.decideUpdate(c.req.param('id'), 'rejected', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.get('/todos/completion-suggestions', async (c) => {
+    const status = optionalStatus(c.req.query('status'));
+    const suggestions = todos.listCompletionSuggestions(status ? { status } : {});
+    const response: TodoCompletionSuggestionsResponse = { suggestions };
+    return c.json(response);
+  });
+
+  app.post('/todos/completion-suggestions/:id/approve', async (c) => {
+    todos.decideCompletion(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  app.post('/todos/completion-suggestions/:id/reject', async (c) => {
+    todos.decideCompletion(c.req.param('id'), 'rejected', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 
@@ -1463,6 +1763,63 @@ export function createApp(
     return c.body(null, 204);
   });
 
+  // "Public by default" settings, one per category (`requirements.md` §11,
+  // `plan.md` M16). Setting one never publishes anything by itself — it only
+  // changes what `/publish-queue` below surfaces for confirmation.
+  app.get('/visibility-defaults', async (c) => {
+    const response: VisibilityDefaultsResponse = { defaults: visibilityDefaults.list() };
+    return c.json(response);
+  });
+
+  app.put('/visibility-defaults', async (c) => {
+    const { structureType, category, defaultPublic } = await parseUpdateBody(c, SetVisibilityDefaultSchema);
+    visibilityDefaults.set(structureType, category, defaultPublic);
+    return c.body(null, 204);
+  });
+
+  // Records in a "public by default" category that are not yet published —
+  // never auto-published, only ever offered for one-click confirmation
+  // (`requirements.md` §11, `plan.md` M16). Questions never appear here —
+  // they have no category (`QuestionsIndex`'s own doc comment explains why).
+  app.get('/publish-queue', async (c) => {
+    const items: PublishQueueResponse['items'] = [];
+    for (const { structureType, category, defaultPublic } of visibilityDefaults.list()) {
+      if (!defaultPublic) continue;
+
+      if (structureType === 'metric') {
+        const published = publisher.publishedIds('metric');
+        for (const record of metrics.allByMetric(category)) {
+          if (!published.has(record.id)) {
+            items.push({ structureType, category, id: record.id, preview: record.detail, eventTime: record.eventTime });
+          }
+        }
+      } else if (structureType === 'review_medium') {
+        const published = publisher.publishedIds('review');
+        for (const record of reviews.allByMedium(category)) {
+          if (!published.has(record.id)) {
+            items.push({ structureType, category, id: record.id, preview: record.title, eventTime: record.eventTime });
+          }
+        }
+      } else if (structureType === 'list_type') {
+        const published = publisher.publishedIds('list_item');
+        for (const record of lists.allByListType(category)) {
+          if (!published.has(record.id)) {
+            items.push({ structureType, category, id: record.id, preview: record.text, eventTime: record.eventTime });
+          }
+        }
+      } else {
+        const published = publisher.publishedIds('opinion_statement');
+        for (const record of opinionStatements.bySubject(category)) {
+          if (!published.has(record.id)) {
+            items.push({ structureType, category, id: record.id, preview: record.statement, eventTime: record.eventTime });
+          }
+        }
+      }
+    }
+    const response: PublishQueueResponse = { items };
+    return c.json(response);
+  });
+
   // Aggregated, not raw — the analysis surfaces' own material
   // (`plan.md` M8, `design.md` §5.3). Computed here, never in the frontend
   // (`requirements.md` §7.1).
@@ -1528,6 +1885,11 @@ export function createApp(
 
   app.get('/analysis/questions', async (c) => {
     const response: QuestionsSummaryResponse = questions.summarize();
+    return c.json(response);
+  });
+
+  app.get('/analysis/todos', async (c) => {
+    const response: TodosSummaryResponse = todos.summarize();
     return c.json(response);
   });
 

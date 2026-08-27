@@ -120,6 +120,18 @@
   text-transform: uppercase;
 }
 
+/* Visibility (`requirements.md` §11, `plan.md` M16) — same pill shape as
+ * `.touched`, distinguished only by colour. */
+.published {
+  padding: 0 var(--space-3xs);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
 .editForm {
   margin-top: var(--space-3xs);
 }

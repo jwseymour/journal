@@ -168,6 +168,27 @@ export interface UpdateEntryRequest {
 export type UpdateEntryResponse = Entry;
 
 /**
+ * The result of running extraction for one entry — every structure type,
+ * one call each (`plan.md` M15). Safe to call more than once on the same
+ * entry: touched records are never overwritten, only ever offered an
+ * update suggestion (`requirements.md` §6.4), so calling this again after
+ * editing an already-processed entry is the same operation, not a
+ * different one.
+ *
+ * Each count is how many records extraction produced from this entry on
+ * this pass — not a running total, and not distinct from what a touched
+ * record's update-suggestion might still be waiting on approval for.
+ */
+export interface ProcessEntryResponse {
+  metricCount: number;
+  reviewCount: number;
+  itemCount: number;
+  statementCount: number;
+  questionCount: number;
+  todoCount: number;
+}
+
+/**
  * The result of attaching a file to an entry (`format.md` §4).
  *
  * `relativeLink` is meant to be written straight into the entry's own body,
@@ -210,24 +231,30 @@ export interface DocumentMetadata {
    * `EntryMetadata.location` uses.
    */
   citedEntries?: string[];
+}
 
-  /**
-   * Whether this document is readable through the public-facing surface
-   * (`requirements.md` §9.3, §10). Always present; `false` on creation.
-   * Flipped only by `POST /documents/:id/publish` or `.../unpublish` — a
-   * deliberate act distinct from an ordinary edit, never a side effect of
-   * `UpdateDocumentRequest`.
-   */
-  public: boolean;
+/** Whether this record is currently readable through the public-facing
+ * surface (`requirements.md` §9.3, §10, §11) — computed from whether a
+ * rendered snapshot of it exists in the `public/` S3 mirror (`plan.md` M15,
+ * M16), never a field stored on the record itself (an entry or document
+ * frontmatter, or a derived-structure row). Flipped only by the matching
+ * `POST .../:id/publish`/`.../unpublish` route — a deliberate act distinct
+ * from an ordinary edit or extraction, never a side effect of either.
+ * Shared by documents (M15) and the five touchable derived-structure types —
+ * metrics, reviews, list items, opinion statements, questions (M16). Entries
+ * are published too but have no contract type of their own to attach this
+ * to today — see `apps/api/src/http/app.ts`'s entry publish routes. */
+export interface Published {
+  published: boolean;
 }
 
 /** A document as it appears in a list: metadata plus enough prose to recognise it. */
-export interface DocumentSummary extends DocumentMetadata {
+export interface DocumentSummary extends DocumentMetadata, Published {
   excerpt: string;
 }
 
 /** A document in full. The body is exactly the bytes on disk, minus frontmatter. */
-export interface Document extends DocumentMetadata {
+export interface Document extends DocumentMetadata, Published {
   body: string;
 
   /** Same role as `Entry.contentHash` — an optimistic-concurrency precondition
@@ -284,18 +311,13 @@ export interface UpdateDocumentRequest {
 export type UpdateDocumentResponse = Document;
 
 /**
- * Publishing or unpublishing a document (`requirements.md` §9.3) — its own
- * request/response pair, not a field on `UpdateDocumentRequest`, because
- * flipping visibility is a deliberate act distinct from an ordinary edit.
- * Title, body and citations are untouched; only `public` and `updated` move.
+ * Publishing or unpublishing a document (`requirements.md` §9.3, `plan.md`
+ * M15) — `POST /documents/:id/publish` and `.../unpublish`, no request
+ * body: publishing copies a snapshot of whatever is currently saved into
+ * the `public/` mirror, it never carries new content of its own, so there
+ * is nothing to submit and nothing to guard with a `contentHash`.
  */
-export interface SetDocumentPublicRequest {
-  /** Must match the current `Document.contentHash`, or the write is rejected. */
-  contentHash: string;
-}
-
-/** The document as it stands after publishing/unpublishing, including its new `contentHash`. */
-export type SetDocumentPublicResponse = Document;
+export type PublishDocumentResponse = Document;
 
 /**
  * The result of transcribing a recording (`requirements.md` §4.7).
@@ -310,20 +332,35 @@ export interface TranscribeResponse {
 }
 
 /**
- * One matching passage from a search (`plan.md` M6, `requirements.md` §8).
+ * One matching passage from a search (`plan.md` M6/M17, `requirements.md`
+ * §8).
  *
- * A hit is a paragraph, not an entry — "search by meaning" means finding the
- * part of an entry that answers the query, so `passage` is what matched, and
- * `entryId`/`created` are enough to link back to the entry it came from
- * without a second round trip for the common case of showing a result list.
+ * A hit is a paragraph, not a whole entry or document — "search by meaning"
+ * means finding the part of a source that answers the query, so `passage`
+ * is what matched. `sourceType` discriminates which kind of source it came
+ * from (`plan.md` M17 added documents alongside entries), and the rest of
+ * each variant is enough to link back to that source without a second round
+ * trip for the common case of showing a result list.
  */
-export interface SearchHit {
+export interface EntrySearchHit {
+  sourceType: 'entry';
   entryId: string;
   created: string;
   location?: Coordinates;
   /** The paragraph that matched, exactly as written. */
   passage: string;
 }
+
+export interface DocumentSearchHit {
+  sourceType: 'document';
+  documentId: string;
+  title: string;
+  created: string;
+  /** The paragraph that matched, exactly as written. */
+  passage: string;
+}
+
+export type SearchHit = EntrySearchHit | DocumentSearchHit;
 
 /** The result of a search. Empty, not an error, when nothing matches. */
 export interface SearchResponse {
@@ -336,7 +373,7 @@ export interface SearchResponse {
  * `entryId` is what "every derived record links back to its source entry"
  * (`requirements.md` §3) means in practice.
  */
-export interface TemporalMetric {
+export interface TemporalMetric extends Published {
   id: string;
   entryId: string;
   /** Open-ended in principle (`requirements.md` §5.2); in practice, exactly
@@ -473,7 +510,7 @@ export interface MetricFieldValuesResponse {
  * the same title is its own record — a rewatch is a second `Review`, never
  * an edit to the first.
  */
-export interface Review {
+export interface Review extends Published {
   id: string;
   entryId: string;
   title: string;
@@ -537,7 +574,7 @@ export interface ReviewUpdateSuggestionsResponse {
  * One extracted atomic list item (`plan.md` M8, `requirements.md` §5.2) —
  * for example a quote. `text` is the item itself, verbatim, not a summary.
  */
-export interface ListItem {
+export interface ListItem extends Published {
   id: string;
   entryId: string;
   /** Open-ended in principle; in practice the currently-approved seed set —
@@ -598,7 +635,7 @@ export interface ListItemUpdateSuggestionsResponse {
  * corrected by discarding. `statement` is a faithful summary of what *this
  * entry* said, never extended beyond it.
  */
-export interface OpinionStatement {
+export interface OpinionStatement extends Published {
   id: string;
   entryId: string;
   /** Open-ended in principle; in practice the currently-approved seed set —
@@ -681,7 +718,7 @@ export interface OpinionSummariesResponse {
  * metrics, reviews, lists, and opinions, there is no approved-name set to
  * extract against here, since a question's content is the whole of it.
  */
-export interface OpenQuestion {
+export interface OpenQuestion extends Published {
   id: string;
   entryId: string;
   question: string;
@@ -729,6 +766,135 @@ export interface QuestionUpdateSuggestionsResponse {
 export interface QuestionsSummaryResponse {
   openCount: number;
   resolvedCount: number;
+}
+
+/**
+ * "Public by default" visibility, one setting per category
+ * (`requirements.md` §11, `plan.md` M16) — reuses exactly the four core
+ * category types `ApproveCategoryRequest` already validates against.
+ * Questions have no category and so never appear here — a question is only
+ * ever published one at a time, directly (`POST /questions/:id/publish`).
+ */
+export type VisibilityStructureType = 'metric' | 'review_medium' | 'list_type' | 'opinion_subject';
+
+export interface VisibilityDefault {
+  structureType: VisibilityStructureType;
+  category: string;
+  defaultPublic: boolean;
+}
+
+export interface VisibilityDefaultsResponse {
+  defaults: VisibilityDefault[];
+}
+
+/** Setting never publishes anything by itself — it only changes what
+ * `GET /publish-queue` surfaces for confirmation. */
+export interface SetVisibilityDefaultRequest {
+  structureType: VisibilityStructureType;
+  category: string;
+  defaultPublic: boolean;
+}
+
+/** One record sitting in a "public by default" category that has not yet
+ * actually been published — offered for one-click confirmation, never
+ * auto-published (`requirements.md` §11, `plan.md` M16). `preview` is a
+ * short, type-appropriate excerpt (a metric's `detail`, a review's `title`,
+ * a list item's `text`, an opinion statement's `statement`) so the
+ * confirmation UI has something to show without a second round trip. */
+export interface PublishQueueItem {
+  structureType: VisibilityStructureType;
+  category: string;
+  id: string;
+  preview: string;
+  eventTime: string;
+}
+
+export interface PublishQueueResponse {
+  items: PublishQueueItem[];
+}
+
+/**
+ * To-dos (`plan.md` M15, `requirements.md` §11) — an outstanding task,
+ * errand, or commitment, closest in shape to `OpenQuestion` above: `entryId`
+ * is whichever entry *raised* it, `doneEntryId` is whichever later entry
+ * reported it done, or `null` while still open. Two departures from every
+ * structure above, both deliberate: `entryId` may be `null` — a to-do
+ * created directly in the UI has no source entry at all — and `origin`
+ * records whether an AI-generated version of this record exists to revert
+ * to, distinct from `touched` (see `apps/api/src/index/todos-index.ts` for
+ * why they're separate).
+ */
+export interface Todo {
+  id: string;
+  entryId: string | null;
+  text: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  status: 'open' | 'done';
+  doneEntryId: string | null;
+  /** A faithful quote or summary of what the completing entry actually
+   * said — never inferred beyond that. `null` while open or when completed
+   * by a direct UI toggle rather than an entry. */
+  resolution: string | null;
+  origin: 'extracted' | 'user';
+  touched: boolean;
+}
+
+export interface TodosResponse {
+  todos: Todo[];
+}
+
+/** The user creating a to-do directly, with no source entry
+ * (`requirements.md` §11) — the deliberate exception to every structure
+ * above, which only ever originates from an entry. */
+export interface CreateTodoRequest {
+  text: string;
+}
+
+/** The editable subset of what was raised — never the completion, which has
+ * its own dedicated `complete`/`reopen` machinery. */
+export interface UpdateTodoRequest {
+  text?: string;
+  eventTime?: string;
+  eventTimeExplicit?: boolean;
+}
+
+export interface TodoUpdateSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  text: string;
+  eventTime: string;
+  eventTimeExplicit: boolean;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface TodoUpdateSuggestionsResponse {
+  suggestions: TodoUpdateSuggestion[];
+}
+
+/** A later entry reporting a *touched* to-do done — never applied silently
+ * (`requirements.md` §11), unlike the untouched path, which the `complete`
+ * route below covers directly. */
+export interface TodoCompletionSuggestion {
+  id: string;
+  recordId: string;
+  entryId: string;
+  resolution: string;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  suggestedAt: string;
+}
+
+export interface TodoCompletionSuggestionsResponse {
+  suggestions: TodoCompletionSuggestion[];
+}
+
+export interface TodosSummaryResponse {
+  openCount: number;
+  doneCount: number;
 }
 
 /**

@@ -30,17 +30,25 @@ import type {
   OpinionStatementsResponse,
   OpinionStatementUpdateSuggestionsResponse,
   OpinionSummariesResponse,
+  ProcessEntryResponse,
+  PublishQueueResponse,
   QuestionsResponse,
   QuestionsSummaryResponse,
   QuestionUpdateSuggestionsResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
   ReviewUpdateSuggestionsResponse,
+  PublishDocumentResponse,
   SearchResponse,
-  SetDocumentPublicRequest,
-  SetDocumentPublicResponse,
+  SetVisibilityDefaultRequest,
   StructureType,
   SuggestionsResponse,
+  Todo,
+  CreateTodoRequest,
+  TodoCompletionSuggestionsResponse,
+  TodosResponse,
+  TodosSummaryResponse,
+  TodoUpdateSuggestionsResponse,
   TranscribeResponse,
   UpdateDocumentRequest,
   UpdateDocumentResponse,
@@ -51,6 +59,9 @@ import type {
   UpdateOpinionStatementRequest,
   UpdateQuestionRequest,
   UpdateReviewRequest,
+  UpdateTodoRequest,
+  VisibilityDefaultsResponse,
+  VisibilityStructureType,
 } from '@journal/contract';
 
 /**
@@ -251,6 +262,18 @@ export function addAttachment(entryId: string, file: Blob, filename: string): Pr
 }
 
 /**
+ * Run AI extraction for one entry, live (`plan.md` M15) — every structure
+ * type, one call each. Safe to call again on the same entry after an edit:
+ * a touched record is never overwritten, only ever offered an update
+ * suggestion, so this is the one operation both "finished writing" and
+ * "finished editing" call. Throws `ApiRequestError` with code
+ * `extraction_failed` if the server has no AI Gateway key configured.
+ */
+export function processEntry(id: string): Promise<ProcessEntryResponse> {
+  return request<ProcessEntryResponse>(`/entries/${encodeURIComponent(id)}/process`, { method: 'POST' });
+}
+
+/**
  * Documents (`requirements.md` §9, `plan.md` M12) — a second authored
  * content type, directly written like an entry rather than AI-derived, so
  * this group mirrors the entries functions above, not the touch/validate/
@@ -296,24 +319,17 @@ export function updateDocument(id: string, input: UpdateDocumentRequest): Promis
 }
 
 /**
- * Flip a document's visibility (`requirements.md` §9.3) — a deliberate
- * action distinct from `updateDocument`. Throws `ApiRequestError` with code
- * `edit_conflict` if `input.contentHash` no longer matches what is stored.
+ * Flip a document's visibility (`requirements.md` §9.3, `plan.md` M15) — a
+ * deliberate action distinct from `updateDocument`. No request body:
+ * publishing copies a snapshot of whatever is currently saved, it never
+ * carries new content of its own.
  */
-export function publishDocument(id: string, input: SetDocumentPublicRequest): Promise<SetDocumentPublicResponse> {
-  return request<SetDocumentPublicResponse>(`/documents/${encodeURIComponent(id)}/publish`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
+export function publishDocument(id: string): Promise<PublishDocumentResponse> {
+  return request<PublishDocumentResponse>(`/documents/${encodeURIComponent(id)}/publish`, { method: 'POST' });
 }
 
-export function unpublishDocument(id: string, input: SetDocumentPublicRequest): Promise<SetDocumentPublicResponse> {
-  return request<SetDocumentPublicResponse>(`/documents/${encodeURIComponent(id)}/unpublish`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
+export function unpublishDocument(id: string): Promise<PublishDocumentResponse> {
+  return request<PublishDocumentResponse>(`/documents/${encodeURIComponent(id)}/unpublish`, { method: 'POST' });
 }
 
 /**
@@ -365,6 +381,16 @@ export async function validateMetric(id: string): Promise<void> {
 /** Reverts a record to untouched/AI-owned (`requirements.md` §6.2). */
 export async function untouchMetric(id: string): Promise<void> {
   await request<undefined>(`/metrics/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+/** Visibility (`requirements.md` §11, `plan.md` M16) — copies a snapshot
+ * into the `public/` mirror, the same mechanism `publishDocument` uses. */
+export async function publishMetric(id: string): Promise<void> {
+  await request<undefined>(`/metrics/${encodeURIComponent(id)}/publish`, { method: 'POST' });
+}
+
+export async function unpublishMetric(id: string): Promise<void> {
+  await request<undefined>(`/metrics/${encodeURIComponent(id)}/unpublish`, { method: 'POST' });
 }
 
 /** Pending AI proposals to update a touched record, filed when a reprocess
@@ -475,6 +501,14 @@ export async function untouchReview(id: string): Promise<void> {
   await request<undefined>(`/reviews/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
 }
 
+export async function publishReview(id: string): Promise<void> {
+  await request<undefined>(`/reviews/${encodeURIComponent(id)}/publish`, { method: 'POST' });
+}
+
+export async function unpublishReview(id: string): Promise<void> {
+  await request<undefined>(`/reviews/${encodeURIComponent(id)}/unpublish`, { method: 'POST' });
+}
+
 export function listReviewUpdateSuggestions(status?: string): Promise<ReviewUpdateSuggestionsResponse> {
   const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
   return request<ReviewUpdateSuggestionsResponse>(`/reviews/update-suggestions${suffix}`);
@@ -518,6 +552,14 @@ export async function validateListItem(id: string): Promise<void> {
 
 export async function untouchListItem(id: string): Promise<void> {
   await request<undefined>(`/lists/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+export async function publishListItem(id: string): Promise<void> {
+  await request<undefined>(`/lists/${encodeURIComponent(id)}/publish`, { method: 'POST' });
+}
+
+export async function unpublishListItem(id: string): Promise<void> {
+  await request<undefined>(`/lists/${encodeURIComponent(id)}/unpublish`, { method: 'POST' });
 }
 
 export function listListItemUpdateSuggestions(status?: string): Promise<ListItemUpdateSuggestionsResponse> {
@@ -564,6 +606,14 @@ export async function validateOpinionStatement(id: string): Promise<void> {
 
 export async function untouchOpinionStatement(id: string): Promise<void> {
   await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+export async function publishOpinionStatement(id: string): Promise<void> {
+  await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}/publish`, { method: 'POST' });
+}
+
+export async function unpublishOpinionStatement(id: string): Promise<void> {
+  await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}/unpublish`, { method: 'POST' });
 }
 
 export function listOpinionStatementUpdateSuggestions(
@@ -635,6 +685,14 @@ export async function untouchQuestion(id: string): Promise<void> {
   await request<undefined>(`/questions/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
 }
 
+export async function publishQuestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/${encodeURIComponent(id)}/publish`, { method: 'POST' });
+}
+
+export async function unpublishQuestion(id: string): Promise<void> {
+  await request<undefined>(`/questions/${encodeURIComponent(id)}/unpublish`, { method: 'POST' });
+}
+
 export function listQuestionUpdateSuggestions(status?: string): Promise<QuestionUpdateSuggestionsResponse> {
   const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
   return request<QuestionUpdateSuggestionsResponse>(`/questions/update-suggestions${suffix}`);
@@ -646,6 +704,93 @@ export async function approveQuestionUpdateSuggestion(id: string): Promise<void>
 
 export async function rejectQuestionUpdateSuggestion(id: string): Promise<void> {
   await request<undefined>(`/questions/update-suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+}
+
+/**
+ * To-dos (`plan.md` M15, `requirements.md` §11) — an outstanding task,
+ * errand, or commitment, closest to `listQuestions` above. Two things no
+ * other structure has: a to-do can be created directly (`createTodo`), not
+ * only extracted, and completed directly (`completeTodo`), not only
+ * reported done by a later entry.
+ */
+export function listTodos(options: { status?: 'open' | 'done'; limit?: number } = {}): Promise<TodosResponse> {
+  const query = new URLSearchParams();
+  if (options.status) query.set('status', options.status);
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<TodosResponse>(`/todos${suffix}`);
+}
+
+/** The deliberate exception to every other structure type here — created
+ * directly, with no source entry (`requirements.md` §2, §11). */
+export function createTodo(input: CreateTodoRequest): Promise<Todo> {
+  return request<Todo>('/todos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteTodo(id: string): Promise<void> {
+  await request<undefined>(`/todos/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Reverts a completion without discarding the to-do — for when the match
+ * itself was wrong, or the user checked it off by mistake
+ * (`requirements.md` §6.2). */
+export async function reopenTodo(id: string): Promise<void> {
+  await request<undefined>(`/todos/${encodeURIComponent(id)}/reopen`, { method: 'POST' });
+}
+
+/** The user checking a to-do off directly, any record, any time — no entry
+ * involved (`requirements.md` §11). */
+export async function completeTodo(id: string): Promise<void> {
+  await request<undefined>(`/todos/${encodeURIComponent(id)}/complete`, { method: 'POST' });
+}
+
+export async function updateTodo(id: string, input: UpdateTodoRequest): Promise<void> {
+  await request<undefined>(`/todos/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function validateTodo(id: string): Promise<void> {
+  await request<undefined>(`/todos/${encodeURIComponent(id)}/validate`, { method: 'POST' });
+}
+
+export async function untouchTodo(id: string): Promise<void> {
+  await request<undefined>(`/todos/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+export function listTodoUpdateSuggestions(status?: string): Promise<TodoUpdateSuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<TodoUpdateSuggestionsResponse>(`/todos/update-suggestions${suffix}`);
+}
+
+export async function approveTodoUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/todos/update-suggestions/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectTodoUpdateSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/todos/update-suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+}
+
+/** A later entry reporting a *touched* to-do done — never applied silently
+ * (`requirements.md` §11), a separate suggestion stream from
+ * `listTodoUpdateSuggestions`. */
+export function listTodoCompletionSuggestions(status?: string): Promise<TodoCompletionSuggestionsResponse> {
+  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<TodoCompletionSuggestionsResponse>(`/todos/completion-suggestions${suffix}`);
+}
+
+export async function approveTodoCompletionSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/todos/completion-suggestions/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectTodoCompletionSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/todos/completion-suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
 }
 
 /**
@@ -686,6 +831,35 @@ export async function rejectSuggestion(id: string): Promise<void> {
 }
 
 /**
+ * "Public by default" settings, one per category (`requirements.md` §11,
+ * `plan.md` M16) — reuses the same four core category types as
+ * `listCategories`. Setting one never publishes anything by itself; it only
+ * changes what `listPublishQueue` surfaces for one-click confirmation.
+ */
+export function listVisibilityDefaults(): Promise<VisibilityDefaultsResponse> {
+  return request<VisibilityDefaultsResponse>('/visibility-defaults');
+}
+
+export async function setVisibilityDefault(
+  structureType: VisibilityStructureType,
+  category: string,
+  defaultPublic: boolean,
+): Promise<void> {
+  const body: SetVisibilityDefaultRequest = { structureType, category, defaultPublic };
+  await request<undefined>('/visibility-defaults', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Records in a "public by default" category not yet actually published —
+ * never auto-published, only ever offered for confirmation (`plan.md` M16). */
+export function listPublishQueue(): Promise<PublishQueueResponse> {
+  return request<PublishQueueResponse>('/publish-queue');
+}
+
+/**
  * Aggregated data for the analysis surfaces (`plan.md` M8, `design.md`
  * §5.3) — already computed behind the API (`requirements.md` §7.1); this
  * frontend only ever renders what comes back, never sums or averages
@@ -705,6 +879,10 @@ export function analysisLists(): Promise<ListsSummaryResponse> {
 
 export function analysisQuestions(): Promise<QuestionsSummaryResponse> {
   return request<QuestionsSummaryResponse>('/analysis/questions');
+}
+
+export function analysisTodos(): Promise<TodosSummaryResponse> {
+  return request<TodosSummaryResponse>('/analysis/todos');
 }
 
 /** A numeric field's total/average across a window, optionally filtered to

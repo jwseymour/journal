@@ -84,6 +84,10 @@ export interface ReviewMediumSummary {
 /** Same shape as `MetricsReader` — the seam `http/app.ts` depends on. */
 export interface ReviewsReader {
   list(options: ListReviewsOptions): ReviewRecord[];
+  /** One record by id, or `null` — see `MetricsReader.getById` (`plan.md` M16). */
+  getById(id: string): ReviewRecord | null;
+  /** Every record for one medium, unbounded — see `MetricsReader.allByMetric` (`plan.md` M16). */
+  allByMedium(medium: string): ReviewRecord[];
   remove(id: string): void;
   summarize(approvedMedia: readonly string[]): ReviewMediumSummary[];
   update(id: string, input: UpdateReviewInput, now: string): ReviewRecord | null;
@@ -211,6 +215,18 @@ export class ReviewsIndex implements ReviewsReader {
 
   removeEntry(entryId: string): void {
     this.#db.prepare('DELETE FROM reviews WHERE entry_id = ?').run(entryId);
+  }
+
+  getById(id: string): ReviewRecord | null {
+    const row = this.#db.prepare('SELECT * FROM reviews WHERE id = ?').get(id) as RawRow | undefined;
+    return row ? fromRaw(row) : null;
+  }
+
+  allByMedium(medium: string): ReviewRecord[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM reviews WHERE medium = ? ORDER BY event_epoch_ms DESC')
+      .all(medium) as RawRow[];
+    return rows.map(fromRaw);
   }
 
   /** Discard one wrong record (`requirements.md` §6.2). */

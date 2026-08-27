@@ -24,6 +24,8 @@ import type {
   OpinionStatementsResponse,
   OpinionSummariesResponse,
   OpenQuestion,
+  ProcessEntryResponse,
+  PublishQueueResponse,
   QuestionsResponse,
   QuestionsSummaryResponse,
   Review,
@@ -34,12 +36,18 @@ import type {
   StructureType,
   SuggestionsResponse,
   TemporalMetric,
+  Todo,
+  TodoCompletionSuggestionsResponse,
+  TodosResponse,
+  TodosSummaryResponse,
+  TodoUpdateSuggestionsResponse,
   TranscribeResponse,
   UpdateDocumentResponse,
   UpdateEntryResponse,
+  VisibilityDefaultsResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
-import { chatFailed, transcriptionFailed } from '../../src/errors.js';
+import { chatFailed, extractionFailed, transcriptionFailed } from '../../src/errors.js';
 import { createApp } from '../../src/http/app.js';
 import type { CategoriesReader, CategorySuggestion, SuggestionStatus } from '../../src/index/categories-index.js';
 import type {
@@ -84,9 +92,24 @@ import type {
   ReviewUpdateSuggestion,
   UpdateReviewInput,
 } from '../../src/index/reviews-index.js';
+import type {
+  CreateDirectTodoInput,
+  ListTodosOptions,
+  TodoCompletionSuggestion,
+  TodoRecord,
+  TodosReader,
+  TodosSummary,
+  TodoUpdateSuggestion,
+  UpdateTodoInput,
+} from '../../src/index/todos-index.js';
 import { DocumentsIndex } from '../../src/index/documents-index.js';
+import { PublicSearchIndex } from '../../src/index/public-search-index.js';
+import { PublishedIndex } from '../../src/index/published-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
+import { VisibilityDefaultsIndex } from '../../src/index/visibility-defaults-index.js';
 import type { ChatAnswerer } from '../../src/model/chat-orchestrator.js';
+import type { EntryProcessing } from '../../src/model/entry-processor.js';
+import { createPublisher } from '../../src/publish/create-publisher.js';
 import type { Searcher } from '../../src/search/searcher.js';
 import { FsDocumentStore } from '../../src/store/fs-document-store.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
@@ -152,6 +175,14 @@ class FakeMetricsReader implements MetricsReader {
   remove(id: string): void {
     this.removeCalls.push(id);
     this.records = this.records.filter((r) => r.id !== id);
+  }
+
+  getById(id: string): TemporalMetricRecord | null {
+    return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  allByMetric(metric: string): TemporalMetricRecord[] {
+    return this.records.filter((r) => r.metric === metric);
   }
 
   summarize(approvedNames: readonly string[], windowDays: number): MetricSummary[] {
@@ -284,6 +315,14 @@ class FakeReviewsReader implements ReviewsReader {
     this.records = this.records.filter((r) => r.id !== id);
   }
 
+  getById(id: string): ReviewRecord | null {
+    return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  allByMedium(medium: string): ReviewRecord[] {
+    return this.records.filter((r) => r.medium === medium);
+  }
+
   summarize(approvedMedia: readonly string[]): ReviewMediumSummary[] {
     this.summarizeCalls.push(approvedMedia);
     return this.summaries;
@@ -342,6 +381,14 @@ class FakeListItemsReader implements ListItemsReader {
   remove(id: string): void {
     this.removeCalls.push(id);
     this.records = this.records.filter((r) => r.id !== id);
+  }
+
+  getById(id: string): ListItemRecord | null {
+    return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  allByListType(listType: string): ListItemRecord[] {
+    return this.records.filter((r) => r.listType === listType);
   }
 
   summarize(approvedTypes: readonly string[]): ListTypeSummary[] {
@@ -432,6 +479,14 @@ class FakeOpinionStatementsReader implements OpinionStatementsReader {
     this.records = this.records.filter((r) => r.id !== id);
   }
 
+  getById(id: string): OpinionStatementRecord | null {
+    return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  bySubject(subject: string): OpinionStatementRecord[] {
+    return this.records.filter((r) => r.subject === subject);
+  }
+
   updateSuggestions: OpinionStatementUpdateSuggestion[] = [];
 
   update(id: string, input: UpdateOpinionStatementInput): OpinionStatementRecord | null {
@@ -501,6 +556,10 @@ class FakeQuestionsReader implements QuestionsReader {
     this.records = this.records.filter((r) => r.id !== id);
   }
 
+  getById(id: string): QuestionRecord | null {
+    return this.records.find((r) => r.id === id) ?? null;
+  }
+
   reopen(id: string): void {
     this.reopenCalls.push(id);
     this.records = this.records.map((r) =>
@@ -545,6 +604,112 @@ class FakeQuestionsReader implements QuestionsReader {
   }
 }
 
+/** Same reasoning again, for `/todos`. Closest to `FakeQuestionsReader`,
+ * plus fakes for the two genuinely new mechanisms (`plan.md` M15):
+ * `createDirect` and `completeDirect`. `untouch` mirrors the real
+ * `TodosIndex`'s new guard — a no-op for an `origin: 'user'` record. */
+class FakeTodosReader implements TodosReader {
+  listCalls: ListTodosOptions[] = [];
+  removeCalls: string[] = [];
+  reopenCalls: string[] = [];
+  completeDirectCalls: string[] = [];
+  createDirectCalls: CreateDirectTodoInput[] = [];
+  summary: TodosSummary = { openCount: 0, doneCount: 0 };
+  records: TodoRecord[] = [];
+
+  list(options: ListTodosOptions): TodoRecord[] {
+    this.listCalls.push(options);
+    const filtered = options.status ? this.records.filter((r) => r.status === options.status) : this.records;
+    return filtered.slice(0, options.limit);
+  }
+
+  createDirect(input: CreateDirectTodoInput): TodoRecord {
+    this.createDirectCalls.push(input);
+    const record: TodoRecord = {
+      id: input.id,
+      entryId: null,
+      text: input.text,
+      eventTime: input.now,
+      eventEpochMs: Date.parse(input.now),
+      eventTimeExplicit: false,
+      extractedAt: input.now,
+      status: 'open',
+      doneEntryId: null,
+      resolution: null,
+      doneAt: null,
+      origin: 'user',
+      touched: true,
+    };
+    this.records = [...this.records, record];
+    return record;
+  }
+
+  remove(id: string): void {
+    this.removeCalls.push(id);
+    this.records = this.records.filter((r) => r.id !== id);
+  }
+
+  reopen(id: string): void {
+    this.reopenCalls.push(id);
+    this.records = this.records.map((r) =>
+      r.id === id ? { ...r, status: 'open', doneEntryId: null, resolution: null, doneAt: null } : r,
+    );
+  }
+
+  completeDirect(id: string): void {
+    this.completeDirectCalls.push(id);
+    this.records = this.records.map((r) =>
+      r.id === id ? { ...r, status: 'done', doneEntryId: null, resolution: null, touched: true } : r,
+    );
+  }
+
+  summarize(): TodosSummary {
+    return this.summary;
+  }
+
+  updateSuggestions: TodoUpdateSuggestion[] = [];
+  completionSuggestions: TodoCompletionSuggestion[] = [];
+
+  update(id: string, input: UpdateTodoInput): TodoRecord | null {
+    const existing = this.records.find((r) => r.id === id);
+    if (!existing) return null;
+    const updated: TodoRecord = {
+      ...existing,
+      ...(input.text !== undefined ? { text: input.text } : {}),
+      ...(input.eventTime !== undefined ? { eventTime: input.eventTime } : {}),
+      ...(input.eventTimeExplicit !== undefined ? { eventTimeExplicit: input.eventTimeExplicit } : {}),
+      touched: true,
+    };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  validate(id: string): void {
+    this.records = this.records.map((r) => (r.id === id ? { ...r, touched: true } : r));
+  }
+
+  /** Mirrors the real `TodosIndex.untouch`'s new guard. */
+  untouch(id: string): void {
+    this.records = this.records.map((r) => (r.id === id && r.origin === 'extracted' ? { ...r, touched: false } : r));
+  }
+
+  listUpdateSuggestions(options: { status?: TodoUpdateSuggestion['status'] } = {}): TodoUpdateSuggestion[] {
+    return this.updateSuggestions.filter((s) => !options.status || s.status === options.status);
+  }
+
+  decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
+    this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
+
+  listCompletionSuggestions(options: { status?: TodoCompletionSuggestion['status'] } = {}): TodoCompletionSuggestion[] {
+    return this.completionSuggestions.filter((s) => !options.status || s.status === options.status);
+  }
+
+  decideCompletion(id: string, decision: 'approved' | 'rejected'): void {
+    this.completionSuggestions = this.completionSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
+}
+
 /** Records calls and returns a canned response — these tests exercise the
  * route's own contract (validation, status codes, passthrough), never the
  * model's judgement (that is `chat-orchestrator.test.ts`'s job). */
@@ -555,6 +720,27 @@ class FakeChatAnswerer implements ChatAnswerer {
   async answer(messages: ChatMessage[]): Promise<ChatResponse> {
     this.calls.push(messages);
     if (this.response === 'FAIL') throw chatFailed('the gateway is not configured');
+    return this.response;
+  }
+}
+
+/** Records which entries were processed and returns a canned response —
+ * these tests exercise the route's own contract, never real extraction
+ * (that is each extractor's own test file's job, and `entry-processor.test.ts`'s). */
+class FakeEntryProcessor implements EntryProcessing {
+  calls: { id: string; created: string; body: string }[] = [];
+  response: ProcessEntryResponse | 'FAIL' = {
+    metricCount: 0,
+    reviewCount: 0,
+    itemCount: 0,
+    statementCount: 0,
+    questionCount: 0,
+    todoCount: 0,
+  };
+
+  async processEntry(entry: { id: string; created: string; body: string }): Promise<ProcessEntryResponse> {
+    this.calls.push(entry);
+    if (this.response === 'FAIL') throw extractionFailed('AI_GATEWAY_API_KEY is not set.');
     return this.response;
   }
 }
@@ -581,9 +767,13 @@ let categories: FakeCategoriesReader;
 let opinionStatements: FakeOpinionStatementsReader;
 let opinionSummaries: FakeOpinionSummariesReader;
 let questions: FakeQuestionsReader;
+let todos: FakeTodosReader;
+let processor: FakeEntryProcessor;
 let chat: FakeChatAnswerer;
 let index: SqliteIndex;
 let documentsIndex: DocumentsIndex;
+let publishedIndex: PublishedIndex;
+let visibilityDefaultsIndex: VisibilityDefaultsIndex;
 
 const config = (journalDir: string): Config => ({
   journalDir,
@@ -605,6 +795,7 @@ const config = (journalDir: string): Config => ({
   awsRegion: undefined,
   awsAccessKeyId: undefined,
   awsSecretAccessKey: undefined,
+  s3AssumeRoleArn: undefined,
   authorizedEmail: 'seymour.w.jack@gmail.com',
   googleClientId: undefined,
   googleClientSecret: undefined,
@@ -627,12 +818,30 @@ beforeEach(async () => {
   opinionStatements = new FakeOpinionStatementsReader();
   opinionSummaries = new FakeOpinionSummariesReader();
   questions = new FakeQuestionsReader();
+  todos = new FakeTodosReader();
+  processor = new FakeEntryProcessor();
   chat = new FakeChatAnswerer();
   index = new SqliteIndex(':memory:');
   documentsIndex = new DocumentsIndex(':memory:');
+  publishedIndex = new PublishedIndex(':memory:');
+  visibilityDefaultsIndex = new VisibilityDefaultsIndex(':memory:');
+  const entryStore = new FsEntryStore(root, index);
+  const documentStore = new FsDocumentStore(root, documentsIndex);
+  const publisher = createPublisher(
+    config(root),
+    publishedIndex,
+    entryStore,
+    documentStore,
+    metrics,
+    reviews,
+    lists,
+    opinionStatements,
+    questions,
+    new PublicSearchIndex(':memory:'),
+  );
   app = createApp(
-    new FsEntryStore(root, index),
-    new FsDocumentStore(root, documentsIndex),
+    entryStore,
+    documentStore,
     config(root),
     transcriber,
     searcher,
@@ -644,13 +853,19 @@ beforeEach(async () => {
     opinionStatements,
     opinionSummaries,
     questions,
+    todos,
+    processor,
     chat,
+    publisher,
+    visibilityDefaultsIndex,
   );
 });
 
 afterEach(async () => {
   index.close();
   documentsIndex.close();
+  publishedIndex.close();
+  visibilityDefaultsIndex.close();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -1040,6 +1255,62 @@ describe('POST /entries/:id/attachments', () => {
   });
 });
 
+describe('POST /entries/:id/process', () => {
+  function process(id: string) {
+    return app.request(`/entries/${id}/process`, { method: 'POST' });
+  }
+
+  it('runs the processor against the entry and returns its counts', async () => {
+    const created = (await (await post({ body: 'Ran 5k. Need to buy milk.' })).json()) as CreateEntryResponse;
+    processor.response = {
+      metricCount: 1,
+      reviewCount: 0,
+      itemCount: 0,
+      statementCount: 0,
+      questionCount: 0,
+      todoCount: 1,
+    };
+
+    const response = await process(created.id);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ProcessEntryResponse;
+    expect(body).toEqual(processor.response);
+    expect(processor.calls).toHaveLength(1);
+    expect(processor.calls[0]!.id).toBe(created.id);
+    expect(processor.calls[0]!.body).toBe('Ran 5k. Need to buy milk.\n');
+  });
+
+  it('is safe to call again on the same entry — same route, no special-casing', async () => {
+    const created = (await (await post({ body: 'Edited later.' })).json()) as CreateEntryResponse;
+
+    expect((await process(created.id)).status).toBe(200);
+    expect((await process(created.id)).status).toBe(200);
+    expect(processor.calls).toHaveLength(2);
+  });
+
+  it('reports a missing entry as not found, without calling the processor', async () => {
+    const response = await process('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
+    expect(processor.calls).toHaveLength(0);
+  });
+
+  it('reports a malformed id as not found', async () => {
+    const response = await process('not-a-ulid');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
+  });
+
+  it('surfaces extraction_failed when the model client is unconfigured', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    processor.response = 'FAIL';
+
+    const response = await process(created.id);
+    expect(response.status).toBe(503);
+    expect((await errorOf(response)).code).toBe('extraction_failed');
+  });
+});
+
 describe('POST /documents', () => {
   function postDocument(body: unknown) {
     return app.request('/documents', {
@@ -1058,7 +1329,7 @@ describe('POST /documents', () => {
 
     expect(await readFile(join(root, created.path), 'utf8')).toBe(
       `---\nid: ${created.id}\ntitle: The greenhouse project\ncreated: ${created.created}\n` +
-        `updated: ${created.created}\npublic: false\n---\nNotes so far.\n`,
+        `updated: ${created.created}\n---\nNotes so far.\n`,
     );
   });
 
@@ -1146,7 +1417,7 @@ describe('GET /documents/:id', () => {
       title: 'A project',
       created: created.created,
       updated: created.created,
-      public: false,
+      published: false,
       body: 'Line one\n\nLine two\n',
       contentHash: created.contentHash,
     });
@@ -1243,80 +1514,49 @@ describe('POST /documents/:id/publish and /unpublish', () => {
     });
   }
 
-  function publish(id: string, contentHash: string) {
-    return app.request(`/documents/${id}/publish`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contentHash }),
-    });
+  function publish(id: string) {
+    return app.request(`/documents/${id}/publish`, { method: 'POST' });
   }
 
-  function unpublish(id: string, contentHash: string) {
-    return app.request(`/documents/${id}/unpublish`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contentHash }),
-    });
+  function unpublish(id: string) {
+    return app.request(`/documents/${id}/unpublish`, { method: 'POST' });
   }
 
-  it('flips public to true and leaves title/body untouched', async () => {
+  it('publishes — leaves title/body/contentHash untouched, and marks the document published', async () => {
     const created = await create('x', 'x');
 
-    const response = await publish(created.id, created.contentHash);
+    const response = await publish(created.id);
     expect(response.status).toBe(200);
     const published = (await response.json()) as Document;
-    expect(published.public).toBe(true);
+    expect(published.published).toBe(true);
     expect(published.title).toBe('x');
     expect(published.body).toBe('x\n');
-    expect(published.contentHash).not.toBe(created.contentHash);
+    expect(published.contentHash).toBe(created.contentHash);
   });
 
   it('unpublish reverses it', async () => {
     const created = await create('x', 'x');
-    const published = (await (await publish(created.id, created.contentHash)).json()) as Document;
+    await publish(created.id);
 
-    const response = await unpublish(created.id, published.contentHash);
+    const response = await unpublish(created.id);
     expect(response.status).toBe(200);
-    expect(((await response.json()) as Document).public).toBe(false);
+    expect(((await response.json()) as Document).published).toBe(false);
   });
 
-  it('an ordinary PUT never changes public', async () => {
+  it('an ordinary PUT never changes published status', async () => {
     const created = await create('x', 'x');
-    const published = (await (await publish(created.id, created.contentHash)).json()) as Document;
+    await publish(created.id);
 
-    const response = await put(created.id, { title: 'Renamed', body: 'y', contentHash: published.contentHash });
-    expect(((await response.json()) as Document).public).toBe(true);
-  });
-
-  it('rejects a stale contentHash with a 409 and does not flip anything', async () => {
-    const created = await create('x', 'x');
-    await put(created.id, { title: 'x', body: 'Edited elsewhere.', contentHash: created.contentHash });
-
-    const response = await publish(created.id, created.contentHash);
-    expect(response.status).toBe(409);
-    expect((await errorOf(response)).code).toBe('edit_conflict');
-
-    const reread = (await (await app.request(`/documents/${created.id}`)).json()) as Document;
-    expect(reread.public).toBe(false);
+    const response = await put(created.id, { title: 'Renamed', body: 'y', contentHash: created.contentHash });
+    expect(((await response.json()) as Document).published).toBe(true);
   });
 
   it('reports a missing document as record_not_found, including for a malformed id', async () => {
     for (const id of ['01ARZ3NDEKTSV4RRFFQ69G5FAV', 'nonsense']) {
-      const response = await publish(id, 'whatever');
+      const response = await publish(id);
       expect(response.status, id).toBe(404);
       expect((await errorOf(response)).code).toBe('record_not_found');
     }
-  });
-
-  it('rejects a body missing contentHash', async () => {
-    const created = await create('x', 'x');
-    const response = await app.request(`/documents/${created.id}/publish`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    expect(response.status).toBe(400);
-    expect((await errorOf(response)).code).toBe('invalid_request');
   });
 });
 
@@ -1444,6 +1684,14 @@ describe('GET /analysis/questions', () => {
     questions.summary = { openCount: 3, resolvedCount: 2 };
     const response = await app.request('/analysis/questions');
     expect((await response.json()) as QuestionsSummaryResponse).toEqual({ openCount: 3, resolvedCount: 2 });
+  });
+});
+
+describe('GET /analysis/todos', () => {
+  it('returns whatever the TodosReader produces', async () => {
+    todos.summary = { openCount: 4, doneCount: 1 };
+    const response = await app.request('/analysis/todos');
+    expect((await response.json()) as TodosSummaryResponse).toEqual({ openCount: 4, doneCount: 1 });
   });
 });
 
@@ -1580,7 +1828,27 @@ describe('GET /search', () => {
   });
 
   it('returns whatever hits the Searcher produces, unmodified', async () => {
-    const hit: SearchHit = { entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAV', created: '2026-07-01T09:00:00Z', passage: 'a lighthouse on the point' };
+    const hit: SearchHit = {
+      sourceType: 'entry',
+      entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      created: '2026-07-01T09:00:00Z',
+      passage: 'a lighthouse on the point',
+    };
+    searcher.hits = [hit];
+
+    const response = await app.request('/search?q=lighthouse');
+    const body = (await response.json()) as SearchResponse;
+    expect(body.hits).toEqual([hit]);
+  });
+
+  it('returns a document hit exactly as the Searcher produces it', async () => {
+    const hit: SearchHit = {
+      sourceType: 'document',
+      documentId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      title: 'A project',
+      created: '2026-07-01T09:00:00Z',
+      passage: 'a lighthouse on the point',
+    };
     searcher.hits = [hit];
 
     const response = await app.request('/search?q=lighthouse');
@@ -1649,6 +1917,7 @@ describe('GET /metrics', () => {
       detail: 'a 5k run',
       fields: { distance_km: 5 },
       touched: false,
+      published: false,
     };
     expect(body.metrics).toEqual([expected]);
   });
@@ -2106,6 +2375,7 @@ describe('GET /reviews', () => {
       eventTime: '2026-07-20T20:00:00+01:00',
       eventTimeExplicit: true,
       touched: false,
+      published: false,
     };
     expect(body.reviews).toEqual([expected]);
   });
@@ -2171,6 +2441,7 @@ describe('GET /lists', () => {
       eventTime: '2026-07-20T20:00:00+01:00',
       eventTimeExplicit: true,
       touched: false,
+      published: false,
     };
     expect(body.items).toEqual([expected]);
   });
@@ -2233,6 +2504,7 @@ describe('GET /opinions/statements', () => {
         eventTime: '2026-07-20T20:00:00+01:00',
         eventTimeExplicit: true,
         touched: false,
+        published: false,
       },
     ]);
   });
@@ -2370,6 +2642,7 @@ describe('GET /questions', () => {
       resolvedEntryId: null,
       resolution: null,
       touched: false,
+      published: false,
     };
     expect(body.questions).toEqual([expected]);
   });
@@ -2430,6 +2703,268 @@ describe('POST /questions/:id/reopen', () => {
     const response = await app.request('/questions/not-a-ulid/reopen', { method: 'POST' });
     expect(response.status).toBe(204);
     expect(questions.reopenCalls).toEqual([]);
+  });
+});
+
+describe('GET /todos', () => {
+  const record = (overrides: Partial<TodoRecord> = {}): TodoRecord => ({
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    text: 'Call the dentist',
+    eventTime: '2026-07-20T20:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+    eventTimeExplicit: true,
+    extractedAt: '2026-07-20T21:00:00+01:00',
+    status: 'open',
+    doneEntryId: null,
+    resolution: null,
+    doneAt: null,
+    origin: 'extracted',
+    touched: false,
+    ...overrides,
+  });
+
+  it('is empty, not an error, when nothing has been extracted', async () => {
+    const response = await app.request('/todos');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as TodosResponse).toEqual({ todos: [] });
+  });
+
+  it('returns whatever the TodosReader produces, without the internal-only fields', async () => {
+    todos.records = [record()];
+    const response = await app.request('/todos');
+    const body = (await response.json()) as TodosResponse;
+    const expected: Todo = {
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      text: 'Call the dentist',
+      eventTime: '2026-07-20T20:00:00+01:00',
+      eventTimeExplicit: true,
+      status: 'open',
+      doneEntryId: null,
+      resolution: null,
+      origin: 'extracted',
+      touched: false,
+    };
+    expect(body.todos).toEqual([expected]);
+  });
+
+  it('returns entryId: null and origin: "user" for a directly created to-do', async () => {
+    todos.records = [record({ entryId: null, origin: 'user', touched: true })];
+    const response = await app.request('/todos');
+    const body = (await response.json()) as TodosResponse;
+    expect(body.todos[0]).toMatchObject({ entryId: null, origin: 'user', touched: true });
+  });
+
+  it('passes a status filter and the default limit straight to the TodosReader', async () => {
+    await app.request('/todos?status=done');
+    expect(todos.listCalls).toEqual([{ status: 'done', limit: 30 }]);
+  });
+
+  it('rejects a status value that is neither open nor done', async () => {
+    const response = await app.request('/todos?status=whenever');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects a limit outside 1..200', async () => {
+    const response = await app.request('/todos?limit=201');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+/** The one structure type where creation isn't AI-only — the deliberate
+ * exception to "origination is always automatic" (`requirements.md` §2,
+ * §11, `plan.md` M15). Closest real precedent is `POST /documents`. */
+describe('POST /todos', () => {
+  it('creates a to-do directly, with no source entry, already touched and user-origin', async () => {
+    const response = await app.request('/todos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Water the plants' }),
+    });
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as Todo;
+    expect(body).toMatchObject({ entryId: null, text: 'Water the plants', status: 'open', origin: 'user', touched: true });
+
+    // Immediately visible through a follow-up GET, exactly as created.
+    const listed = await app.request('/todos');
+    const listedBody = (await listed.json()) as TodosResponse;
+    expect(listedBody.todos).toEqual([body]);
+  });
+
+  it('rejects an empty text', async () => {
+    const response = await app.request('/todos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects an unknown field', async () => {
+    const response = await app.request('/todos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'x', dueDate: '2026-08-01' }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('DELETE /todos/:id', () => {
+  it('removes the record', async () => {
+    const response = await app.request('/todos/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(todos.removeCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/todos/not-a-ulid', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect(todos.removeCalls).toEqual([]);
+  });
+});
+
+describe('POST /todos/:id/reopen', () => {
+  it('reopens the record', async () => {
+    const response = await app.request('/todos/01ARZ3NDEKTSV4RRFFQ69G5FAV/reopen', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(todos.reopenCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/todos/not-a-ulid/reopen', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(todos.reopenCalls).toEqual([]);
+  });
+});
+
+/** The user checking a to-do off directly, any record, any time
+ * (`requirements.md` §11) — new, not shared with any other structure. */
+describe('POST /todos/:id/complete', () => {
+  it('marks the record done directly, with no entry involved', async () => {
+    const response = await app.request('/todos/01ARZ3NDEKTSV4RRFFQ69G5FAV/complete', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(todos.completeDirectCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/todos/not-a-ulid/complete', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(todos.completeDirectCalls).toEqual([]);
+  });
+});
+
+/** `untouch` carries a new guard todos-only: a no-op on an `origin: 'user'`
+ * record (`plan.md` M15) — see `TodosIndex.untouch`'s own doc comment for
+ * why. Exercised at the HTTP level, not just the index level, since the
+ * route itself must not special-case anything — the guard has to hold
+ * entirely inside the reader. */
+describe('POST /todos/:id/untouch', () => {
+  it('reverts an extracted record to untouched', async () => {
+    todos.records = [
+      {
+        id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        entryId: 'e1',
+        text: 'Call the dentist',
+        eventTime: '2026-07-20T20:00:00+01:00',
+        eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+        eventTimeExplicit: true,
+        extractedAt: '2026-07-20T21:00:00+01:00',
+        status: 'open',
+        doneEntryId: null,
+        resolution: null,
+        doneAt: null,
+        origin: 'extracted',
+        touched: true,
+      },
+    ];
+    const response = await app.request('/todos/01ARZ3NDEKTSV4RRFFQ69G5FAV/untouch', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(todos.records[0]!.touched).toBe(false);
+  });
+
+  it('is a true no-op on a user-origin record — touched stays true', async () => {
+    const created = await app.request('/todos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Water the plants' }),
+    });
+    const { id } = (await created.json()) as Todo;
+
+    const response = await app.request(`/todos/${id}/untouch`, { method: 'POST' });
+    expect(response.status).toBe(204);
+
+    const listed = await app.request('/todos');
+    const body = (await listed.json()) as TodosResponse;
+    expect(body.todos[0]).toMatchObject({ origin: 'user', touched: true });
+  });
+});
+
+describe('GET/POST /todos/update-suggestions', () => {
+  it('lists pending suggestions and lets the user approve or reject one', async () => {
+    todos.updateSuggestions = [
+      {
+        id: 's1',
+        recordId: 'm1',
+        entryId: 'e1',
+        text: 'reprocessed text',
+        eventTime: '2026-07-20T20:00:00+01:00',
+        eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+        eventTimeExplicit: true,
+        reason: 'Reprocessing this entry now extracts different content.',
+        status: 'pending',
+        suggestedAt: '2026-07-21T00:00:00Z',
+        decidedAt: null,
+      },
+    ];
+
+    const listed = await app.request('/todos/update-suggestions');
+    expect(((await listed.json()) as TodoUpdateSuggestionsResponse).suggestions).toHaveLength(1);
+
+    const approved = await app.request('/todos/update-suggestions/s1/approve', { method: 'POST' });
+    expect(approved.status).toBe(204);
+    expect(todos.updateSuggestions[0]!.status).toBe('approved');
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const response = await app.request('/todos/update-suggestions?status=nonsense');
+    expect(response.status).toBe(400);
+  });
+});
+
+/** A separate suggestion mechanism from `update-suggestions` — closing a
+ * touched to-do because a later entry says so, never applied silently
+ * (`requirements.md` §11, `plan.md` M15). New, no representative coverage
+ * elsewhere. */
+describe('GET/POST /todos/completion-suggestions', () => {
+  it('lists pending suggestions and lets the user approve or reject one', async () => {
+    todos.completionSuggestions = [
+      {
+        id: 's1',
+        recordId: 'm1',
+        entryId: 'e2',
+        resolution: 'Called and rescheduled.',
+        reason: 'Reprocessing found this entry marks it done.',
+        status: 'pending',
+        suggestedAt: '2026-07-21T00:00:00Z',
+        decidedAt: null,
+      },
+    ];
+
+    const listed = await app.request('/todos/completion-suggestions');
+    expect(((await listed.json()) as TodoCompletionSuggestionsResponse).suggestions).toHaveLength(1);
+
+    const rejected = await app.request('/todos/completion-suggestions/s1/reject', { method: 'POST' });
+    expect(rejected.status).toBe(204);
+    expect(todos.completionSuggestions[0]!.status).toBe('rejected');
+  });
+
+  it('rejects an invalid status filter', async () => {
+    const response = await app.request('/todos/completion-suggestions?status=nonsense');
+    expect(response.status).toBe(400);
   });
 });
 
@@ -2548,6 +3083,144 @@ describe('POST /categories/suggestions/:id/approve and /reject', () => {
     const response = await app.request('/categories/suggestions/s1/reject', { method: 'POST' });
     expect(response.status).toBe(204);
     expect(categories.decideCalls).toEqual([{ id: 's1', decision: 'rejected' }]);
+  });
+});
+
+/** One structure's publish/unpublish routes are exercised in full;
+ * `/reviews`, `/lists`, `/opinions/statements/`, `/questions` repeat the
+ * identical shape (`plan.md` M16, same reasoning as M10's own tests). */
+describe('POST /metrics/:id/publish and /unpublish', () => {
+  const METRIC_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+
+  beforeEach(() => {
+    metrics.records = [
+      {
+        id: METRIC_ID,
+        entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+        metric: 'exercise',
+        eventTime: '2026-07-20T09:00:00+01:00',
+        eventEpochMs: Date.parse('2026-07-20T08:00:00Z'),
+        eventTimeExplicit: true,
+        detail: 'a 5k run',
+        fields: {},
+        extractedAt: '2026-07-20T10:00:00+01:00',
+        touched: false,
+      },
+    ];
+  });
+
+  it('publish makes it show as published; unpublish reverts that', async () => {
+    const publish = await app.request(`/metrics/${METRIC_ID}/publish`, { method: 'POST' });
+    expect(publish.status).toBe(204);
+
+    const afterPublish = (await (await app.request('/metrics')).json()) as MetricsResponse;
+    expect(afterPublish.metrics[0]?.published).toBe(true);
+
+    const unpublish = await app.request(`/metrics/${METRIC_ID}/unpublish`, { method: 'POST' });
+    expect(unpublish.status).toBe(204);
+
+    const afterUnpublish = (await (await app.request('/metrics')).json()) as MetricsResponse;
+    expect(afterUnpublish.metrics[0]?.published).toBe(false);
+  });
+
+  it('is a tolerant no-op for a malformed id', async () => {
+    const response = await app.request('/metrics/not-a-ulid/publish', { method: 'POST' });
+    expect(response.status).toBe(204);
+  });
+});
+
+describe('GET/PUT /visibility-defaults', () => {
+  it('is empty with nothing set', async () => {
+    const response = await app.request('/visibility-defaults');
+    expect((await response.json()) as VisibilityDefaultsResponse).toEqual({ defaults: [] });
+  });
+
+  it('PUT sets a default, reflected by GET', async () => {
+    const put = await app.request('/visibility-defaults', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'review_medium', category: 'film', defaultPublic: true }),
+    });
+    expect(put.status).toBe(204);
+
+    const response = await app.request('/visibility-defaults');
+    expect((await response.json()) as VisibilityDefaultsResponse).toEqual({
+      defaults: [{ structureType: 'review_medium', category: 'film', defaultPublic: true }],
+    });
+  });
+
+  it('rejects a structure type outside the four core categories', async () => {
+    const response = await app.request('/visibility-defaults', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'question', category: 'x', defaultPublic: true }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('GET /publish-queue', () => {
+  const review = (id: string) => ({
+    id,
+    entryId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+    title: 'Some Film',
+    medium: 'film',
+    rating: 4,
+    progress: 100,
+    opinion: 'Really enjoyed it.',
+    eventTime: '2026-07-20T20:00:00+01:00',
+    eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
+    eventTimeExplicit: true,
+    extractedAt: '2026-07-20T21:00:00+01:00',
+    touched: false,
+  });
+
+  it('is empty with no defaults set, even with unpublished records present', async () => {
+    reviews.records = [review('01ARZ3NDEKTSV4RRFFQ69G5FAV')];
+    const response = await app.request('/publish-queue');
+    expect((await response.json()) as PublishQueueResponse).toEqual({ items: [] });
+  });
+
+  it('surfaces a record once its category defaults to public, and drops it once published', async () => {
+    reviews.records = [review('01ARZ3NDEKTSV4RRFFQ69G5FAV')];
+    await app.request('/visibility-defaults', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'review_medium', category: 'film', defaultPublic: true }),
+    });
+
+    const queued = (await (await app.request('/publish-queue')).json()) as PublishQueueResponse;
+    expect(queued.items).toEqual([
+      {
+        structureType: 'review_medium',
+        category: 'film',
+        id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        preview: 'Some Film',
+        eventTime: '2026-07-20T20:00:00+01:00',
+      },
+    ]);
+
+    await app.request('/reviews/01ARZ3NDEKTSV4RRFFQ69G5FAV/publish', { method: 'POST' });
+
+    const afterPublish = (await (await app.request('/publish-queue')).json()) as PublishQueueResponse;
+    expect(afterPublish.items).toEqual([]);
+  });
+
+  it('stops surfacing new unpublished records once the default is turned back off', async () => {
+    reviews.records = [review('01ARZ3NDEKTSV4RRFFQ69G5FAV')];
+    await app.request('/visibility-defaults', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'review_medium', category: 'film', defaultPublic: true }),
+    });
+    await app.request('/visibility-defaults', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ structureType: 'review_medium', category: 'film', defaultPublic: false }),
+    });
+
+    const response = (await (await app.request('/publish-queue')).json()) as PublishQueueResponse;
+    expect(response.items).toEqual([]);
   });
 });
 

@@ -86,6 +86,11 @@ export interface QuestionsSummary {
 /** Same shape as `MetricsReader` — the seam `http/app.ts` depends on. */
 export interface QuestionsReader {
   list(options: ListQuestionsOptions): QuestionRecord[];
+  /** One record by id, or `null` — see `MetricsReader.getById` (`plan.md`
+   * M16). Questions have no category, so unlike the other four structures
+   * there is no `allBy*`/`VisibilityDefaultsIndex` participation — only
+   * direct, per-record publish/unpublish. */
+  getById(id: string): QuestionRecord | null;
   remove(id: string): void;
   reopen(id: string): void;
   summarize(): QuestionsSummary;
@@ -358,6 +363,11 @@ export class QuestionsIndex implements QuestionsReader {
   /** Discard one wrong record entirely (`requirements.md` §6.2). */
   remove(id: string): void {
     this.#db.prepare('DELETE FROM questions WHERE id = ?').run(id);
+  }
+
+  getById(id: string): QuestionRecord | null {
+    const row = this.#db.prepare('SELECT * FROM questions WHERE id = ?').get(id) as RawRow | undefined;
+    return row ? fromRaw(row) : null;
   }
 
   list(options: ListQuestionsOptions): QuestionRecord[] {

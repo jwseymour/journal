@@ -18,8 +18,11 @@ const PAGE_SIZE = 100;
  * What genuinely is identical — event-time resolution — is already shared,
  * via `resolveEventTime`.
  *
- * Never wired into live writes, for the same cost reason as `Extractor`:
- * only `reprocessAll`, run explicitly via `npm run reprocess`.
+ * Never wired into autosave — a paid call on every keystroke would be both
+ * wasteful and a surprise on the user's bill. Reached two ways instead:
+ * `reprocessAll` (`npm run reprocess`, batch, corpus-wide) and
+ * `EntryProcessor` (`POST /entries/:id/process`, live, one entry, only ever
+ * on an explicit user action — `plan.md` M15).
  */
 export class ReviewsExtractor {
   readonly #reviewsIndex: ReviewsIndex;
@@ -32,7 +35,7 @@ export class ReviewsExtractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<void> {
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ reviewCount: number }> {
     const approvedMedia = this.#categoriesIndex.approvedNames('review_medium');
     const { schema, system } = buildReviewExtractionRequest(approvedMedia);
     const result = await this.#modelClient.extract({ schema, system, prompt: buildExtractionPrompt(entry) });
@@ -101,6 +104,8 @@ export class ReviewsExtractor {
         now: extractedAt,
       });
     }
+
+    return { reviewCount: records.length };
   }
 
   removeEntry(entryId: string): void {

@@ -10,9 +10,11 @@ import {
   deleteQuestion,
   listQuestions,
   listQuestionUpdateSuggestions,
+  publishQuestion,
   rejectQuestionUpdateSuggestion,
   reopenQuestion,
   untouchQuestion,
+  unpublishQuestion,
   updateQuestion,
   validateQuestion,
 } from '@/lib/api';
@@ -114,6 +116,20 @@ export default function QuestionsPage() {
         setData((current) => {
           if (!current) return current;
           const flip = (q: OpenQuestion) => (q.id === question.id ? { ...q, touched: !question.touched } : q);
+          return { ...current, open: current.open.map(flip), resolved: current.resolved.map(flip) };
+        }),
+      )
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not update.'))
+      .finally(() => setBusyId(null));
+  };
+
+  const togglePublished = (question: OpenQuestion) => {
+    setBusyId(question.id);
+    (question.published ? unpublishQuestion(question.id) : publishQuestion(question.id))
+      .then(() =>
+        setData((current) => {
+          if (!current) return current;
+          const flip = (q: OpenQuestion) => (q.id === question.id ? { ...q, published: !question.published } : q);
           return { ...current, open: current.open.map(flip), resolved: current.resolved.map(flip) };
         }),
       )
@@ -240,6 +256,7 @@ export default function QuestionsPage() {
                     <span>{formatTime(question.eventTime)}</span>
                     {!question.eventTimeExplicit && <span>(from the entry’s own time)</span>}
                     {question.touched && <span className={styles.touched}>touched</span>}
+                    {question.published && <span className={styles.published}>published</span>}
                   </span>
                   {editRow(question)}
                   <Link href={`/entry/${question.entryId}`} className={styles.link}>
@@ -258,6 +275,14 @@ export default function QuestionsPage() {
                       disabled={busyId === question.id}
                     >
                       {question.touched ? 'Untouch' : 'Validate'}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.reopen}
+                      onClick={() => togglePublished(question)}
+                      disabled={busyId === question.id}
+                    >
+                      {question.published ? 'Unpublish' : 'Publish'}
                     </button>
                     <button
                       type="button"
@@ -289,6 +314,7 @@ export default function QuestionsPage() {
                     <span>{formatTime(question.eventTime)}</span>
                     {!question.eventTimeExplicit && <span>(from the entry’s own time)</span>}
                     {question.touched && <span className={styles.touched}>touched</span>}
+                    {question.published && <span className={styles.published}>published</span>}
                   </span>
                   {editRow(question)}
                   {question.resolution && <span className={styles.resolution}>{question.resolution}</span>}
@@ -315,6 +341,14 @@ export default function QuestionsPage() {
                       disabled={busyId === question.id}
                     >
                       Reopen
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.reopen}
+                      onClick={() => togglePublished(question)}
+                      disabled={busyId === question.id}
+                    >
+                      {question.published ? 'Unpublish' : 'Publish'}
                     </button>
                     <button
                       type="button"

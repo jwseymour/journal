@@ -74,9 +74,9 @@ terraform apply \
   -var="key_pair_name=journal-key"
 ```
 
-Review the plan before typing `yes` — it creates: one S3 bucket (versioned, encrypted, private), one IAM role + instance profile scoped to that bucket's `journal/*` prefix, one security group (80/443 open, 22 restricted to your IP), one EC2 instance, one Elastic IP.
+Review the plan before typing `yes` — it creates: one S3 bucket (versioned, encrypted, private), an instance role + profile scoped to that bucket's `public/*` prefix read-only (what the box gets by default), a second, broader role scoped to `journal/*`/`documents/*`/`public/*` read-write that only that instance role can assume, one security group (80/443 open, 22 restricted to your IP), one EC2 instance, one Elastic IP.
 
-Note the outputs — you'll need `instance_public_ip` and `bucket_name` below. (`terraform output` re-prints them any time.)
+Note the outputs — you'll need `instance_public_ip`, `bucket_name`, and `s3_assume_role_arn` below. (`terraform output` re-prints them any time.)
 
 This repo's copy has already been validated offline (`terraform fmt` and `terraform validate`, both clean) — `apply` is the first step that actually talks to AWS.
 
@@ -144,9 +144,20 @@ Fill in, directly in that editor — never in a chat. Every line below is commen
 - `S3_BUCKET=<bucket_name from terraform output>`
 - `AWS_REGION=<the region you deployed to>`
 - Leave `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` **blank** — the instance role handles this.
+- `S3_ASSUME_ROLE_ARN=<s3_assume_role_arn from terraform output>` — the instance's own role only reads `public/*`; this is the broader role `apps/api` assumes via STS to reach `journal/*`/`documents/*`. Without it, `apps/api` can only ever read/write `public/*` and every entry/document read or write will fail.
 - `INDEX_DB_PATH=/opt/journal/data/index.db`
 - `WHISPER_CACHE_DIR=/opt/journal/data/whisper-models`
 - `EMBEDDING_CACHE_DIR=/opt/journal/data/embedding-models`
+- `AI_GATEWAY_API_KEY=` — a Vercel AI Gateway key. Without this, extraction is
+  entirely unconfigured: `/analysis` stays empty forever (no metrics,
+  reviews, lists, opinions, questions, or todos ever get produced, live or
+  batch), every `POST /entries/:id/process` fails `extraction_failed`, and
+  `npm run reprocess` refuses to run at all. This is easy to skip because
+  nothing *breaks* without it — the journal itself still reads and writes
+  fine — so it is worth deliberately confirming rather than assuming step 7
+  or step 8 will remind you.
+- `EXTRACTION_MODEL=` / `CHAT_MODEL=` — leave both unset to take the
+  built-in defaults (`config.ts`), or set them to pin a specific model.
 - `WEB_ORIGIN=https://<your-vercel-domain>` — the Vercel URL `apps/web` is served from, so the tightened Origin check (`docs/plan.md` M11) accepts it.
 - `PUBLIC_URL=https://<your-domain>` — this server's own address (the one from step 4's DNS record, e.g. `https://api.example.com`), used to build the Google OAuth redirect and to accept requests proxied under this domain. Without it, Google sign-in fails with `redirect_uri_mismatch` and every request gets rejected as `forbidden_origin` once behind a real domain.
 - `AUTHORIZED_EMAIL=` — your Google account's address (defaults to `seymour.w.jack@gmail.com` if left unset).
@@ -204,7 +215,7 @@ journalctl -u caddy -n 100 --no-pager
 
 ---
 
-## 8. Migrate existing entries **[scripted, you run it — from your laptop]**
+## 8. Migrate existing entries and documents **[scripted, you run it — from your laptop]**
 
 From your own machine, with `JOURNAL_DIR` pointed at your existing local journal (already the case in your local `.env`) and the AWS credentials from step 2 still configured. The script itself needs `STORAGE_BACKEND=s3`/`S3_BUCKET`/`AWS_REGION` to know where to copy *to* — rather than permanently switching your local dev setup over to S3, set them just for this one command:
 
@@ -212,19 +223,21 @@ From your own machine, with `JOURNAL_DIR` pointed at your existing local journal
 STORAGE_BACKEND=s3 S3_BUCKET=<bucket_name> AWS_REGION=<region> npm run migrate-to-s3
 ```
 
-It copies every entry into the bucket, then verifies entry count and a sampled set of content hashes match between source and destination. Your local `JOURNAL_DIR` is left untouched — this is a copy, not a move.
+It copies every entry, attachment, and document into the bucket, then verifies entry count, document count, and a sampled set of content hashes match between source and destination on both. Your local `JOURNAL_DIR` is left untouched — this is a copy, not a move.
 
 Expect output ending in something like:
 ```
 [journal] copied 412 files
 [journal] verifying...
-[journal] entry count matches: 412
+[journal] entry count matches: 380
 [journal] content hash matches on 25 sampled entries
+[journal] document count matches: 6
+[journal] content hash matches on 6 sampled documents
 [journal] migration verified. ...
 ```
-A thrown error at any point (a count mismatch, a sampled hash mismatch) is worth stopping and investigating before treating the bucket as live.
+A thrown error at any point (a count mismatch, a sampled hash mismatch, on either entries or documents) is worth stopping and investigating before treating the bucket as live.
 
-**This alone doesn't make the entries show up on the running server** — its index (`index.db`) was already built empty, before the migration, and won't notice new S3 objects on its own. Rebuild it, back on the box:
+**This alone doesn't make the entries and documents show up on the running server** — its index (`index.db`) was already built empty, before the migration, and won't notice new S3 objects on its own. Rebuild it, back on the box:
 
 ```
 sudo systemctl stop journal-api
@@ -234,6 +247,14 @@ sudo systemctl start journal-api
 ```
 
 (Stop the service first — deleting the database out from under a running process leaves stale `-shm`/`-wal` files behind that confuse the next open, surfacing as a `SQLITE_IOERR_SHORT_READ`.) Confirm with `curl https://<your-domain>/health` — `entryCount` should match what step 8 just reported.
+
+**The index now knows your entries exist, but nothing has been extracted from them yet** — `/analysis` will still be empty. `index.ts` boot only ever opens the index; it never runs extraction on your behalf (`plan.md` M7). If `AI_GATEWAY_API_KEY` is set (step 5), backfill the whole corpus once, from your laptop, the same way you'd run it locally:
+
+```
+STORAGE_BACKEND=s3 S3_BUCKET=<bucket_name> AWS_REGION=<region> AI_GATEWAY_API_KEY=<key> npm run reprocess -w @journal/api
+```
+
+This is a real API call per entry per structure type — expect it to take a while and cost a small, predictable amount, proportional to corpus size. From here on, day-to-day extraction for a *new* entry runs live, the moment you finish writing it or finish an edit (`POST /entries/:id/process`, `plan.md` M15) — this one-time backfill is only for entries that already existed before the key was configured.
 
 ---
 
@@ -259,5 +280,7 @@ Mirrors `docs/plan.md` M11's "Done when":
 - [ ] From outside: a bare `curl https://<your-domain>/entries` (no cookie) returns `401 unauthorized`, not a silent 200.
 - [ ] Logging in via the browser (`https://<your-vercel-domain>/login`) with the Google button, and separately with the password, both work.
 - [ ] Writing a new entry through the real UI lands a real object in the S3 bucket (check via `aws s3 ls s3://<bucket>/journal/ --recursive`).
+- [ ] `AI_GATEWAY_API_KEY` is actually set (not just present-and-commented-out) — `curl https://<your-domain>/health` doesn't prove this either way; check the `journal-api` service's own boot log instead: `journalctl -u journal-api -n 50 --no-pager | grep -i extraction` should say which model, not `AI_GATEWAY_API_KEY not set`.
+- [ ] `/analysis` in the real UI shows real data, not an empty page — if it doesn't and the key is set, the one-time backfill (step 8) hasn't been run yet.
 
 Once all of those hold, the migration is live. Nothing about your local dev setup (`npm run dev`, `STORAGE_BACKEND` unset) changes — this is an additional deployment, not a replacement for it.

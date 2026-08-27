@@ -35,13 +35,15 @@ async function main(): Promise<void> {
   const embedder = new LocalEmbedder(config.embeddingModel, config.embeddingCacheDir, config.embeddingDimensions);
   const indexer = new SearchIndexer(searchIndex, embedder);
 
+  // Clears the whole search index (entries and documents alike) and
+  // rebuilds the entry half — must run before the document half below,
+  // which deliberately does not clear again (`plan.md` M17).
   const searchBefore = Date.now();
-  const { chunkCount } = await indexer.rebuildAll(store);
+  const { chunkCount: entryChunkCount } = await indexer.rebuildAll(store);
   const searchElapsedMs = Date.now() - searchBefore;
-  console.log(`[journal] search index rebuilt in ${searchElapsedMs}ms: ${chunkCount} chunks`);
+  console.log(`[journal] search index rebuilt in ${searchElapsedMs}ms: ${entryChunkCount} entry chunks`);
 
-  // Documents are never indexed for search in this milestone, so this is
-  // just the listing/lookup rebuild — the document-store twin of the entry
+  // The listing/lookup rebuild — the document-store twin of the entry
   // rebuild above, free and local exactly the same way.
   const documentsIndex = new DocumentsIndex(config.indexDbPath);
   const documentStore = createDocumentStore(config, documentsIndex);
@@ -50,6 +52,16 @@ async function main(): Promise<void> {
   const documentsElapsedMs = Date.now() - documentsBefore;
   console.log(
     `[journal] documents rebuilt in ${documentsElapsedMs}ms: ${documentCount} documents, ${unreadableDocumentCount} unreadable`,
+  );
+
+  // Documents are now indexed for search too (`plan.md` M17) — run after
+  // the entry search rebuild above, never before, since this does not
+  // clear the index itself.
+  const docSearchBefore = Date.now();
+  const { chunkCount: totalChunkCount } = await indexer.rebuildAllDocuments(documentStore);
+  const docSearchElapsedMs = Date.now() - docSearchBefore;
+  console.log(
+    `[journal] document search chunks rebuilt in ${docSearchElapsedMs}ms: ${totalChunkCount} chunks total`,
   );
 
   searchIndex.close();

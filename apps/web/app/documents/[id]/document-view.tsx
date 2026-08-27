@@ -82,7 +82,7 @@ export function DocumentView({ document: initial }: { document: Document }) {
     setVisibilityBusy(true);
     setVisibilityError(null);
     try {
-      const result = await publishDocument(document.id, { contentHash: document.contentHash });
+      const result = await publishDocument(document.id);
       setDocument(result);
       setConfirmingPublish(false);
     } catch (cause) {
@@ -96,7 +96,7 @@ export function DocumentView({ document: initial }: { document: Document }) {
     setVisibilityBusy(true);
     setVisibilityError(null);
     try {
-      const result = await unpublishDocument(document.id, { contentHash: document.contentHash });
+      const result = await unpublishDocument(document.id);
       setDocument(result);
     } catch (cause) {
       setVisibilityError(cause instanceof ApiRequestError ? cause.message : 'Could not unpublish.');
@@ -119,7 +119,7 @@ export function DocumentView({ document: initial }: { document: Document }) {
             </time>
           </div>
           <div className={styles.headActions}>
-            {document.public && <span className={styles.publicBadge}>Public</span>}
+            {document.published && <span className={styles.publicBadge}>Public</span>}
             {confirmingPublish ? (
               <span className={styles.confirmGroup}>
                 <span className={styles.confirmText}>Publish this document?</span>
@@ -144,14 +144,14 @@ export function DocumentView({ document: initial }: { document: Document }) {
               <button
                 type="button"
                 className={styles.visibilityButton}
-                onClick={() => (document.public ? void unpublish() : setConfirmingPublish(true))}
+                onClick={() => (document.published ? void unpublish() : setConfirmingPublish(true))}
                 disabled={visibilityBusy}
               >
                 {visibilityBusy
-                  ? document.public
+                  ? document.published
                     ? 'Unpublishing'
                     : 'Publishing'
-                  : document.public
+                  : document.published
                     ? 'Unpublish'
                     : 'Publish'}
               </button>

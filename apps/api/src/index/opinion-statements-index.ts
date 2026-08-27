@@ -64,6 +64,13 @@ export interface ListOpinionStatementsOptions {
 /** Same shape as `MetricsReader` — the seam `http/app.ts` depends on. */
 export interface OpinionStatementsReader {
   list(options: ListOpinionStatementsOptions): OpinionStatementRecord[];
+  /** One record by id, or `null` — see `MetricsReader.getById` (`plan.md` M16). */
+  getById(id: string): OpinionStatementRecord | null;
+  /** Every current statement for one subject, unbounded — see
+   * `MetricsReader.allByMetric` (`plan.md` M16); already existed on the
+   * concrete class for `OpinionSummarizer`, now also part of the reader
+   * interface so `/publish-queue` can depend on it too. */
+  bySubject(subject: string): OpinionStatementRecord[];
   remove(id: string): void;
   update(id: string, input: UpdateOpinionStatementInput, now: string): OpinionStatementRecord | null;
   validate(id: string, now: string): void;
@@ -181,6 +188,11 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
 
   removeEntry(entryId: string): void {
     this.#db.prepare('DELETE FROM opinion_statements WHERE entry_id = ?').run(entryId);
+  }
+
+  getById(id: string): OpinionStatementRecord | null {
+    const row = this.#db.prepare('SELECT * FROM opinion_statements WHERE id = ?').get(id) as RawRow | undefined;
+    return row ? fromRaw(row) : null;
   }
 
   /** Discard one wrong statement (`requirements.md` §6.2). Any summary part

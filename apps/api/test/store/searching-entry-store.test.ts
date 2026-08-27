@@ -46,7 +46,7 @@ describe('create', () => {
   it('indexes the new entry for search', async () => {
     const entry = await store.create({ body: 'A walk along the coast.', created: '2026-07-26T22:55:13+01:00' });
     expect(searchIndex.searchText('coast', 10)).toEqual([
-      { entryId: entry.id, chunkIndex: 0, text: 'A walk along the coast.' },
+      { sourceType: 'entry', sourceId: entry.id, chunkIndex: 0, text: 'A walk along the coast.' },
     ]);
   });
 

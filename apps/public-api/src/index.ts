@@ -1,7 +1,8 @@
 import { serve } from '@hono/node-server';
 import { ConfigError, loadConfig } from './config.js';
 import { createApp } from './http/app.js';
-import { PublicDocumentsReader } from './index-reader.js';
+import { PublishedIndexReader } from './index-reader.js';
+import { PublicSearchReader } from './public-search-reader.js';
 import { createStorageReader } from './storage-reader.js';
 
 /**
@@ -16,9 +17,10 @@ import { createStorageReader } from './storage-reader.js';
  */
 async function main(): Promise<void> {
   const config = await loadConfig();
-  const reader = new PublicDocumentsReader(config.indexDbPath);
+  const reader = new PublishedIndexReader(config.indexDbPath);
+  const searchReader = new PublicSearchReader(config.indexDbPath);
   const storage = createStorageReader(config);
-  const app = createApp(reader, storage, config);
+  const app = createApp(reader, searchReader, storage, config);
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
     console.log(`[journal-public] listening on http://${config.host}:${info.port}`);

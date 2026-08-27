@@ -1,0 +1,229 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.section {
+  margin-top: var(--space-lg);
+}
+
+.section:first-child {
+  margin-top: var(--space-md);
+}
+
+.heading {
+  margin: 0 0 var(--space-sm);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.list {
+  margin-top: var(--space-md);
+  list-style: none;
+  padding: 0;
+}
+
+.list > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+}
+
+.main {
+  min-width: 0;
+  flex: 1;
+}
+
+.when {
+  display: flex;
+  gap: var(--space-2xs);
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.text {
+  display: block;
+  margin-top: var(--space-3xs);
+  line-height: var(--leading-normal);
+}
+
+.resolution {
+  display: block;
+  margin-top: var(--space-3xs);
+  color: var(--ink-muted);
+  line-height: var(--leading-normal);
+}
+
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-3xs);
+}
+
+.link {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+.actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-2xs);
+}
+
+.discard,
+.reopen {
+  flex-shrink: 0;
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+
+.discard:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.reopen:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.discard:disabled,
+.reopen:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+/* Touched indicator, inline edit form, and pending suggestions
+ * (`plan.md` M10, M15). */
+.touched {
+  padding: 0 var(--space-3xs);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.editForm {
+  margin-top: var(--space-3xs);
+}
+
+.textarea {
+  width: 100%;
+  min-height: var(--space-3xl);
+  padding: var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--ground-raised);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  resize: vertical;
+}
+
+.approveButton,
+.rejectButton {
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.approveButton {
+  color: var(--ink);
+}
+
+.approveButton:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rejectButton {
+  color: var(--ink-muted);
+}
+
+.rejectButton:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.approveButton:disabled,
+.rejectButton:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+/* The completion checkbox (`plan.md` M15) — the one direct, no-entry
+ * workflow-state control in this whole application. Deliberately plain: no
+ * animation, no color beyond the accent token on check, no celebratory
+ * styling of any kind (`design.md` §4). */
+.checkbox {
+  flex-shrink: 0;
+  margin-top: var(--space-3xs);
+  width: var(--space-sm);
+  height: var(--space-sm);
+  accent-color: var(--accent);
+  border: var(--hairline) solid var(--rule-strong);
+  cursor: pointer;
+}
+
+.checkbox:disabled {
+  cursor: default;
+}
+
+/* Adding a to-do directly — the one creation path with no source entry
+ * (`plan.md` M15, `requirements.md` §11). */
+.addForm {
+  display: flex;
+  gap: var(--space-2xs);
+  margin-top: var(--space-sm);
+}
+
+.addInput {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--ground-raised);
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-sm);
+}
+
+.addInput::placeholder {
+  color: var(--ink-faint);
+}
+
+.empty,
+.hint {
+  padding-top: var(--space-md);
+  color: var(--ink-muted);
+}
+
+.error {
+  padding-top: var(--space-md);
+  color: var(--danger);
+}

@@ -14,7 +14,6 @@ const META: DocumentMetadata = {
   title: 'The greenhouse project',
   created: '2026-07-26T22:55:13+01:00',
   updated: '2026-08-25T09:00:00+01:00',
-  public: false,
 };
 
 const AT = 'test.md';
@@ -56,7 +55,6 @@ describe('the bytes on disk', () => {
         'title: The greenhouse project\n' +
         'created: 2026-07-26T22:55:13+01:00\n' +
         'updated: 2026-08-25T09:00:00+01:00\n' +
-        'public: false\n' +
         '---\n' +
         'The body begins here.\n',
     );
@@ -104,32 +102,6 @@ describe('reading files written by hand', () => {
     const parsed = parseDocumentFile(file, AT);
     expect(parsed.metadata.created).toBe('2026-07-26T22:55:13+01:00');
     expect(parsed.metadata.updated).toBe('2026-08-25T09:00:00+01:00');
-  });
-});
-
-describe('public (`requirements.md` §9.3)', () => {
-  it('defaults to false when the field is absent — every document written before it existed', () => {
-    const file = `---\nid: ${META.id}\ntitle: ${META.title}\ncreated: ${META.created}\nupdated: ${META.updated}\n---\nx\n`;
-    const parsed = parseDocumentFile(file, AT);
-    expect(parsed.metadata.public).toBe(false);
-  });
-
-  it('round-trips true', () => {
-    const file = serialiseDocumentFile({ ...META, public: true }, 'x\n');
-    expect(file).toContain('public: true');
-    expect(parseDocumentFile(file, AT).metadata.public).toBe(true);
-  });
-
-  it('rejects a value that is present but not a boolean', () => {
-    const file = `---\nid: ${META.id}\ntitle: ${META.title}\ncreated: ${META.created}\nupdated: ${META.updated}\npublic: "yes"\n---\nx\n`;
-    let thrown: unknown;
-    try {
-      parseDocumentFile(file, AT);
-    } catch (error) {
-      thrown = error;
-    }
-    expect(thrown).toBeInstanceOf(AppError);
-    expect((thrown as AppError).code).toBe('malformed_entry');
   });
 });
 

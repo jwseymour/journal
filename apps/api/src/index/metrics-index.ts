@@ -134,6 +134,14 @@ export interface MetricFieldSummary {
  */
 export interface MetricsReader {
   list(options: ListMetricsOptions): TemporalMetricRecord[];
+  /** One record by id, or `null` — the lookup `Publisher` needs to render a
+   * public snapshot (`plan.md` M16). Unlike `list`, never paginated or
+   * filtered: a publish action names exactly one record. */
+  getById(id: string): TemporalMetricRecord | null;
+  /** Every record for one metric, unbounded — what `/publish-queue`
+   * (`plan.md` M16) checks against `VisibilityDefaultsIndex`. Same
+   * unbounded-read shape as `OpinionStatementsIndex.bySubject`. */
+  allByMetric(metric: string): TemporalMetricRecord[];
   remove(id: string): void;
   summarize(approvedNames: readonly string[], windowDays: number, now?: number): MetricSummary[];
   sumByField(
@@ -291,6 +299,18 @@ export class MetricsIndex implements MetricsReader {
 
   removeEntry(entryId: string): void {
     this.#db.prepare('DELETE FROM temporal_metrics WHERE entry_id = ?').run(entryId);
+  }
+
+  getById(id: string): TemporalMetricRecord | null {
+    const row = this.#db.prepare('SELECT * FROM temporal_metrics WHERE id = ?').get(id) as RawRow | undefined;
+    return row ? fromRaw(row) : null;
+  }
+
+  allByMetric(metric: string): TemporalMetricRecord[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM temporal_metrics WHERE metric = ? ORDER BY event_epoch_ms DESC')
+      .all(metric) as RawRow[];
+    return rows.map(fromRaw);
   }
 
   /** Discard one wrong record (`requirements.md` §6.2 — mistakes must be
