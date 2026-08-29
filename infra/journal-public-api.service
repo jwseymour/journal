@@ -1,0 +1,28 @@
+[Unit]
+Description=Journal public API (@journal/public-api)
+After=network-online.target journal-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=journal
+Group=journal
+WorkingDirectory=/opt/journal/app
+# apps/public-api has no build step either — same tsx-direct pattern as
+# journal-api.service.
+ExecStart=/usr/bin/npm run start -w @journal/public-api
+# Optional/non-fatal (leading "-") so the unit can be installed before .env
+# exists — this process refuses to boot without INDEX_DB_PATH pointing at a
+# file that already exists (`apps/public-api/src/config.ts`), which in
+# practice means journal-api must have run at least once first.
+EnvironmentFile=-/opt/journal/app/.env
+Restart=on-failure
+RestartSec=5
+# Read-only access to the same INDEX_DB_PATH and JOURNAL_DIR journal-api
+# owns (both under /opt/journal, both already owned by this same `journal`
+# user) — no separate storage of its own.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

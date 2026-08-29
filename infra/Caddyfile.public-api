@@ -1,0 +1,13 @@
+# Template — `infra/deploy.sh` substitutes {{PUBLIC_DOMAIN}} and, only when a
+# second domain is passed to it, appends this block into the same
+# /etc/caddy/Caddyfile the private API's block (`infra/Caddyfile`) lives in.
+# Not consumed directly.
+#
+# Reverse-proxies to `apps/public-api` on 127.0.0.1:4320
+# (`apps/public-api/src/config.ts`'s `DEFAULT_PORT`) — the private API's
+# equivalent block proxies to 4319. Caddy gets its own Let's Encrypt
+# certificate for this domain too, independent of the private one's.
+
+{{PUBLIC_DOMAIN}} {
+	reverse_proxy 127.0.0.1:4320
+}

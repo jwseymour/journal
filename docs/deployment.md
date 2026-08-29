@@ -86,7 +86,9 @@ This repo's copy has already been validated offline (`terraform fmt` and `terraf
 
 At your domain registrar, create an **A record** pointing your chosen domain/subdomain at the `instance_public_ip` from step 3. For example, `journal.yourdomain.com` → `A` → `203.0.113.10`.
 
-This is specific to your registrar, so it's inherently manual. Give it a few minutes to propagate before step 7 (Caddy needs DNS to already resolve to request a Let's Encrypt certificate).
+If you're also deploying `apps/public-api` (step 7 covers this — optional, skip it if you're not publishing anything yet), create a second **A record**, at a different subdomain, pointing at the same `instance_public_ip` — e.g. `public.yourdomain.com` → `A` → `203.0.113.10`. Both run on the one instance behind Caddy, each on its own domain.
+
+This is specific to your registrar, so it's inherently manual. Give it a few minutes to propagate before step 7 (Caddy needs DNS to already resolve to request a Let's Encrypt certificate) — for both domains, if you're using two.
 
 ---
 
@@ -160,6 +162,7 @@ Fill in, directly in that editor — never in a chat. Every line below is commen
   built-in defaults (`config.ts`), or set them to pin a specific model.
 - `WEB_ORIGIN=https://<your-vercel-domain>` — the Vercel URL `apps/web` is served from, so the tightened Origin check (`docs/plan.md` M11) accepts it.
 - `PUBLIC_URL=https://<your-domain>` — this server's own address (the one from step 4's DNS record, e.g. `https://api.example.com`), used to build the Google OAuth redirect and to accept requests proxied under this domain. Without it, Google sign-in fails with `redirect_uri_mismatch` and every request gets rejected as `forbidden_origin` once behind a real domain.
+- Only if you're deploying `apps/public-api` (step 7): `BLOG_ORIGIN=https://<your-blog-domain>` — the blog frontend's own origin, the only thing this unauthenticated surface gates on. `PUBLIC_API_HOST`/`PUBLIC_API_PORT` can stay at their defaults (`127.0.0.1`/`4320`) unless something else on the box already uses that port.
 - `AUTHORIZED_EMAIL=` — your Google account's address (defaults to `seymour.w.jack@gmail.com` if left unset).
 - `SESSION_SECRET=` — generate one and paste it in, right there in the editor:
   ```
@@ -202,14 +205,21 @@ Still on the box, as a sudo-capable user (not `journal` — it has no shell to r
 sudo /opt/journal/app/infra/deploy.sh <your-domain>
 ```
 
+Add a second domain to also install and start `apps/public-api`, if you've set up its DNS record and `.env` values (steps 4 and 5 above) — omit it entirely if you're not publishing anything yet, and run this exact one-argument form later, once you are:
+
+```
+sudo /opt/journal/app/infra/deploy.sh <your-domain> <your-public-api-domain>
+```
+
 (Run the script by its full path rather than `cd`-ing there first — `/opt/journal` isn't traversable by a non-`sudo` user, so a plain `cd /opt/journal/app` fails with "Permission denied.")
 
-This installs the `journal-api` systemd unit, installs Caddy's config for your domain (which requests its Let's Encrypt certificate — this is why DNS needed to already resolve), restarts everything, and polls `/health` until it responds or times out. It prints a clear pass/fail.
+This installs the `journal-api` systemd unit (and `journal-public-api` too, if a second domain was given), installs Caddy's config for each domain (which requests its own Let's Encrypt certificate — this is why DNS needed to already resolve), restarts everything, and polls each service's `/health` until it responds or times out. It prints a clear pass/fail for each.
 
 If it fails, check:
 
 ```
 journalctl -u journal-api -n 100 --no-pager
+journalctl -u journal-public-api -n 100 --no-pager
 journalctl -u caddy -n 100 --no-pager
 ```
 
@@ -284,3 +294,14 @@ Mirrors `docs/plan.md` M11's "Done when":
 - [ ] `/analysis` in the real UI shows real data, not an empty page — if it doesn't and the key is set, the one-time backfill (step 8) hasn't been run yet.
 
 Once all of those hold, the migration is live. Nothing about your local dev setup (`npm run dev`, `STORAGE_BACKEND` unset) changes — this is an additional deployment, not a replacement for it.
+
+---
+
+## 11. If you also deployed `apps/public-api` (`plan.md` M14/M15)
+
+Only relevant if you passed a second domain in step 7. Mirrors `plan.md` M14's "Done when," checked for real against this deployment rather than only against the test suite:
+
+- [ ] Publish a document (or entry) through the real, authenticated UI. `curl https://<your-public-api-domain>/documents` (or `/entries`) returns it, unauthenticated, within a few seconds.
+- [ ] Unpublish it. The same `curl` no longer lists it, and fetching its `:slug` route directly 404s.
+- [ ] From the box, confirm the IAM split is real rather than assumed: `curl http://169.254.169.254/latest/meta-data/iam/security-credentials/` names the instance role, and a raw AWS CLI call under those credentials (`AWS_EC2_METADATA_DISABLED=false aws s3 ls s3://<bucket>/journal/` with no other credentials configured) is denied — `journal_api_write` is a role `apps/api` explicitly assumes, never the box's ambient identity.
+- [ ] `journalctl -u journal-public-api -n 50 --no-pager` shows no errors on boot or on a publish/unpublish cycle.
