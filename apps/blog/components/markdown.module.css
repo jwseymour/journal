@@ -1,7 +1,17 @@
+/* No literal values. Everything references a token (`design.md` §6.2).
+ * Mirrors `apps/web/components/markdown.module.css`. */
+
 .root {
-  font-family: var(--font-serif);
-  font-size: var(--text-base);
-  line-height: var(--leading-normal);
+  line-height: var(--leading-relaxed);
+  hanging-punctuation: first last;
+}
+
+.root > :first-child {
+  margin-top: 0;
+}
+
+.root > :last-child {
+  margin-bottom: 0;
 }
 
 .h1,
@@ -10,9 +20,28 @@
 .h4,
 .h5,
 .h6 {
-  font-family: var(--font-serif);
-  font-weight: bold;
-  margin: var(--space-md) 0 var(--space-2xs);
+  margin-top: var(--space-lg);
+  margin-bottom: var(--space-sm);
+  font-weight: var(--weight-emphasis);
+  line-height: var(--leading-snug);
+}
+
+.h1 {
+  font-size: var(--text-2xl);
+}
+
+.h2 {
+  font-size: var(--text-xl);
+}
+
+.h3 {
+  font-size: var(--text-lg);
+}
+
+.h4,
+.h5,
+.h6 {
+  font-size: var(--text-md);
 }
 
 .p {
@@ -21,7 +50,7 @@
 
 .list {
   margin: var(--space-sm) 0;
-  padding-left: var(--space-md);
+  padding-left: var(--space-lg);
 }
 
 .listItem {
@@ -29,15 +58,16 @@
 }
 
 .blockquote {
-  margin: var(--space-sm) 0;
-  padding-left: var(--space-sm);
-  border-left: var(--hairline) solid var(--accent);
+  margin: var(--space-md) 0;
+  padding-left: var(--space-md);
+  border-left: var(--hairline) solid var(--rule-strong);
   color: var(--ink-muted);
 }
 
 .hr {
+  height: 0;
   margin: var(--space-lg) 0;
-  border: none;
+  border: 0;
   border-top: var(--hairline) solid var(--rule);
 }
 
@@ -45,26 +75,36 @@
   color: var(--accent);
 }
 
-.codeBlock,
-.codeInline {
-  font-family: monospace;
-  background-color: var(--ground-raised);
-  border-radius: var(--radius-sm);
+.link:hover {
+  color: var(--accent-hover);
 }
 
 .codeInline {
   padding: 0 var(--space-3xs);
+  border-radius: var(--radius-sm);
+  background-color: var(--ground-sunken);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 
 .pre {
-  padding: var(--space-sm);
+  margin: var(--space-md) 0;
+  padding: var(--space-sm) var(--space-md);
   overflow-x: auto;
-  border-radius: var(--radius-sm);
-  background-color: var(--ground-raised);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-md);
+  background-color: var(--ground-sunken);
+}
+
+.codeBlock {
+  background: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
 }
 
 .strong {
-  font-weight: bold;
+  font-weight: var(--weight-emphasis);
 }
 
 .em {

@@ -1,18 +1,15 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
 .field {
   width: 100%;
-  box-sizing: border-box;
-  padding: var(--space-xs) var(--space-sm);
-  font: inherit;
-  font-size: var(--text-lg);
+  padding: var(--space-sm) 0;
+  border: 0;
+  border-bottom: var(--hairline) solid var(--rule-strong);
+  background: transparent;
   color: var(--ink);
-  background: var(--ground);
-  border: none;
-  border-bottom: var(--hairline) solid var(--rule);
-}
-
-.field:focus {
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
   outline: none;
-  border-bottom-color: var(--accent);
 }
 
 .field::placeholder {
@@ -20,9 +17,9 @@
 }
 
 .list {
+  margin-top: var(--space-md);
   list-style: none;
   padding: 0;
-  margin: var(--space-md) 0 0;
 }
 
 .list > li + li {
@@ -31,9 +28,16 @@
 
 .row {
   display: block;
-  padding: var(--space-md) 0;
-  color: inherit;
+  margin-inline: calc(var(--space-2xs) * -1);
+  padding: var(--space-sm) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
   text-decoration: none;
+  transition: background-color var(--motion-fast) var(--ease);
+}
+
+.row:hover {
+  background-color: var(--ground-sunken);
 }
 
 .when {
@@ -41,13 +45,13 @@
   color: var(--ink-muted);
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
 }
 
 .excerpt {
   display: block;
-  margin-top: var(--space-2xs);
+  margin-top: var(--space-3xs);
   color: var(--ink-muted);
+  line-height: var(--leading-normal);
 }
 
 .empty {

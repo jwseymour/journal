@@ -2,7 +2,7 @@
   margin: 0;
   font-family: var(--font-serif);
   font-size: var(--text-xl);
-  font-weight: bold;
+  font-weight: var(--weight-emphasis);
 }
 
 .when {

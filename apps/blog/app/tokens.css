@@ -1,56 +1,100 @@
 /*
- * Every value this app uses, in one place (`plan.md` standing rule 2's
- * discipline, applied here even though M14 explicitly frees this app from
- * sharing `apps/web`'s design system — the discipline is worth keeping on
- * its own merits, not because the private app's palette applies).
+ * The token set, mirroring `apps/web/app/tokens.css` (`plan.md` M14 originally
+ * freed this app to style independently; the owner has since asked the blog
+ * to look like the journal for now, so the tokens are shared verbatim rather
+ * than re-derived). Kept as a full copy, not an import, because this app is
+ * still meant to be replaceable on its own — editing only this file restyles
+ * the whole thing.
  *
- * Deliberately small and generic: this is a placeholder look, easy to
- * replace wholesale by editing only this file, exactly as `design.md` §6.1
- * intends for the private app's own tokens.
+ * THIS IS THE ONE FILE PERMITTED TO CONTAIN LITERAL VALUES, exactly as
+ * `design.md` §6.1/§6.2 requires of `apps/web`'s own copy.
  */
 
 :root {
-  --ground: #ffffff;
-  --ground-raised: #f4f2ee;
-  --ink: #1c1a17;
-  --ink-muted: #6b655c;
-  --ink-faint: #a39c90;
-  --rule: #e4e0d8;
-  --accent: #8a5a34;
+  color-scheme: light dark;
 
-  --font-serif: Georgia, 'Times New Roman', serif;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  /* ═══ Palette ═══════════════════════════════════════════════════════════ */
 
-  --text-xs: 0.8rem;
-  --text-sm: 0.9rem;
-  --text-base: 1.05rem;
-  --text-lg: 1.3rem;
-  --text-xl: 1.8rem;
+  --ground: light-dark(#f2eadc, #1c1815);
+  --ground-raised: light-dark(#f7f1e6, #262019);
+  --ground-sunken: light-dark(#eae0cf, #151210);
 
+  --ink: light-dark(#2a2320, #d9cfc0);
+  --ink-muted: light-dark(#6b5f55, #a0958a);
+  --ink-faint: light-dark(#8a7c6e, #6e645a);
+
+  --rule: light-dark(#d8ccb8, #38302a);
+  --rule-strong: light-dark(#c2b4a0, #4a4038);
+
+  --accent: light-dark(#2f4a33, #8fae8b);
+  --accent-hover: light-dark(#3e5f42, #a6c2a2);
+  --accent-fill: color-mix(in srgb, var(--accent) 16%, transparent);
+
+  --selection: light-dark(#d9e0d3, #2c3a2c);
+
+  --danger: light-dark(#8c2f22, #cc7365);
+
+  /* ═══ Type ══════════════════════════════════════════════════════════════ */
+
+  --font-serif: 'Literata', Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  --weight-normal: 400;
+  --weight-emphasis: 600;
+
+  --text-2xs: 0.75rem;
+  --text-xs: 0.875rem;
+  --text-sm: 0.9375rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 1.8125rem;
+
+  --leading-none: 1;
+  --leading-tight: 1.2;
+  --leading-snug: 1.4;
   --leading-normal: 1.6;
+  --leading-relaxed: 1.75;
+
+  --tracking-normal: 0;
   --tracking-wide: 0.04em;
+
+  /* ═══ Measure ═══════════════════════════════════════════════════════════ */
+
+  --measure: 62ch;
+  --measure-narrow: 48ch;
+
+  /* ═══ Space ═════════════════════════════════════════════════════════════ */
 
   --space-3xs: 0.25rem;
   --space-2xs: 0.5rem;
   --space-xs: 0.75rem;
   --space-sm: 1rem;
   --space-md: 1.5rem;
-  --space-lg: 2.5rem;
-  --space-xl: 4rem;
+  --space-lg: 2.25rem;
+  --space-xl: 3.5rem;
+  --space-2xl: 5.5rem;
+  --space-3xl: 8rem;
+
+  /* ═══ Line and edge ════════════════════════════════════════════════════ */
 
   --hairline: 1px;
-  --radius-sm: 0.25rem;
-  --measure: 38rem;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+
+  --focus-width: 2px;
+  --focus-offset: 2px;
+
+  /* ═══ Motion ════════════════════════════════════════════════════════════ */
+
+  --motion-fast: 120ms;
+  --motion-slow: 240ms;
+  --ease: cubic-bezier(0.2, 0, 0.3, 1);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-reduced-motion: reduce) {
   :root {
-    --ground: #17140f;
-    --ground-raised: #1f1b15;
-    --ink: #ece7de;
-    --ink-muted: #a39c90;
-    --ink-faint: #6b655c;
-    --rule: #322c22;
-    --accent: #c98b56;
+    --motion-fast: 0ms;
+    --motion-slow: 0ms;
   }
 }

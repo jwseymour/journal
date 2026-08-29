@@ -1,33 +1,61 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
 .shell {
-  max-width: var(--measure);
-  margin: 0 auto;
-  padding: var(--space-lg) var(--space-md) var(--space-xl);
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
 }
 
+/*
+ * A running head, as in a printed book: the title on the left, the way onward
+ * on the right, a hairline beneath — mirrors `apps/web/app/layout.module.css`.
+ */
 .header {
-  margin-bottom: var(--space-lg);
-  padding-bottom: var(--space-sm);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md) var(--space-sm);
   border-bottom: var(--hairline) solid var(--rule);
 }
 
-.siteName {
-  font-family: var(--font-serif);
-  font-size: var(--text-lg);
-  font-weight: bold;
+.wordmark {
   color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: var(--weight-emphasis);
+  letter-spacing: var(--tracking-wide);
   text-decoration: none;
 }
 
+.wordmark:hover {
+  color: var(--ink);
+}
+
 .nav {
-  display: inline-flex;
+  display: flex;
+  align-items: baseline;
   gap: var(--space-sm);
-  margin-left: var(--space-md);
+  font-size: var(--text-sm);
 }
 
 .nav a {
   color: var(--ink-muted);
-  font-size: var(--text-xs);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
   text-decoration: none;
+}
+
+.nav a:hover {
+  color: var(--accent);
+}
+
+.main {
+  display: flex;
+  width: 100%;
+  max-width: var(--measure);
+  flex: 1;
+  flex-direction: column;
+  margin: 0 auto;
+  padding: var(--space-lg) var(--space-md) var(--space-2xl);
 }

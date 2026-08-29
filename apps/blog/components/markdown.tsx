@@ -3,10 +3,11 @@ import styles from './markdown.module.css';
 
 /**
  * Rendered markdown — the read-only twin of `apps/web/components/markdown.tsx`,
- * kept as a separate small component rather than shared, per `plan.md`
- * M14's "styled independently" call for this app. Renders to real React
- * elements, never `dangerouslySetInnerHTML`, so nothing in a document's
- * body can inject markup into the page.
+ * styled to match it (the owner asked this app to look like the journal),
+ * but kept as a separate small component since this app stays its own
+ * deployable with its own token file. Renders to real React elements, never
+ * `dangerouslySetInnerHTML`, so nothing in a document's body can inject
+ * markup into the page.
  */
 const components: Components = {
   h1: (props) => <h1 className={styles.h1} {...props} />,

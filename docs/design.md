@@ -245,13 +245,13 @@ Per `requirements.md` §7.1: the frontend calls the API and renders what comes b
 
 ### 6.4 Stack
 
-Built on a Next.js template, **run locally** (see `requirements.md` §7.2). **This is an implementation choice, not a commitment** — the frontend is expected to be replaceable, and nothing outside the frontend may depend on it.
+Built on a Next.js template. **This is an implementation choice, not a commitment** — the frontend is expected to be replaceable, and nothing outside the frontend may depend on it. Written when the whole system still ran locally; as of M11 (`requirements.md` §7.2) the backend is hosted and the frontend is deployed alongside it, but nothing about this section changed as a result — it never depended on where the backend happened to run, only on staying separate from it (below).
 
 The frontend is **its own process**, separate from the backend. Route handlers inside the frontend would make the backend's lifetime depend on the frontend's, which is exactly what `requirements.md` §7.1 exists to prevent: replacing the frontend must not mean moving the backend.
 
 Styling is **CSS Modules over one file of custom properties**, not a utility framework. Utility classes carry literal values, which sits badly with section 6.2 — and this interface is few surfaces set precisely rather than many surfaces set quickly, so utilities buy little. A literal value in a `.module.css` file is greppable without tooling to police it, and the typographic details that matter here — measure in `ch`, tabular figures in the analysis tables, hanging punctuation — are plainer in real CSS. It is also two fewer dependencies in a project meant to still build in ten years.
 
-Running locally does not license shortcuts across the API boundary. The frontend talks to the backend over the same interface it would use if the backend were remote, so that going online later is a deployment change rather than a rewrite.
+Whether the backend is local or hosted does not license shortcuts across the API boundary. The frontend talks to the backend over the same HTTP interface either way, so that a deployment change — local to hosted, or a future move away from this frontend entirely — is never a rewrite.
 
 ### 6.5 Real states
 
