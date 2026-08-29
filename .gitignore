@@ -24,6 +24,9 @@ build/
 .DS_Store
 *.pem
 
+# local scratch — personal notes and images kept beside the repo, never committed
+personal-notes/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
