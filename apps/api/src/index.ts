@@ -32,6 +32,7 @@ import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
 import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
 import { TodosExtractor } from './model/todos-extractor.js';
 import { nowTimestamp } from './record/time.js';
+import { createTouchedMirror } from './durable/create-touched-mirror.js';
 import { createPublisher } from './publish/create-publisher.js';
 import { LocalEmbedder } from './search/local-embedder.js';
 import { SearchIndexer } from './search/indexer.js';
@@ -106,6 +107,21 @@ async function main(): Promise<void> {
     questionsIndex,
     publicSearchIndex,
   );
+  // Durable backing for touched derived records (`durable/touched-mirror.ts`)
+  // — closes the gap where `touched` content lived only inside the
+  // disposable `index.db`. Boot never restores from it itself, the same
+  // "never rebuild silently" posture the index's own boot comment already
+  // takes above; restoring is `npm run rebuild -w @journal/api`'s job
+  // (`src/rebuild.ts`).
+  const touchedMirror = createTouchedMirror(
+    config,
+    metricsIndex,
+    reviewsIndex,
+    listsIndex,
+    opinionStatementsIndex,
+    questionsIndex,
+    todosIndex,
+  );
   // Seeded on every boot too, not only in `reprocess.ts` — the approved-name
   // list has to exist before `GET /categories` can answer anything, and
   // boot is the one place guaranteed to run before that request can arrive.
@@ -166,6 +182,7 @@ async function main(): Promise<void> {
     chatOrchestrator,
     publisher,
     visibilityDefaultsIndex,
+    touchedMirror,
   );
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {

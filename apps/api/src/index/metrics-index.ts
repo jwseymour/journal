@@ -532,6 +532,35 @@ export class MetricsIndex implements MetricsReader {
     return { metricCount };
   }
 
+  /** Restores one touched record read back from the durable off-index
+   * mirror (`durable/touched-mirror.ts`) into a freshly rebuilt index — the
+   * recovery path for `requirements.md` §6.4's guarantee that touched data
+   * is never lost, proven the same way `EntryStore.rebuild()` proves it for
+   * entries. Always writes `touched = 1`: nothing is ever mirrored there
+   * unless it already was. `INSERT OR REPLACE` rather than a guarded insert
+   * because `rebuild.ts` calls this against a table that is sometimes
+   * genuinely empty and sometimes not (`npm run rebuild` never clears these
+   * tables itself — see that file), so either outcome must be safe. */
+  restoreTouched(record: TemporalMetricRecord): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO temporal_metrics
+           (id, entry_id, metric, event_time, event_epoch_ms, event_time_explicit, detail, fields, extracted_at, touched)
+         VALUES (@id, @entryId, @metric, @eventTime, @eventEpochMs, @eventTimeExplicit, @detail, @fields, @extractedAt, 1)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        metric: record.metric,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        detail: record.detail,
+        fields: JSON.stringify(record.fields),
+        extractedAt: record.extractedAt,
+      });
+  }
+
   /** Wipe every row, touched or not. Kept as the literal full-wipe primitive
    * it always was; `reprocessAll` no longer calls this directly — see
    * `clearUntouched` (`plan.md` M10). */

@@ -345,6 +345,31 @@ export class ReviewsIndex implements ReviewsReader {
     });
   }
 
+  /** Restores one touched record from the durable off-index mirror
+   * (`durable/touched-mirror.ts`) — see `MetricsIndex.restoreTouched` for
+   * the full reasoning; identical shape here. */
+  restoreTouched(record: ReviewRecord): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO reviews
+           (id, entry_id, title, medium, rating, progress, opinion, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
+         VALUES (@id, @entryId, @title, @medium, @rating, @progress, @opinion, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, 1)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        title: record.title,
+        medium: record.medium,
+        rating: record.rating,
+        progress: record.progress,
+        opinion: record.opinion,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+      });
+  }
+
   stats(): { reviewCount: number } {
     const reviewCount = (this.#db.prepare('SELECT COUNT(*) AS n FROM reviews').get() as { n: number }).n;
     return { reviewCount };

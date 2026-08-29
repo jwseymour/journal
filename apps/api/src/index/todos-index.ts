@@ -156,6 +156,12 @@ export interface CreateDirectTodoInput {
 /** Same shape as `QuestionsReader` — the seam `http/app.ts` depends on. */
 export interface TodosReader {
   list(options: ListTodosOptions): TodoRecord[];
+  /** One record by id, or `null` — see `MetricsReader.getById`. Unlike its
+   * five siblings, nothing needed this until `durable/touched-mirror.ts`
+   * (`TouchedMirror.sync` reads current state before deciding whether to
+   * mirror or delete) — to-dos have no publish route, so `Publisher` never
+   * needed it either. */
+  getById(id: string): TodoRecord | null;
   createDirect(input: CreateDirectTodoInput): TodoRecord;
   remove(id: string): void;
   reopen(id: string): void;
@@ -561,6 +567,11 @@ export class TodosIndex implements TodosReader {
     return rows.map(fromRaw);
   }
 
+  getById(id: string): TodoRecord | null {
+    const row = this.#db.prepare('SELECT * FROM todos WHERE id = ?').get(id) as RawRow | undefined;
+    return row ? fromRaw(row) : null;
+  }
+
   /** Every currently open to-do, oldest first, **including `origin =
    * 'user'` rows** — a directly-created to-do can still be reported done by
    * a later entry, so the extractor's completion-matching needs the true
@@ -574,6 +585,36 @@ export class TodosIndex implements TodosReader {
     const openCount = (this.#db.prepare("SELECT COUNT(*) AS n FROM todos WHERE status = 'open'").get() as { n: number }).n;
     const doneCount = (this.#db.prepare("SELECT COUNT(*) AS n FROM todos WHERE status = 'done'").get() as { n: number }).n;
     return { openCount, doneCount };
+  }
+
+  /** Restores one touched record from the durable off-index mirror
+   * (`durable/touched-mirror.ts`) — see `MetricsIndex.restoreTouched` for
+   * the full reasoning. `origin` is restored exactly as mirrored, never
+   * forced to `'extracted'`: a direct-created (`origin: 'user'`) to-do is
+   * always touched (this file's own doc comment) and is exactly the record
+   * this mirror exists to protect, since nothing else — no entry, no
+   * extraction — can ever regenerate it. */
+  restoreTouched(record: TodoRecord): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO todos
+           (id, entry_id, text, event_time, event_epoch_ms, event_time_explicit, extracted_at, status, done_entry_id, resolution, done_at, origin, touched)
+         VALUES (@id, @entryId, @text, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @status, @doneEntryId, @resolution, @doneAt, @origin, 1)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        text: record.text,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+        status: record.status,
+        doneEntryId: record.doneEntryId,
+        resolution: record.resolution,
+        doneAt: record.doneAt,
+        origin: record.origin,
+      });
   }
 
   stats(): { todoCount: number; openCount: number; doneCount: number } {

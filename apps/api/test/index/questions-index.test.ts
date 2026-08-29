@@ -266,3 +266,33 @@ describe('summarize / stats / clear', () => {
     expect(index.list({ limit: 10 }).map((r) => r.id)).toEqual(['m1']);
   });
 });
+
+describe('restoreTouched (durable/touched-mirror.ts)', () => {
+  it('inserts a record read back from the durable mirror into an index that never had it', () => {
+    index.restoreTouched({ entryId: 'e1', ...record({ touched: true }) });
+    expect(index.getById('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toEqual({ entryId: 'e1', ...record({ touched: true }) });
+  });
+
+  it('is idempotent — restoring the same record twice leaves exactly one row', () => {
+    index.restoreTouched({ entryId: 'e1', ...record({ touched: true }) });
+    index.restoreTouched({ entryId: 'e1', ...record({ touched: true }) });
+    expect(index.list({ limit: 10 })).toHaveLength(1);
+  });
+
+  it('restores resolution state exactly as mirrored — a resolved question stays resolved', () => {
+    index.restoreTouched({
+      entryId: 'e1',
+      ...record({ touched: true, status: 'resolved', resolvedEntryId: 'e2', resolution: 'Decided to stay.' }),
+    });
+    expect(index.getById('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toMatchObject({
+      status: 'resolved',
+      resolvedEntryId: 'e2',
+      resolution: 'Decided to stay.',
+    });
+  });
+
+  it('always writes touched = 1, even if the mirrored record somehow said otherwise', () => {
+    index.restoreTouched({ entryId: 'e1', ...record({ touched: false }) });
+    expect(index.getById('01ARZ3NDEKTSV4RRFFQ69G5FAV')!.touched).toBe(true);
+  });
+});

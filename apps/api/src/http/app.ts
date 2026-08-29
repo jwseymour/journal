@@ -70,6 +70,7 @@ import type { QuestionsReader } from '../index/questions-index.js';
 import type { ReviewsReader } from '../index/reviews-index.js';
 import type { TodosReader } from '../index/todos-index.js';
 import type { VisibilityDefaultsReader } from '../index/visibility-defaults-index.js';
+import type { TouchedMirror } from '../durable/touched-mirror.js';
 import type { ChatAnswerer } from '../model/chat-orchestrator.js';
 import type { EntryProcessing } from '../model/entry-processor.js';
 import type { Publisher } from '../publish/publisher.js';
@@ -429,6 +430,7 @@ export function createApp(
   chat: ChatAnswerer,
   publisher: Publisher,
   visibilityDefaults: VisibilityDefaultsReader,
+  touchedMirror: TouchedMirror,
 ): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
@@ -964,7 +966,10 @@ export function createApp(
     // The same tolerance as DELETE /entries/:id: a malformed or already-gone
     // id is simply nothing to do, not an error (`requirements.md` §6.2 —
     // correcting a mistake should be this easy, not fussy about repeats).
-    if (isUlid(id)) metrics.remove(id);
+    if (isUlid(id)) {
+      metrics.remove(id);
+      await touchedMirror.sync('metric', id);
+    }
     return c.body(null, 204);
   });
 
@@ -976,18 +981,25 @@ export function createApp(
     const body = await parseUpdateBody(c, UpdateMetricSchema);
     const updated = metrics.update(id, body, nowTimestamp().canonical);
     if (!updated) throw recordNotFound('metric', id);
+    await touchedMirror.sync('metric', id);
     return c.body(null, 204);
   });
 
   app.post('/metrics/:id/validate', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) metrics.validate(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      metrics.validate(id, nowTimestamp().canonical);
+      await touchedMirror.sync('metric', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/metrics/:id/untouch', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) metrics.untouch(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      metrics.untouch(id, nowTimestamp().canonical);
+      await touchedMirror.sync('metric', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1015,7 +1027,10 @@ export function createApp(
   });
 
   app.post('/metrics/update-suggestions/:id/approve', async (c) => {
-    metrics.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    const id = c.req.param('id');
+    const suggestion = metrics.listUpdateSuggestions().find((s) => s.id === id);
+    metrics.decideUpdate(id, 'approved', nowTimestamp().canonical);
+    if (suggestion) await touchedMirror.sync('metric', suggestion.recordId);
     return c.body(null, 204);
   });
 
@@ -1199,7 +1214,10 @@ export function createApp(
 
   app.delete('/reviews/:id', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) reviews.remove(id);
+    if (isUlid(id)) {
+      reviews.remove(id);
+      await touchedMirror.sync('review', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1208,18 +1226,25 @@ export function createApp(
     const body = await parseUpdateBody(c, UpdateReviewSchema);
     const updated = reviews.update(id, body, nowTimestamp().canonical);
     if (!updated) throw recordNotFound('review', id);
+    await touchedMirror.sync('review', id);
     return c.body(null, 204);
   });
 
   app.post('/reviews/:id/validate', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) reviews.validate(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      reviews.validate(id, nowTimestamp().canonical);
+      await touchedMirror.sync('review', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/reviews/:id/untouch', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) reviews.untouch(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      reviews.untouch(id, nowTimestamp().canonical);
+      await touchedMirror.sync('review', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1244,7 +1269,10 @@ export function createApp(
   });
 
   app.post('/reviews/update-suggestions/:id/approve', async (c) => {
-    reviews.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    const id = c.req.param('id');
+    const suggestion = reviews.listUpdateSuggestions().find((s) => s.id === id);
+    reviews.decideUpdate(id, 'approved', nowTimestamp().canonical);
+    if (suggestion) await touchedMirror.sync('review', suggestion.recordId);
     return c.body(null, 204);
   });
 
@@ -1292,7 +1320,10 @@ export function createApp(
 
   app.delete('/lists/:id', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) lists.remove(id);
+    if (isUlid(id)) {
+      lists.remove(id);
+      await touchedMirror.sync('list_item', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1301,18 +1332,25 @@ export function createApp(
     const body = await parseUpdateBody(c, UpdateListItemSchema);
     const updated = lists.update(id, body, nowTimestamp().canonical);
     if (!updated) throw recordNotFound('list item', id);
+    await touchedMirror.sync('list_item', id);
     return c.body(null, 204);
   });
 
   app.post('/lists/:id/validate', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) lists.validate(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      lists.validate(id, nowTimestamp().canonical);
+      await touchedMirror.sync('list_item', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/lists/:id/untouch', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) lists.untouch(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      lists.untouch(id, nowTimestamp().canonical);
+      await touchedMirror.sync('list_item', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1337,7 +1375,10 @@ export function createApp(
   });
 
   app.post('/lists/update-suggestions/:id/approve', async (c) => {
-    lists.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    const id = c.req.param('id');
+    const suggestion = lists.listUpdateSuggestions().find((s) => s.id === id);
+    lists.decideUpdate(id, 'approved', nowTimestamp().canonical);
+    if (suggestion) await touchedMirror.sync('list_item', suggestion.recordId);
     return c.body(null, 204);
   });
 
@@ -1379,7 +1420,10 @@ export function createApp(
     const id = c.req.param('id');
     // The same tolerance as every other correction endpoint
     // (`requirements.md` §6.2).
-    if (isUlid(id)) opinionStatements.remove(id);
+    if (isUlid(id)) {
+      opinionStatements.remove(id);
+      await touchedMirror.sync('opinion_statement', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1388,18 +1432,25 @@ export function createApp(
     const body = await parseUpdateBody(c, UpdateOpinionStatementSchema);
     const updated = opinionStatements.update(id, body, nowTimestamp().canonical);
     if (!updated) throw recordNotFound('opinion statement', id);
+    await touchedMirror.sync('opinion_statement', id);
     return c.body(null, 204);
   });
 
   app.post('/opinions/statements/:id/validate', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) opinionStatements.validate(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      opinionStatements.validate(id, nowTimestamp().canonical);
+      await touchedMirror.sync('opinion_statement', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/opinions/statements/:id/untouch', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) opinionStatements.untouch(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      opinionStatements.untouch(id, nowTimestamp().canonical);
+      await touchedMirror.sync('opinion_statement', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1424,7 +1475,10 @@ export function createApp(
   });
 
   app.post('/opinions/statements/update-suggestions/:id/approve', async (c) => {
-    opinionStatements.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    const id = c.req.param('id');
+    const suggestion = opinionStatements.listUpdateSuggestions().find((s) => s.id === id);
+    opinionStatements.decideUpdate(id, 'approved', nowTimestamp().canonical);
+    if (suggestion) await touchedMirror.sync('opinion_statement', suggestion.recordId);
     return c.body(null, 204);
   });
 
@@ -1499,13 +1553,19 @@ export function createApp(
     const id = c.req.param('id');
     // The same tolerance as every other correction endpoint
     // (`requirements.md` §6.2).
-    if (isUlid(id)) questions.remove(id);
+    if (isUlid(id)) {
+      questions.remove(id);
+      await touchedMirror.sync('question', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/questions/:id/reopen', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) questions.reopen(id);
+    if (isUlid(id)) {
+      questions.reopen(id);
+      await touchedMirror.sync('question', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1514,18 +1574,25 @@ export function createApp(
     const body = await parseUpdateBody(c, UpdateQuestionSchema);
     const updated = questions.update(id, body, nowTimestamp().canonical);
     if (!updated) throw recordNotFound('question', id);
+    await touchedMirror.sync('question', id);
     return c.body(null, 204);
   });
 
   app.post('/questions/:id/validate', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) questions.validate(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      questions.validate(id, nowTimestamp().canonical);
+      await touchedMirror.sync('question', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/questions/:id/untouch', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) questions.untouch(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      questions.untouch(id, nowTimestamp().canonical);
+      await touchedMirror.sync('question', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1552,7 +1619,10 @@ export function createApp(
   });
 
   app.post('/questions/update-suggestions/:id/approve', async (c) => {
-    questions.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    const id = c.req.param('id');
+    const suggestion = questions.listUpdateSuggestions().find((s) => s.id === id);
+    questions.decideUpdate(id, 'approved', nowTimestamp().canonical);
+    if (suggestion) await touchedMirror.sync('question', suggestion.recordId);
     return c.body(null, 204);
   });
 
@@ -1604,6 +1674,11 @@ export function createApp(
     const { text } = await parseUpdateBody(c, CreateTodoSchema);
     const now = nowTimestamp().canonical;
     const record = todos.createDirect({ id: ulid(Date.now()), text, now });
+    // A direct-created to-do starts touched (`todos-index.ts`'s own doc
+    // comment) — there is no entry behind it to ever regenerate it, so it
+    // needs durable backing from the moment it exists, not only from its
+    // first edit.
+    await touchedMirror.sync('todo', record.id);
     const response: Todo = {
       id: record.id,
       entryId: record.entryId,
@@ -1621,19 +1696,28 @@ export function createApp(
 
   app.delete('/todos/:id', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) todos.remove(id);
+    if (isUlid(id)) {
+      todos.remove(id);
+      await touchedMirror.sync('todo', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/todos/:id/reopen', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) todos.reopen(id);
+    if (isUlid(id)) {
+      todos.reopen(id);
+      await touchedMirror.sync('todo', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/todos/:id/complete', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) todos.completeDirect(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      todos.completeDirect(id, nowTimestamp().canonical);
+      await touchedMirror.sync('todo', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1642,18 +1726,25 @@ export function createApp(
     const body = await parseUpdateBody(c, UpdateTodoSchema);
     const updated = todos.update(id, body, nowTimestamp().canonical);
     if (!updated) throw recordNotFound('todo', id);
+    await touchedMirror.sync('todo', id);
     return c.body(null, 204);
   });
 
   app.post('/todos/:id/validate', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) todos.validate(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      todos.validate(id, nowTimestamp().canonical);
+      await touchedMirror.sync('todo', id);
+    }
     return c.body(null, 204);
   });
 
   app.post('/todos/:id/untouch', async (c) => {
     const id = c.req.param('id');
-    if (isUlid(id)) todos.untouch(id, nowTimestamp().canonical);
+    if (isUlid(id)) {
+      todos.untouch(id, nowTimestamp().canonical);
+      await touchedMirror.sync('todo', id);
+    }
     return c.body(null, 204);
   });
 
@@ -1665,7 +1756,10 @@ export function createApp(
   });
 
   app.post('/todos/update-suggestions/:id/approve', async (c) => {
-    todos.decideUpdate(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    const id = c.req.param('id');
+    const suggestion = todos.listUpdateSuggestions().find((s) => s.id === id);
+    todos.decideUpdate(id, 'approved', nowTimestamp().canonical);
+    if (suggestion) await touchedMirror.sync('todo', suggestion.recordId);
     return c.body(null, 204);
   });
 
@@ -1682,7 +1776,10 @@ export function createApp(
   });
 
   app.post('/todos/completion-suggestions/:id/approve', async (c) => {
-    todos.decideCompletion(c.req.param('id'), 'approved', nowTimestamp().canonical);
+    const id = c.req.param('id');
+    const suggestion = todos.listCompletionSuggestions().find((s) => s.id === id);
+    todos.decideCompletion(id, 'approved', nowTimestamp().canonical);
+    if (suggestion) await touchedMirror.sync('todo', suggestion.recordId);
     return c.body(null, 204);
   });
 

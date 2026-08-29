@@ -119,7 +119,6 @@ id: 01K3F9X2VQ8N7M4TQXYZ8ABCDE
 title: The greenhouse project
 created: 2026-07-26T22:55:13+01:00
 updated: 2026-08-25T14:03:11+01:00
-public: false
 citedEntries: [01K3ABCD1234567890ABCDEFG, 01K3EFGH1234567890ABCDEFG]
 ---
 
@@ -138,7 +137,7 @@ YAML frontmatter, then the body — same structure as an entry file, same delimi
 
 **`citedEntries`** — a list of entry ids, present only when non-empty. **Absent, not `[]`, when there are none** — the same convention `location` uses on an entry. Added and edited by hand; never populated automatically, never a derivation (`requirements.md` §9.2). Citing an entry is a pointer, not a copy — the cited entry's content is never pulled into the document.
 
-**`public`** — a boolean, always present, defaulting to `false` on creation. `requirements.md` §9.3's visibility flag. Flipped only by the explicit "Publish"/"Unpublish" action, never as a side effect of an ordinary edit. When `true`, the document is readable through the public-facing surface (`requirements.md` §10); when `false`, it is exactly as private as an entry.
+There is no visibility field on the document record, and never has been past the mechanism's first iteration. `requirements.md` §9.3's "Publish" action does not flip a flag here — it copies a privacy-safe snapshot into a separate `public/` mirror, tracked there, not on this file (`requirements.md` §10, §11). A document's own frontmatter is exactly the six fields above, whether or not it happens to be published.
 
 ### Writing safely
 
@@ -149,3 +148,5 @@ Same rules as §5 above: atomic write (temp file, `fsync`, rename), never rewrit
 Everything derived lives in the application's own data directory, **outside the journal repository**. It is a cache (`requirements.md` §6.4) and must never be committed beside the record, nor appear in an export.
 
 Its format is an implementation detail and is free to change without notice, because it can always be rebuilt from the files described above.
+
+**One exception.** A *touched* record — a metric, review, list item, opinion statement, question, or to-do the user has reviewed, corrected, or edited — is not a pure function of the journal files the way an untouched one is; nothing can regenerate a hand correction by re-reading the entry. So a touched record's content is also durably mirrored, one JSON object per record, in the same durable storage the journal and `public/` mirror already live in — a `derived/touched/` prefix, sibling to `public/`. This mirror is what "free to change without notice" above still means for the cache itself while keeping non-negotiable #6 true for what a touched record actually contains: the cache can be deleted and rebuilt at any time, and a touched record's content survives that regardless, restored from `derived/touched/` rather than lost with it.

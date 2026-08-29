@@ -316,6 +316,28 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
     return rows.map((r) => r.subject);
   }
 
+  /** Restores one touched record from the durable off-index mirror
+   * (`durable/touched-mirror.ts`) — see `MetricsIndex.restoreTouched` for
+   * the full reasoning; identical shape here. */
+  restoreTouched(record: OpinionStatementRecord): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO opinion_statements
+           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
+         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, 1)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        subject: record.subject,
+        statement: record.statement,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+      });
+  }
+
   stats(): { statementCount: number } {
     const statementCount = (
       this.#db.prepare('SELECT COUNT(*) AS n FROM opinion_statements').get() as { n: number }

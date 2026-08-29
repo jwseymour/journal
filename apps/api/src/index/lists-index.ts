@@ -366,6 +366,30 @@ export class ListsIndex implements ListItemsReader {
     return approvedTypes.map((listType) => ({ listType, count: (stmt.get(listType) as { n: number }).n }));
   }
 
+  /** Restores one touched record from the durable off-index mirror
+   * (`durable/touched-mirror.ts`) — see `MetricsIndex.restoreTouched` for
+   * the full reasoning; identical shape here. */
+  restoreTouched(record: ListItemRecord): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO list_items
+           (id, entry_id, list_type, text, context, importance, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
+         VALUES (@id, @entryId, @listType, @text, @context, @importance, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, 1)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        listType: record.listType,
+        text: record.text,
+        context: record.context,
+        importance: record.importance,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+      });
+  }
+
   stats(): { itemCount: number } {
     const itemCount = (this.#db.prepare('SELECT COUNT(*) AS n FROM list_items').get() as { n: number }).n;
     return { itemCount };

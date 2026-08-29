@@ -402,6 +402,34 @@ export class QuestionsIndex implements QuestionsReader {
     return { openCount, resolvedCount };
   }
 
+  /** Restores one touched record from the durable off-index mirror
+   * (`durable/touched-mirror.ts`) — see `MetricsIndex.restoreTouched` for
+   * the full reasoning. Unlike that one, a question carries resolution
+   * state (`status`/`resolved_entry_id`/`resolution`/`resolved_at`), all
+   * restored exactly as mirrored — a touched question can be resolved,
+   * open, or reopened, and restoring must not collapse that distinction. */
+  restoreTouched(record: QuestionRecord): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO questions
+           (id, entry_id, question, event_time, event_epoch_ms, event_time_explicit, extracted_at, status, resolved_entry_id, resolution, resolved_at, touched)
+         VALUES (@id, @entryId, @question, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @status, @resolvedEntryId, @resolution, @resolvedAt, 1)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        question: record.question,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+        status: record.status,
+        resolvedEntryId: record.resolvedEntryId,
+        resolution: record.resolution,
+        resolvedAt: record.resolvedAt,
+      });
+  }
+
   stats(): { questionCount: number; openCount: number; resolvedCount: number } {
     const questionCount = (this.#db.prepare('SELECT COUNT(*) AS n FROM questions').get() as { n: number }).n;
     const { openCount, resolvedCount } = this.summarize();

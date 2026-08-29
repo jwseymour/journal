@@ -48,6 +48,7 @@ import type {
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
 import { chatFailed, extractionFailed, transcriptionFailed } from '../../src/errors.js';
+import { TouchedMirror, type DurableBlobStore } from '../../src/durable/touched-mirror.js';
 import { createApp } from '../../src/http/app.js';
 import type { CategoriesReader, CategorySuggestion, SuggestionStatus } from '../../src/index/categories-index.js';
 import type {
@@ -235,6 +236,14 @@ class FakeMetricsReader implements MetricsReader {
   decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
     this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
   }
+
+  /** The `restoreTouched` half of `durable/touched-mirror.ts`'s `Backing<T>`
+   * — an upsert, matching the real `MetricsIndex.restoreTouched`. */
+  restoreTouched(record: TemporalMetricRecord): void {
+    this.records = this.records.some((r) => r.id === record.id)
+      ? this.records.map((r) => (r.id === record.id ? record : r))
+      : [...this.records, record];
+  }
 }
 
 /** Same reasoning again, for `/metrics/fields`. */
@@ -362,6 +371,13 @@ class FakeReviewsReader implements ReviewsReader {
   decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
     this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
   }
+
+  /** See `FakeMetricsReader.restoreTouched`. */
+  restoreTouched(record: ReviewRecord): void {
+    this.records = this.records.some((r) => r.id === record.id)
+      ? this.records.map((r) => (r.id === record.id ? record : r))
+      : [...this.records, record];
+  }
 }
 
 /** Same reasoning again, for `/lists`. */
@@ -428,6 +444,13 @@ class FakeListItemsReader implements ListItemsReader {
 
   decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
     this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
+
+  /** See `FakeMetricsReader.restoreTouched`. */
+  restoreTouched(record: ListItemRecord): void {
+    this.records = this.records.some((r) => r.id === record.id)
+      ? this.records.map((r) => (r.id === record.id ? record : r))
+      : [...this.records, record];
   }
 }
 
@@ -520,6 +543,13 @@ class FakeOpinionStatementsReader implements OpinionStatementsReader {
   decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
     this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
   }
+
+  /** See `FakeMetricsReader.restoreTouched`. */
+  restoreTouched(record: OpinionStatementRecord): void {
+    this.records = this.records.some((r) => r.id === record.id)
+      ? this.records.map((r) => (r.id === record.id ? record : r))
+      : [...this.records, record];
+  }
 }
 
 /** Same reasoning again, for `/opinions/summaries`. */
@@ -602,6 +632,13 @@ class FakeQuestionsReader implements QuestionsReader {
   decideUpdate(id: string, decision: 'approved' | 'rejected'): void {
     this.updateSuggestions = this.updateSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
   }
+
+  /** See `FakeMetricsReader.restoreTouched`. */
+  restoreTouched(record: QuestionRecord): void {
+    this.records = this.records.some((r) => r.id === record.id)
+      ? this.records.map((r) => (r.id === record.id ? record : r))
+      : [...this.records, record];
+  }
 }
 
 /** Same reasoning again, for `/todos`. Closest to `FakeQuestionsReader`,
@@ -621,6 +658,10 @@ class FakeTodosReader implements TodosReader {
     this.listCalls.push(options);
     const filtered = options.status ? this.records.filter((r) => r.status === options.status) : this.records;
     return filtered.slice(0, options.limit);
+  }
+
+  getById(id: string): TodoRecord | null {
+    return this.records.find((r) => r.id === id) ?? null;
   }
 
   createDirect(input: CreateDirectTodoInput): TodoRecord {
@@ -707,6 +748,34 @@ class FakeTodosReader implements TodosReader {
 
   decideCompletion(id: string, decision: 'approved' | 'rejected'): void {
     this.completionSuggestions = this.completionSuggestions.map((s) => (s.id === id ? { ...s, status: decision } : s));
+  }
+
+  /** See `FakeMetricsReader.restoreTouched`. */
+  restoreTouched(record: TodoRecord): void {
+    this.records = this.records.some((r) => r.id === record.id)
+      ? this.records.map((r) => (r.id === record.id ? record : r))
+      : [...this.records, record];
+  }
+}
+
+/** The same fake-the-seam approach `publisher.test.ts`'s `FakeBlobStore`
+ * takes for `PublicBlobStore` — an in-memory stand-in for
+ * `durable/touched-mirror.ts`'s `DurableBlobStore`, exercising real
+ * `TouchedMirror.sync` calls against the fake readers above without a real
+ * filesystem or S3 involved. */
+class FakeDurableBlobStore implements DurableBlobStore {
+  files = new Map<string, string>();
+
+  async put(key: string, json: string): Promise<void> {
+    this.files.set(key, json);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.files.delete(key);
+  }
+
+  async list(prefix: string): Promise<{ key: string; json: string }[]> {
+    return [...this.files.entries()].filter(([key]) => key.startsWith(prefix)).map(([key, json]) => ({ key, json }));
   }
 }
 
@@ -839,6 +908,15 @@ beforeEach(async () => {
     questions,
     new PublicSearchIndex(':memory:'),
   );
+  const touchedMirror = new TouchedMirror(
+    new FakeDurableBlobStore(),
+    metrics,
+    reviews,
+    lists,
+    opinionStatements,
+    questions,
+    todos,
+  );
   app = createApp(
     entryStore,
     documentStore,
@@ -858,6 +936,7 @@ beforeEach(async () => {
     chat,
     publisher,
     visibilityDefaultsIndex,
+    touchedMirror,
   );
 });
 
