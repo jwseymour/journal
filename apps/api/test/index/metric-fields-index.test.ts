@@ -55,6 +55,37 @@ describe('define / listForMetric / listAll', () => {
   });
 });
 
+describe('update', () => {
+  it('edits label, description, unit, and score bounds', () => {
+    index.define(field());
+    const updated = index.update('f1', { label: 'Distance run', description: 'Updated.', unit: 'mi' });
+    expect(updated).toMatchObject({ label: 'Distance run', description: 'Updated.', unit: 'mi' });
+    expect(index.get('f1')).toMatchObject({ label: 'Distance run', description: 'Updated.', unit: 'mi' });
+  });
+
+  it('leaves fields not present in the input untouched', () => {
+    index.define(field({ label: 'Distance', description: 'How far.' }));
+    index.update('f1', { label: 'Distance (updated)' });
+    expect(index.get('f1')).toMatchObject({ label: 'Distance (updated)', description: 'How far.', unit: 'km' });
+  });
+
+  it('can explicitly clear unit and score bounds to null', () => {
+    index.define(field({ fieldType: 'score', scoreMin: 1, scoreMax: 5, unit: null }));
+    index.update('f1', { scoreMin: null, scoreMax: null });
+    expect(index.get('f1')).toMatchObject({ scoreMin: null, scoreMax: null });
+  });
+
+  it('never changes metric, fieldKey, or fieldType — not part of the input type at all', () => {
+    index.define(field());
+    index.update('f1', { label: 'Renamed' });
+    expect(index.get('f1')).toMatchObject({ metric: 'exercise', fieldKey: 'distance_km', fieldType: 'numeric' });
+  });
+
+  it('returns null and changes nothing for an id that does not exist', () => {
+    expect(index.update('never-existed', { label: 'X' })).toBeNull();
+  });
+});
+
 describe('remove', () => {
   it('discards a field definition', () => {
     index.define(field());

@@ -473,6 +473,23 @@ export interface DefineMetricFieldRequest {
   description: string;
 }
 
+/** Editing a field already defined (`PATCH /metrics/fields/:id`) —
+ * deliberately excludes `metric`, `fieldKey`, and `fieldType`: those are
+ * the field's identity and the shape of every value already stored under
+ * it, so changing them is a remove-and-redefine, not an edit. Only keys
+ * present change; everything else is left as stored, the same partial-edit
+ * shape every touchable structure's own `Update*Request` already uses. */
+export interface UpdateMetricFieldRequest {
+  label?: string;
+  description?: string;
+  unit?: string | null;
+  scoreMin?: number | null;
+  scoreMax?: number | null;
+}
+
+/** The field as it stands after the edit. */
+export type UpdateMetricFieldResponse = MetricFieldDefinition;
+
 /** A field the AI proposed but a human has not yet decided on
  * (`requirements.md` §5.3's first route, extended from category names to
  * fields). `entryId` is the entry that prompted it. */

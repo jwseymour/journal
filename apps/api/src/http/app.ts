@@ -49,6 +49,7 @@ import type {
   SearchResponse,
   StructureType,
   SuggestionsResponse,
+  UpdateMetricFieldResponse,
   VisibilityDefaultsResponse,
   Todo,
   TodoCompletionSuggestionsResponse,
@@ -242,6 +243,22 @@ const DefineMetricFieldSchema = z
     scoreMin: z.number().optional(),
     scoreMax: z.number().optional(),
     description: z.string().min(1),
+  })
+  .strict();
+
+/** Editing a field already defined (`PATCH /metrics/fields/:id`) —
+ * everything optional, `metric`/`fieldKey`/`fieldType` deliberately absent
+ * (`UpdateFieldInput`'s own comment). `.nullable().optional()` on `unit`
+ * and the score bounds, same convention `UpdateReviewSchema.rating`
+ * already uses, so a caller can explicitly clear one rather than only ever
+ * being able to set it. */
+const UpdateMetricFieldSchema = z
+  .object({
+    label: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
+    unit: z.string().min(1).nullable().optional(),
+    scoreMin: z.number().nullable().optional(),
+    scoreMax: z.number().nullable().optional(),
   })
   .strict();
 
@@ -1112,6 +1129,28 @@ export function createApp(
       now: nowTimestamp().canonical,
     });
     return c.body(null, 204);
+  });
+
+  app.patch('/metrics/fields/:id', async (c) => {
+    const id = c.req.param('id');
+    let json: unknown;
+    try {
+      json = await c.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+
+    const parsed = UpdateMetricFieldSchema.safeParse(json);
+    if (!parsed.success) {
+      const [issue] = parsed.error.issues;
+      const at = issue && issue.path.length > 0 ? ` at '${issue.path.join('.')}'` : '';
+      throw invalidRequest(`${issue?.message ?? 'Invalid request body.'}${at}`);
+    }
+
+    const updated = metricFields.update(id, parsed.data);
+    if (!updated) throw recordNotFound('field', id);
+    const response: UpdateMetricFieldResponse = updated;
+    return c.json(response);
   });
 
   app.delete('/metrics/fields/:id', async (c) => {

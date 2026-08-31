@@ -191,6 +191,34 @@
   font-weight: var(--weight-emphasis);
 }
 
+.editButton {
+  margin-left: var(--space-2xs);
+  padding: 0 var(--space-2xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+
+.editButton:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Editing a field already defined (`PATCH /metrics/fields/:id`) — same
+ * `.input`/`.actions` vocabulary the "add a field" form below already
+ * uses, laid out inline in place of the row's normal display. */
+.fieldEditForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
 .fieldMeta {
   margin-left: var(--space-2xs);
   color: var(--ink-muted);

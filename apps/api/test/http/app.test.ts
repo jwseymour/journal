@@ -60,7 +60,12 @@ import type {
   ListTypeSummary,
   UpdateListItemInput,
 } from '../../src/index/lists-index.js';
-import type { MetricFieldDefinition, MetricFieldSuggestion, MetricFieldsReader } from '../../src/index/metric-fields-index.js';
+import type {
+  MetricFieldDefinition,
+  MetricFieldSuggestion,
+  MetricFieldsReader,
+  UpdateFieldInput,
+} from '../../src/index/metric-fields-index.js';
 import type {
   ListMetricsOptions,
   MetricFieldSummary,
@@ -289,6 +294,21 @@ class FakeMetricFieldsReader implements MetricFieldsReader {
         createdAt: input.now,
       });
     }
+  }
+
+  update(id: string, input: UpdateFieldInput): MetricFieldDefinition | null {
+    const existing = this.fields.find((f) => f.id === id);
+    if (!existing) return null;
+    const updated: MetricFieldDefinition = {
+      ...existing,
+      ...(input.label !== undefined ? { label: input.label } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.unit !== undefined ? { unit: input.unit } : {}),
+      ...(input.scoreMin !== undefined ? { scoreMin: input.scoreMin } : {}),
+      ...(input.scoreMax !== undefined ? { scoreMax: input.scoreMax } : {}),
+    };
+    this.fields = this.fields.map((f) => (f.id === id ? updated : f));
+    return updated;
   }
 
   remove(id: string): void {
@@ -2280,6 +2300,63 @@ describe('POST /metrics/fields', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ metric: 'exercise', fieldKey: 'x', label: 'X', fieldType: 'numeric' }),
+    });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('PATCH /metrics/fields/:id', () => {
+  const existingField: MetricFieldDefinition = {
+    id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    metric: 'exercise',
+    fieldKey: 'distance_km',
+    label: 'Distance',
+    fieldType: 'numeric',
+    unit: 'km',
+    scoreMin: null,
+    scoreMax: null,
+    description: 'How far, in km.',
+    createdAt: '2026-07-20T09:00:00Z',
+  };
+
+  it('edits the field and returns the updated definition', async () => {
+    metricFields.fields = [existingField];
+    const response = await app.request('/metrics/fields/01ARZ3NDEKTSV4RRFFQ69G5FAV', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'Distance (updated)', unit: 'mi' }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ label: 'Distance (updated)', unit: 'mi' });
+  });
+
+  it('can explicitly clear a nullable field to null', async () => {
+    metricFields.fields = [{ ...existingField, fieldType: 'score', scoreMin: 1, scoreMax: 5, unit: null }];
+    const response = await app.request('/metrics/fields/01ARZ3NDEKTSV4RRFFQ69G5FAV', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scoreMin: null, scoreMax: null }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ scoreMin: null, scoreMax: null });
+  });
+
+  it('returns record_not_found for an id that does not exist', async () => {
+    const response = await app.request('/metrics/fields/01ARZ3NDEKTSV4RRFFQ69G5FAV', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'X' }),
+    });
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe('record_not_found');
+  });
+
+  it('rejects an attempt to change metric, fieldKey, or fieldType — not accepted fields', async () => {
+    metricFields.fields = [existingField];
+    const response = await app.request('/metrics/fields/01ARZ3NDEKTSV4RRFFQ69G5FAV', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fieldType: 'text' }),
     });
     expect(response.status).toBe(400);
   });

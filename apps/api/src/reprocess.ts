@@ -19,9 +19,10 @@ import { OPINION_SUBJECT_SEED_NAMES } from './model/opinions.js';
 import { QuestionsExtractor } from './model/questions-extractor.js';
 import { ReviewsExtractor } from './model/reviews-extractor.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
-import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
+import { METRIC_FIELD_SEEDS, METRIC_SEED_NAMES } from './model/temporal-metrics.js';
 import { TodosExtractor } from './model/todos-extractor.js';
 import { createEntryStore } from './store/create-entry-store.js';
+import { ulid } from './record/id.js';
 import { nowTimestamp } from './record/time.js';
 
 /**
@@ -74,6 +75,12 @@ async function main(): Promise<void> {
 
   const metricsIndex = new MetricsIndex(config.indexDbPath);
   const metricFieldsIndex = new MetricFieldsIndex(config.indexDbPath);
+  // Same idempotent seeding `index.ts`'s boot does — see `METRIC_FIELD_SEEDS`'s
+  // own comment for why running it here too is exactly as safe as running
+  // it once.
+  for (const seed of METRIC_FIELD_SEEDS) {
+    metricFieldsIndex.define({ ...seed, id: ulid(Date.now()), now });
+  }
   const extractor = new Extractor(metricsIndex, metricFieldsIndex, categoriesIndex, modelClient);
 
   const reviewsIndex = new ReviewsIndex(config.indexDbPath);

@@ -57,6 +57,8 @@ import type {
   UpdateEntryRequest,
   UpdateEntryResponse,
   UpdateListItemRequest,
+  UpdateMetricFieldRequest,
+  UpdateMetricFieldResponse,
   UpdateMetricRequest,
   UpdateOpinionStatementRequest,
   UpdateQuestionRequest,
@@ -425,6 +427,14 @@ export async function defineMetricField(field: DefineMetricFieldRequest): Promis
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(field),
+  });
+}
+
+export function updateMetricField(id: string, body: UpdateMetricFieldRequest): Promise<UpdateMetricFieldResponse> {
+  return request<UpdateMetricFieldResponse>(`/metrics/fields/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
 

@@ -29,8 +29,9 @@ import { OPINION_SUBJECT_SEED_NAMES } from './model/opinions.js';
 import { QuestionsExtractor } from './model/questions-extractor.js';
 import { ReviewsExtractor } from './model/reviews-extractor.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
-import { METRIC_SEED_NAMES } from './model/temporal-metrics.js';
+import { METRIC_FIELD_SEEDS, METRIC_SEED_NAMES } from './model/temporal-metrics.js';
 import { TodosExtractor } from './model/todos-extractor.js';
+import { ulid } from './record/id.js';
 import { nowTimestamp } from './record/time.js';
 import { createTouchedMirror } from './durable/create-touched-mirror.js';
 import { createPublisher } from './publish/create-publisher.js';
@@ -133,6 +134,13 @@ async function main(): Promise<void> {
   categoriesIndex.seed('review_medium', REVIEW_MEDIUM_SEED_NAMES, seededAt);
   categoriesIndex.seed('list_type', LIST_TYPE_SEED_NAMES, seededAt);
   categoriesIndex.seed('opinion_subject', OPINION_SUBJECT_SEED_NAMES, seededAt);
+  // Same idempotence as the category seeding just above — a `(metric,
+  // field_key)` pair that already exists, whether from a previous boot or
+  // from the user editing it since, is left untouched (`temporal-metrics.ts`
+  // `METRIC_FIELD_SEEDS`'s own comment).
+  for (const seed of METRIC_FIELD_SEEDS) {
+    metricFieldsIndex.define({ ...seed, id: ulid(Date.now()), now: seededAt });
+  }
   // Chat and single-entry extraction are the two subsystems that call a
   // model live from the running server — both fail clearly at the point of
   // use, via their own `Unconfigured*` client, rather than refusing to boot

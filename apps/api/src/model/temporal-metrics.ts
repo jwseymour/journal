@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { MetricFieldDefinition } from '../index/metric-fields-index.js';
+import type { DefineFieldInput, MetricFieldDefinition } from '../index/metric-fields-index.js';
 
 /**
  * The first derived structure (`plan.md` M7, `requirements.md` §5.2):
@@ -23,7 +23,89 @@ import type { MetricFieldDefinition } from '../index/metric-fields-index.js';
  * impossible for the model to put `sport` on an `alcohol` record, not just
  * a prompt-discipline convention.
  */
-export const METRIC_SEED_NAMES = ['exercise', 'alcohol', 'sleep'] as const;
+export const METRIC_SEED_NAMES = [
+  'exercise',
+  'alcohol',
+  'sleep',
+  'food',
+  'caffeine',
+  'weight',
+  'mood',
+  'activities',
+  'productivity',
+  'social',
+  'symptoms',
+] as const;
+
+/**
+ * Fields worth having on a metric from day one, rather than left for the
+ * user to define by hand through `/categories` — approved directly, the
+ * same second route `requirements.md` §5.3 gives every open-ended category
+ * (`DefineMetricFieldRequest`'s own route, just applied at boot instead of
+ * from a request). A bare occurrence is the deliberate default for every
+ * metric above **except** these: a number is what actually makes "weight"
+ * or "3 cups of coffee" worth plotting as a trend rather than a plain
+ * yes/no day (`design.md` §5.3 — a line, not just a calendar heatmap).
+ *
+ * Applied idempotently at every boot (`index.ts`), mirroring
+ * `CategoriesIndex.seed`: `MetricFieldsIndex.define`'s `INSERT OR IGNORE`,
+ * plus the table's own `UNIQUE(metric, field_key)` constraint, means a pair
+ * that already exists — including one since edited through `/categories`
+ * — is left exactly as it is. Adding a new entry here is therefore always
+ * safe; it can never clobber a definition the user has since changed.
+ */
+export const METRIC_FIELD_SEEDS: readonly Omit<DefineFieldInput, 'id' | 'now'>[] = [
+  {
+    metric: 'weight',
+    fieldKey: 'value',
+    label: 'Weight',
+    fieldType: 'numeric',
+    unit: 'kg',
+    scoreMin: null,
+    scoreMax: null,
+    description: 'The weight recorded, in kilograms.',
+  },
+  {
+    metric: 'mood',
+    fieldKey: 'state',
+    label: 'Mood',
+    fieldType: 'score',
+    unit: null,
+    scoreMin: 1,
+    scoreMax: 5,
+    description: 'How the writer describes feeling, from 1 (worst) to 5 (best).',
+  },
+  {
+    metric: 'productivity',
+    fieldKey: 'score',
+    label: 'Productivity',
+    fieldType: 'score',
+    unit: null,
+    scoreMin: 1,
+    scoreMax: 5,
+    description: 'How productive the writer felt the period was, from 1 (least) to 5 (most).',
+  },
+  {
+    metric: 'symptoms',
+    fieldKey: 'severity',
+    label: 'Severity',
+    fieldType: 'score',
+    unit: null,
+    scoreMin: 1,
+    scoreMax: 5,
+    description: 'How severe the symptom was, from 1 (barely noticeable) to 5 (severe).',
+  },
+  {
+    metric: 'caffeine',
+    fieldKey: 'amount',
+    label: 'Amount',
+    fieldType: 'numeric',
+    unit: 'cups',
+    scoreMin: null,
+    scoreMax: null,
+    description: 'How much caffeine was had, in cups of coffee or tea (e.g. "3 cups" → 3).',
+  },
+];
 
 const SuggestedCategorySchema = z
   .object({

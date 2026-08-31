@@ -57,6 +57,23 @@ export interface MetricFieldSuggestion {
 }
 
 export type DefineFieldInput = Omit<MetricFieldDefinition, 'id' | 'createdAt'> & { id: string; now: string };
+
+/** Editing a field already defined — deliberately excludes `metric`,
+ * `fieldKey`, and `fieldType`: those are the field's identity and the
+ * shape of every value already stored under it, and changing them is a
+ * "remove and redefine," not an edit. Everything else can be corrected
+ * directly: get the label, description, unit, or score bounds wrong the
+ * first time and it's a fix, not a delete-and-recreate. Only keys present
+ * in the input change — read through `??` below, so `| undefined`
+ * throughout matters, not just `?:` (see `UpdateMetricInput`'s own comment
+ * on why a Zod-parsed body needs this under `exactOptionalPropertyTypes`). */
+export interface UpdateFieldInput {
+  label?: string | undefined;
+  description?: string | undefined;
+  unit?: string | null | undefined;
+  scoreMin?: number | null | undefined;
+  scoreMax?: number | null | undefined;
+}
 export type SuggestFieldInput = Omit<MetricFieldSuggestion, 'id' | 'status' | 'suggestedAt' | 'decidedAt'> & {
   id: string;
   now: string;
@@ -71,6 +88,11 @@ export interface MetricFieldsReader {
   listAll(): MetricFieldDefinition[];
   get(id: string): MetricFieldDefinition | null;
   define(input: DefineFieldInput): void;
+  /** Edits label/description/unit/score bounds on a field already defined
+   * — see `UpdateFieldInput`'s own comment for what's deliberately
+   * excluded and why. Returns the updated definition, or `null` if `id`
+   * doesn't exist. */
+  update(id: string, input: UpdateFieldInput): MetricFieldDefinition | null;
   remove(id: string): void;
   listSuggestions(options?: { metric?: string; status?: MetricFieldSuggestion['status'] }): MetricFieldSuggestion[];
   decide(id: string, decision: 'approved' | 'rejected', now: string): void;
@@ -133,6 +155,25 @@ export class MetricFieldsIndex implements MetricFieldsReader {
          VALUES (@id, @metric, @fieldKey, @label, @fieldType, @unit, @scoreMin, @scoreMax, @description, @now)`,
       )
       .run(input);
+  }
+
+  /** Edits an existing definition in place. A no-op returning `null` if
+   * `id` doesn't exist — the caller decides whether that's an error. */
+  update(id: string, input: UpdateFieldInput): MetricFieldDefinition | null {
+    const existing = this.get(id);
+    if (!existing) return null;
+    const next: MetricFieldDefinition = {
+      ...existing,
+      ...(input.label !== undefined ? { label: input.label } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.unit !== undefined ? { unit: input.unit } : {}),
+      ...(input.scoreMin !== undefined ? { scoreMin: input.scoreMin } : {}),
+      ...(input.scoreMax !== undefined ? { scoreMax: input.scoreMax } : {}),
+    };
+    this.#db
+      .prepare('UPDATE metric_fields SET label = ?, description = ?, unit = ?, score_min = ?, score_max = ? WHERE id = ?')
+      .run(next.label, next.description, next.unit, next.scoreMin, next.scoreMax, id);
+    return next;
   }
 
   /** Discard a field definition (`requirements.md` §6.2 — mistakes must be
