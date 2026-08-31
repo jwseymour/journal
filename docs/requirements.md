@@ -154,11 +154,13 @@ I keep thinking of more, and will continue to think of more. **The system must b
 
 Each time the same thing is encountered, a new record is created for that event — not an edit to a single existing record. The intention is to track all of it, including repeat encounters with the same work.
 
-**Models of my opinions.** For example my philosophy, or my view of my future. The defining characteristic is that any single journal entry contains only partial information on the subject, and the goal is to have it all organised in one location, as well as to be able to see how it changes over time.
+**Concept notebooks.** For a subject worth gathering everything about over time — my philosophy, my view of my future, relationships, my own brain. The defining characteristic is that any single journal entry contains only a fragment of the subject, and the point of the structure is having it all in one place, organised by what it's about rather than by when it was written.
 
-There is an absolute constraint on this structure: **it must not extrapolate from what I have written.** Its function is to store, summarise, and organise the opinions I have actually expressed, all of it linked to the journal entries it came from. It does not infer positions I have not stated, and it does not extend my reasoning on my behalf.
+**Reframed 2026-08-30.** This started narrower, as "models of my opinions" — restricted to views, beliefs, and positions I had explicitly stated. That excluded exactly the plain facts and observations that make a subject like "my brain" or "relationships" worth gathering in the first place. The scope is now anything an entry actually says about the subject — a fact, an event, a reflection, or a stated view — not opinions specifically.
 
-This structure is acknowledged as potentially quite complicated, and its implementation is not yet settled.
+**Grouping is the primary purpose; summarising is secondary.** The main value of this structure is everything about a subject collected in one place, readable as a record. A generated, cross-entry summary is a secondary, optional layer on top of that grouping — useful, but not the reason the structure exists, and never presented ahead of the grouped record itself.
+
+There is an absolute constraint on this structure, unchanged by the reframing above: **it must not extrapolate from what I have written.** Its function is to store and organise what I have actually written about a subject, all of it linked to the journal entries it came from. It does not infer positions or facts I have not stated, and it does not extend my reasoning on my behalf.
 
 **Lists of atomic items.** For example quotes. These behave differently again from the structures above.
 
@@ -175,11 +177,19 @@ Two routes exist for creating them:
 
 ## 6. How the extraction works
 
-### 6.1 Autonomy is the default
+### 6.1 Review is grouped and batchable, not per-record
 
-The majority of the work is autonomous. That is the point of the system.
+This section originally read the opposite way: explicit statements were auto-committed without approval, and review was the exception. That is reversed here, deliberately and on the record, not by drift — the exception swallowed the rule in practice, and correcting after the fact (§6.2) turned out to matter less than seeing what was about to be committed in the first place.
 
-Anything explicit in a journal entry is auto-committed without approval — explicit statements are high-confidence and do not need reviewing. There may be some things that warrant approval, but they are the exception rather than the rule. The system should not be gated behind constant user confirmation.
+Nothing the pipeline extracts commits silently anymore. A new record, an update to an existing one, a question or todo being resolved — all of it becomes a pending item waiting on approval before it is live.
+
+This is not constant confirmation. Review is grouped and batchable: everything a single Process run produced surfaces together, arranged by confidence, and one action approves many at once — every pending metric together, or more than that if I choose. The point is to pay the cost of review once per batch, not once per fact.
+
+Confidence is a real signal the model attaches to each candidate. For "medium" and "high" it decides only how review is arranged — what surfaces first, what's grouped together — never whether something is shown. "Low" is the one exception: a candidate the model itself is genuinely unsure of is discarded before it ever becomes a pending item, rather than adding one more row to reject. Confidence is never stored on the committed record.
+
+If a batch isn't acted on right away, nothing is lost: it waits in one fallback queue, not scattered across per-type pages that nothing links to.
+
+The autonomy that remains is in what the pipeline is trusted to *propose*, not in what it's allowed to commit unseen — extraction still runs on every Process, unprompted per-field, but nothing lands without my having seen it.
 
 ### 6.2 Mistakes must be easy to fix
 
@@ -324,9 +334,9 @@ The following have been raised and deliberately set aside for later consideratio
 
 **To-do lists / longer-term goals.** No longer blocked in principle — §2 now allows a derived record to be directly maintained once touched, which is what a to-do list needs. The concrete structure — what a to-do item is, how it is created, how it is closed — is not yet designed.
 
-**Hand-editing the opinion model.** For now, not something I edit directly. To be reconsidered later.
+**Hand-editing the concept model's generated summary.** The generated cross-entry summary is not something I edit directly — corrections go through the statements it's built from. To be reconsidered later.
 
-**Implementation of the opinion model.** Recognised as the least resolved of the identified structures.
+**Implementation of the concept model.** The 2026-08-30 reframing (§5.2) settled its scope and where the emphasis sits; what's still open is how much further the grouping itself should go presentationally as more subjects and more content accumulate.
 
 **Multi-device use.** Still deferred — M11 makes the API reachable and adds single-user auth, but a phone/laptop-writing client is separate, later work. See §7.5.
 
@@ -334,7 +344,11 @@ The following have been raised and deliberately set aside for later consideratio
 
 **An AI-organised public site.** An idea, not yet designed: describing in plain prose how the public surface should be arranged — "put the coding projects together, at the top" — and having a system carry out that arrangement across published documents, rather than hand-maintaining a manual order or a taxonomy field on each one. Raised specifically because a fixed `kind`/category field on a document felt like the wrong shape for something this presentational and this likely to change. On hold until there is enough real published content to know what arranging it actually needs.
 
-**Grouping entries and documents into a project or collection.** An entry must never carry a citation or relation of its own (§4.3, §9's "an entry should just be for a day") — so grouping content around a subject that spans several days of writing has to be derived, not authored on the entry. The likely shape is close to the opinion model (§5.2): extract the parts of an entry that belong to a given subject, linked back to their source, rather than citing whole entries by hand. What's unresolved is presentation — showing a project's worth of extracted fragments needs something better than a bare list of paragraphs pulled from different days. On hold; revisit once the public/private mechanism above is in everyday use.
+**Grouping entries and documents into a project or collection.** An entry must never carry a citation or relation of its own (§4.3, §9's "an entry should just be for a day") — so grouping content around a subject that spans several days of writing has to be derived, not authored on the entry. The likely shape is close to the concept model (§5.2): extract the parts of an entry that belong to a given subject, linked back to their source, rather than citing whole entries by hand. What's unresolved is presentation — showing a project's worth of extracted fragments needs something better than a bare list of paragraphs pulled from different days. On hold; revisit once the public/private mechanism above is in everyday use.
+
+**Natural-language control over the analysis page's layout.** Raised 2026-08-30: a text box where I describe in prose how I want the page organised — layout, groupings, orderings, which graphics — and an AI carries that out, rather than hand-configuring it control by control. Not yet designed, and deliberately not started: I want the analysis page's actual content settled and lived-with first (§5.2's new metrics and concept subjects among them) before designing how to rearrange it.
+
+**A per-person conversation-topics structure.** Raised 2026-08-30: noting down a conversation point, thread, or question to raise with someone specific, with the system extracting and collecting them per person. Close in spirit to open questions (§5.2) or to-dos, but keyed to a person rather than existing as a flat list — the open question is what interface actually makes sense for that (linked to a concept-model subject for the person? Its own structure? Something else?). Explicitly not designed yet; I said I'd think about the interface before deciding the shape.
 
 ---
 
@@ -354,7 +368,7 @@ The following have been raised and deliberately set aside for later consideratio
 - New metrics are approved or requested by me, never created unilaterally.
 - Most extraction is autonomous; mistakes are easy to correct.
 - Model and provider are always swappable; nothing is tied to one vendor.
-- The opinion model organises what I said, and never extrapolates beyond it.
+- The concept model groups everything said about a subject — fact, event, reflection, or view — and never extrapolates beyond it; a generated cross-entry summary is a secondary, optional layer on top, not the reason the structure exists.
 - Frontend and backend are cleanly separated; the frontend is disposable.
 - As of M11, journal storage and the API run online (S3, a hosted API) rather than purely on my own file system — the files stay canonical, and the separation above (§7.1) is what made that move cheap rather than a rewrite.
 - Everything above the journal serves the journal, and never the reverse.

@@ -83,6 +83,35 @@ beforeEach(() => {
   extractor = new ReviewsExtractor(reviewsIndex, categoriesIndex, modelClient);
 });
 
+describe('extractCandidates', () => {
+  it('shapes model output into candidates without writing to the index', async () => {
+    modelClient.result = {
+      reviews: [
+        { title: 'Some Film', medium: 'film', rating: 4, progress: 100, opinion: 'Really enjoyed it.', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'medium', confidenceReason: 'implied reaction' },
+      ],
+    };
+    const result = await extractor.extractCandidates(entry('e1', 'Watched a film tonight.'));
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ title: 'Some Film', confidence: 'medium', confidenceReason: 'implied reaction' });
+    expect(reviewsIndex.list({ limit: 10 })).toEqual([]);
+  });
+
+  it('extractEntry still produces the exact same committed records as before this split', async () => {
+    modelClient.result = {
+      reviews: [
+        { title: 'Some Film', medium: 'film', rating: 4, progress: 100, opinion: 'Really enjoyed it.', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'low', confidenceReason: 'guessed' },
+      ],
+    };
+    await extractor.extractEntry(entry('e1', 'Watched a film tonight.'));
+
+    const [record] = reviewsIndex.list({ limit: 10 });
+    expect(record).not.toHaveProperty('confidence');
+    expect(record).not.toHaveProperty('confidenceReason');
+    expect(record).toMatchObject({ title: 'Some Film', touched: false });
+  });
+});
+
 describe('extractEntry', () => {
   it('stores a record for each review the model returns, rating included', async () => {
     modelClient.result = {
@@ -95,6 +124,8 @@ describe('extractEntry', () => {
           opinion: 'Really enjoyed it.',
           eventTime: '2026-07-20T20:00:00+01:00',
           eventTimeExplicit: true,
+          confidence: 'high',
+          confidenceReason: null,
         },
       ],
     };
@@ -122,6 +153,8 @@ describe('extractEntry', () => {
           opinion: 'Interesting premise.',
           eventTime: '2026-07-20T20:00:00+01:00',
           eventTimeExplicit: true,
+          confidence: 'high',
+          confidenceReason: null,
         },
       ],
     };
@@ -140,6 +173,8 @@ describe('extractEntry', () => {
           opinion: 'Halfway through, enjoying it.',
           eventTime: '2026-07-20T20:00:00+01:00',
           eventTimeExplicit: true,
+          confidence: 'high',
+          confidenceReason: null,
         },
       ],
     };
@@ -150,7 +185,7 @@ describe('extractEntry', () => {
   it('stores a null rating when the model gives none — never invents one', async () => {
     modelClient.result = {
       reviews: [
-        { title: 'A Book', medium: 'book', rating: null, progress: null, opinion: 'Interesting premise.', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true },
+        { title: 'A Book', medium: 'book', rating: null, progress: null, opinion: 'Interesting premise.', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null },
       ],
     };
     await extractor.extractEntry(entry('e1', 'Reading A Book, interesting premise so far.'));
@@ -165,7 +200,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time for a malformed eventTime', async () => {
     modelClient.result = {
-      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: 'not a timestamp', eventTimeExplicit: true }],
+      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: 'not a timestamp', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Watched X.', '2026-07-20T21:00:00+01:00'));
     const [record] = reviewsIndex.list({ limit: 10 });
@@ -175,7 +210,7 @@ describe('extractEntry', () => {
 
   it('keeps two encounters with the same title as two separate records across two extractions', async () => {
     modelClient.result = {
-      reviews: [{ title: 'Rewatched Film', medium: 'film', rating: 5, progress: 100, opinion: 'even better this time', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      reviews: [{ title: 'Rewatched Film', medium: 'film', rating: 5, progress: 100, opinion: 'even better this time', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Watched it again.'));
     await extractor.extractEntry(entry('e2', 'Watched it a third time.'));
@@ -199,7 +234,7 @@ describe('extractEntry', () => {
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.result = {
-      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Watched X.'));
     extractor.removeEntry('e1');
@@ -211,7 +246,7 @@ describe('reprocessAll', () => {
   it('extracts every entry and clears what came before', async () => {
     await extractor.extractEntry(entry('stale', 'leftover'));
     modelClient.result = {
-      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      reviews: [{ title: 'X', medium: 'film', rating: null, progress: null, opinion: 'ok', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     };
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b')]);
 

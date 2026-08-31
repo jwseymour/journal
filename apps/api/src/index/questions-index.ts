@@ -99,6 +99,16 @@ export interface QuestionsReader {
   untouch(id: string, now: string): void;
   listUpdateSuggestions(options?: { status?: QuestionUpdateSuggestion['status'] }): QuestionUpdateSuggestion[];
   decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** Every currently open question raised by this entry, touched or not
+   * (`plan.md` M18) — the live-diff counterpart to `touchedOpenRaisedBy`,
+   * see `MetricsReader.liveForEntry` for the full reasoning. */
+  openRaisedBy(entryId: string): QuestionRecord[];
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsReader.insertApproved` for the full reasoning. */
+  insertApproved(record: QuestionRecord): void;
+  /** Applies an approved pending `'resolution'` item (`plan.md` M18) — see
+   * the concrete class for why this bypasses `resolve()`'s guard. */
+  resolveApproved(id: string, resolution: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void;
 }
 
 export class QuestionsIndex implements QuestionsReader {
@@ -229,6 +239,17 @@ export class QuestionsIndex implements QuestionsReader {
     return rows.map(fromRaw);
   }
 
+  /** Every currently open question raised by this entry, touched or not
+   * (`plan.md` M18) — see `MetricsIndex.liveForEntry` for the full
+   * reasoning: the live pending-item processor diffs against everything
+   * already live, not only what has been individually touched. */
+  openRaisedBy(entryId: string): QuestionRecord[] {
+    const rows = this.#db
+      .prepare("SELECT * FROM questions WHERE entry_id = ? AND status = 'open'")
+      .all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
   /** Marks an open question resolved by a later entry — an update in place,
    * not a replace: the row still belongs, by `entry_id`, to whichever entry
    * originally raised it. A no-op if `id` is not currently open.
@@ -239,16 +260,38 @@ export class QuestionsIndex implements QuestionsReader {
    * single-entry extraction path distinct from `reprocessAll`'s chronological
    * replay (every call to `resolve` today happens inside that replay), so
    * there is no "genuinely new information arriving" case to distinguish
-   * from "reprocessing regenerating old work." If a live path is added
-   * later, this guard needs revisiting: it should stay off there, since a
-   * later entry resolving a touched-but-still-open question is new
-   * information, not regeneration. */
+   * from "reprocessing regenerating old work." **The live path has now been
+   * added (`plan.md` M18) — `resolveApproved` below is it.** This guard
+   * stays exactly as it was for `reprocessAll`'s chronological replay, which
+   * is still the only caller of this method; the live path calls
+   * `resolveApproved` instead, never this one. */
   resolve(id: string, resolution: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void {
     this.#db
       .prepare(
         `UPDATE questions
            SET status = 'resolved', resolved_entry_id = @resolvedEntryId, resolution = @resolution, resolved_at = @resolvedAt
          WHERE id = @id AND status = 'open' AND touched = 0`,
+      )
+      .run({ id, ...resolution });
+  }
+
+  /** Applies an approved pending `'resolution'` item (`plan.md` M18,
+   * `model/pending-item-applier.ts`) — the live-path counterpart to
+   * `resolve()`, deliberately without its `AND touched = 0` guard: a human
+   * has already approved this specific match in the popup, which is exactly
+   * the "genuinely new information arriving" case `resolve()`'s own comment
+   * says the guard was never meant to block. Forces `touched = 1`, the same
+   * as `update()`/`reopen()` — resolving is itself a content change to an
+   * existing record, approved by a human, so it becomes protected like any
+   * other correction. No-op if `id` is not currently open — an
+   * already-resolved or reopened-elsewhere question is left alone rather
+   * than silently re-resolved. */
+  resolveApproved(id: string, resolution: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void {
+    this.#db
+      .prepare(
+        `UPDATE questions
+           SET status = 'resolved', resolved_entry_id = @resolvedEntryId, resolution = @resolution, resolved_at = @resolvedAt, touched = 1
+         WHERE id = @id AND status = 'open'`,
       )
       .run({ id, ...resolution });
   }
@@ -400,6 +443,37 @@ export class QuestionsIndex implements QuestionsReader {
       this.#db.prepare("SELECT COUNT(*) AS n FROM questions WHERE status = 'resolved'").get() as { n: number }
     ).n;
     return { openCount, resolvedCount };
+  }
+
+  /** Commits an approved `'new'` pending item (`plan.md` M18) as a freshly
+   * raised, still-open question — see `MetricsIndex.insertApproved` for the
+   * full reasoning. A `'new'` question candidate is always open with no
+   * resolution yet, by construction (`pending-processor.ts` never produces
+   * a `'new'` item that's also resolved), but the fields are taken from
+   * `record` rather than hardcoded so this stays a faithful mirror of what
+   * it is given, the same division of labour every other `insertApproved`
+   * observes. */
+  insertApproved(record: QuestionRecord): void {
+    this.#db
+      .prepare(
+        `INSERT INTO questions
+           (id, entry_id, question, event_time, event_epoch_ms, event_time_explicit, extracted_at, status, resolved_entry_id, resolution, resolved_at, touched)
+         VALUES (@id, @entryId, @question, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @status, @resolvedEntryId, @resolution, @resolvedAt, @touched)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        question: record.question,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+        status: record.status,
+        resolvedEntryId: record.resolvedEntryId,
+        resolution: record.resolution,
+        resolvedAt: record.resolvedAt,
+        touched: record.touched ? 1 : 0,
+      });
   }
 
   /** Restores one touched record from the durable off-index mirror

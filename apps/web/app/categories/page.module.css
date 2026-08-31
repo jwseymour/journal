@@ -135,7 +135,8 @@
 }
 
 .approveButton,
-.rejectButton {
+.rejectButton,
+.parkButton {
   padding: var(--space-3xs) var(--space-xs);
   border: var(--hairline) solid var(--rule-strong);
   border-radius: var(--radius-sm);
@@ -143,6 +144,14 @@
   font-family: var(--font-serif);
   font-size: var(--text-xs);
   cursor: pointer;
+}
+
+.parkButton {
+  color: var(--ink-muted);
+}
+
+.parkButton:hover {
+  border-color: var(--ink-muted);
 }
 
 .approveButton {
@@ -164,7 +173,8 @@
 }
 
 .approveButton:disabled,
-.rejectButton:disabled {
+.rejectButton:disabled,
+.parkButton:disabled {
   border-color: var(--rule);
   color: var(--ink-faint);
   cursor: default;

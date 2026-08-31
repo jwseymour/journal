@@ -2,18 +2,51 @@ import type { QuestionRecord, QuestionsIndex } from '../index/questions-index.js
 import { ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
 import type { EntryStore, StoredEntry } from '../store/entry-store.js';
+import type { Confidence } from './confidence.js';
 import { resolveEventTime } from './event-time.js';
 import type { ModelClient } from './model-client.js';
 import { buildQuestionExtractionPrompt, OPEN_QUESTION_SYSTEM_PROMPT, OpenQuestionExtractionSchema } from './questions.js';
 
 const PAGE_SIZE = 100;
 
+/** One newly-raised-question candidate from a live Process run (`plan.md`
+ * M18) — see `MetricCandidate` in `extractor.ts` for the full reasoning. */
+export interface NewQuestionCandidate {
+  id: string;
+  question: string;
+  eventTime: string;
+  eventEpochMs: number;
+  eventTimeExplicit: boolean;
+  extractedAt: string;
+  confidence: Confidence;
+  confidenceReason: string | null;
+}
+
+/** One candidate resolution against an already-open question (`plan.md`
+ * M18) — `questionId` is guaranteed to name a question that really was open
+ * when this candidate was produced (`extractCandidates` already drops any
+ * id the model invented; nothing downstream needs to re-check it). */
+export interface QuestionResolutionCandidate {
+  questionId: string;
+  resolution: string;
+  confidence: Confidence;
+  confidenceReason: string | null;
+}
+
+export interface QuestionExtractionCandidates {
+  extractedAt: string;
+  newQuestions: NewQuestionCandidate[];
+  resolutions: QuestionResolutionCandidate[];
+}
+
 /**
- * Turns one entry into open-question records via `ModelClient` — the same
+ * Turns one entry into open-question candidates via `ModelClient` — the same
  * one-call-per-entry shape as `Extractor`, `ReviewsExtractor`,
  * `ListsExtractor`, and `OpinionsExtractor`, but the one call does two
  * things: raise whatever this entry newly poses, and check the entry
  * against every question still open from earlier entries.
+ * `extractCandidates`/`extractEntry` split the same way as `Extractor`'s
+ * (`plan.md` M18).
  *
  * That second half is what makes processing *order* load-bearing here in a
  * way it never is for any other extractor — resolution can only ever look
@@ -21,13 +54,13 @@ const PAGE_SIZE = 100;
  * before extracting, unlike every sibling extractor, which does not care
  * what order `store.list()` happens to hand entries back in.
  *
- * `extractEntry` alone (`EntryProcessor`'s live, one-entry path) is exactly
- * correct for the common case — a just-finished entry is always the newest
- * one, so "every question still open" is genuinely everything before it.
- * Calling it live for an *edited*, older entry only re-checks against
- * whatever is open *now*; it does not replay everything chronologically
- * after that entry the way `reprocessAll` would. `reprocessAll` remains the
- * authority for anything that needs that.
+ * `extractEntry`/`extractCandidates` alone (`LivePendingProcessor`'s live,
+ * one-entry path, `plan.md` M18) is exactly correct for the common case — a
+ * just-finished entry is always the newest one, so "every question still
+ * open" is genuinely everything before it. Calling it live for an *edited*,
+ * older entry only re-checks against whatever is open *now*; it does not
+ * replay everything chronologically after that entry the way `reprocessAll`
+ * would. `reprocessAll` remains the authority for anything that needs that.
  */
 export class QuestionsExtractor {
   readonly #questionsIndex: QuestionsIndex;
@@ -38,7 +71,7 @@ export class QuestionsExtractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ questionCount: number }> {
+  async extractCandidates(entry: { id: string; created: string; body: string }): Promise<QuestionExtractionCandidates> {
     const openQuestions = this.#questionsIndex.listOpen();
     const prompt = buildQuestionExtractionPrompt(
       entry,
@@ -51,20 +84,50 @@ export class QuestionsExtractor {
     });
 
     const extractedAt = nowTimestamp().canonical;
-    const raised: Omit<QuestionRecord, 'entryId'>[] = result.newQuestions.map((q) => {
+    const newQuestions: NewQuestionCandidate[] = result.newQuestions.map((q) => {
       const resolved = resolveEventTime(q.eventTime, q.eventTimeExplicit, entry.created);
       return {
         id: ulid(Date.now()),
         question: q.question,
         ...resolved,
         extractedAt,
-        status: 'open',
-        resolvedEntryId: null,
-        resolution: null,
-        resolvedAt: null,
-        touched: false,
+        confidence: q.confidence,
+        confidenceReason: q.confidenceReason,
       };
     });
+
+    // Never trust a citation blindly — the same posture `OpinionSummarizer`
+    // applies to its own citations, applied here to question ids instead: a
+    // resolution naming an id that was never actually offered is dropped
+    // right here, before it ever becomes a candidate.
+    const openIds = new Set(openQuestions.map((q) => q.id));
+    const resolutions: QuestionResolutionCandidate[] = result.resolutions
+      .filter((r) => openIds.has(r.questionId))
+      .map((r) => ({
+        questionId: r.questionId,
+        resolution: r.resolution,
+        confidence: r.confidence,
+        confidenceReason: r.confidenceReason,
+      }));
+
+    return { extractedAt, newQuestions, resolutions };
+  }
+
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ questionCount: number }> {
+    const { extractedAt, newQuestions, resolutions } = await this.extractCandidates(entry);
+    const raised: Omit<QuestionRecord, 'entryId'>[] = newQuestions.map((q) => ({
+      id: q.id,
+      question: q.question,
+      eventTime: q.eventTime,
+      eventEpochMs: q.eventEpochMs,
+      eventTimeExplicit: q.eventTimeExplicit,
+      extractedAt: q.extractedAt,
+      status: 'open',
+      resolvedEntryId: null,
+      resolution: null,
+      resolvedAt: null,
+      touched: false,
+    }));
     // See `Extractor.extractEntry` for the full reasoning (`plan.md` M10).
     // Only the still-open questions this entry raised are in scope for
     // comparison — a resolved one is never revisited by `replaceRaised`
@@ -94,13 +157,9 @@ export class QuestionsExtractor {
     }
     this.#questionsIndex.replaceUntouchedRaised(entry.id, untouchedRaised);
 
-    // Never trust a citation blindly — the same posture `OpinionSummarizer`
-    // applies to its own citations, applied here to question ids instead: a
-    // resolution naming an id that was never actually offered is dropped
-    // rather than stored.
-    const openIds = new Set(openQuestions.map((q) => q.id));
-    for (const resolution of result.resolutions) {
-      if (!openIds.has(resolution.questionId)) continue;
+    // `extractCandidates` has already dropped any invented id — nothing left
+    // to validate here, only to apply.
+    for (const resolution of resolutions) {
       this.#questionsIndex.resolve(resolution.questionId, {
         resolvedEntryId: entry.id,
         resolution: resolution.resolution,

@@ -1,14 +1,28 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import type { Entry } from '@journal/contract';
+import { useCallback, useEffect, useState } from 'react';
+import type { Entry, EntryStatusResponse } from '@journal/contract';
 import { Composer } from '@/components/composer';
 import { Markdown } from '@/components/markdown';
-import { addAttachment, ApiRequestError, processEntry, updateEntry } from '@/lib/api';
+import { PendingItemsPopup } from '@/components/pending-items-popup';
+import {
+  addAttachment,
+  ApiRequestError,
+  getEntryStatus,
+  processEntry,
+  publishEntry,
+  unpublishEntry,
+  updateEntry,
+} from '@/lib/api';
 import { formatTimestamp } from '@/lib/format';
 import { useGlobalKey } from '@/lib/keyboard';
 import styles from './page.module.css';
+
+const STATUS_LABEL: Record<EntryStatusResponse['state'], string> = {
+  never_processed: 'Never processed',
+  stale: 'Stale — reprocess to update',
+  up_to_date: 'Up to date',
+};
 
 /**
  * Read, and edit (`requirements.md` §4.4, `design.md` §5.1, §5.2).
@@ -18,11 +32,15 @@ import styles from './page.module.css';
  * (`design.md` §5.1). Editing reuses the shared `Composer`, so the toggle,
  * `⌘B`/`⌘I`, and the rest of the scheme behave identically to drafting a new
  * entry rather than being a second, slightly different implementation.
+ *
+ * Processing is no longer automatic (`plan.md` M18) — neither on arrival
+ * from finishing a new entry nor after an edit. A visible **Process**
+ * button is now the only trigger, and its status indicator only ever
+ * compares content hashes; it says nothing about whether what a past run
+ * found has actually been reviewed (`GET /entries/:id/status`'s own
+ * comment).
  */
 export function EntryView({ entry: initial }: { entry: Entry }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const [entry, setEntry] = useState(initial);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(initial.body);
@@ -31,44 +49,49 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
   const [conflict, setConflict] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [processError, setProcessError] = useState<string | null>(null);
+  const [status, setStatus] = useState<EntryStatusResponse['state'] | null>(null);
+  const [showPopup, setShowPopup] = useState(false);
+  const [foundNothing, setFoundNothing] = useState(false);
+  const [confirmingPublish, setConfirmingPublish] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+
+  const loadStatus = useCallback(() => {
+    getEntryStatus(entry.id)
+      .then((response) => setStatus(response.state))
+      .catch(() => {
+        /* the status pill just stays blank — not worth a user-facing error */
+      });
+  }, [entry.id]);
+
+  useEffect(loadStatus, [loadStatus]);
 
   /**
-   * Runs the AI layer for this entry, live (`plan.md` M15) — after
-   * finishing writing it for the first time, and again after finishing any
-   * later edit. Safe either way: a touched record is never overwritten by
-   * this, only offered an update suggestion (`requirements.md` §6.4).
-   * Never blocks navigation or saving on its own result — extraction can
-   * fail (no `AI_GATEWAY_API_KEY` configured) without that being a reason
-   * to lose what was just written.
+   * Runs the AI layer for this entry, on demand only (`plan.md` M18) —
+   * nothing it finds is committed directly anymore. A pending-item count of
+   * zero needs no popup; anything else opens one immediately so review can
+   * happen right where the writing just happened, with `/pending` as the
+   * fallback for whatever is left over later.
    */
-  const runProcessing = useCallback(async (id: string) => {
+  const runProcessing = useCallback(async () => {
     setProcessing(true);
     setProcessError(null);
+    setFoundNothing(false);
     try {
-      await processEntry(id);
+      const result = await processEntry(entry.id);
+      loadStatus();
+      if (result.pendingItemCount > 0) setShowPopup(true);
+      else setFoundNothing(true);
     } catch (cause) {
       setProcessError(cause instanceof ApiRequestError ? cause.message : 'Could not run AI analysis.');
     } finally {
       setProcessing(false);
     }
-  }, []);
+  }, [entry.id, loadStatus]);
 
-  // Arrived straight from finishing a new entry (`entry/new/page.tsx`'s
-  // `finish()`) — the one moment "process this" fires without an explicit
-  // click, because finishing *is* the explicit act. The query flag is
-  // stripped immediately so a reload or the back button never re-triggers it.
-  const processedOnArrival = useRef(false);
-  useEffect(() => {
-    if (processedOnArrival.current) return;
-    if (searchParams.get('process') !== '1') return;
-    processedOnArrival.current = true;
-    router.replace(pathname, { scroll: false });
-    // Deferred a tick so the state update below isn't synchronous within
-    // the effect body itself (`react-hooks/set-state-in-effect`).
-    queueMicrotask(() => void runProcessing(entry.id));
-    // Only ever runs once, off the entry this page loaded with.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const closePopup = () => {
+    setShowPopup(false);
+    loadStatus();
+  };
 
   const startEditing = () => {
     setDraft(entry.body);
@@ -104,20 +127,39 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
     }
   };
 
-  // Finishing an edit re-runs the same AI layer pass (`plan.md` M15) — the
-  // entry's content just changed, and re-extraction is exactly what keeps
-  // derived structure in step with it, touched-safe either way.
   const finishEditing = async (): Promise<void> => {
     const ok = await save();
-    if (ok) {
-      setEditing(false);
-      void runProcessing(entry.id);
-    }
+    if (ok) setEditing(false);
   };
 
   const attachAudio = async (blob: Blob, filename: string): Promise<string> => {
     const { relativeLink } = await addAttachment(entry.id, blob, filename);
     return relativeLink;
+  };
+
+  const confirmPublish = async (): Promise<void> => {
+    setPublishing(true);
+    try {
+      await publishEntry(entry.id);
+      setEntry((current) => ({ ...current, published: true }));
+      setConfirmingPublish(false);
+    } catch (cause) {
+      setError(cause instanceof ApiRequestError ? cause.message : 'Could not publish.');
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const unpublish = async (): Promise<void> => {
+    setPublishing(true);
+    try {
+      await unpublishEntry(entry.id);
+      setEntry((current) => ({ ...current, published: false }));
+    } catch (cause) {
+      setError(cause instanceof ApiRequestError ? cause.message : 'Could not unpublish.');
+    } finally {
+      setPublishing(false);
+    }
   };
 
   // `e`, outside a text field: edit the open entry (`design.md` §5.2). Only
@@ -134,9 +176,71 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
             Edit
           </button>
         </header>
-        {processing && <p className={styles.processing}>Running AI analysis…</p>}
-        {processError && !processing && <p className={styles.processError}>{processError}</p>}
+
+        <div className={styles.statusRow}>
+          <span className={styles.statusPill}>{status ? STATUS_LABEL[status] : ' '}</span>
+          <button type="button" className={styles.processButton} onClick={() => void runProcessing()} disabled={processing}>
+            {processing ? 'Processing…' : 'Process'}
+          </button>
+          {entry.published ? (
+            <>
+              <span className={styles.publishedPill}>Published</span>
+              <button type="button" className={styles.processButton} onClick={() => void unpublish()} disabled={publishing}>
+                Unpublish
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className={styles.processButton}
+              onClick={() => setConfirmingPublish(true)}
+              disabled={publishing}
+            >
+              Publish
+            </button>
+          )}
+        </div>
+        {processError && <p className={styles.processError}>{processError}</p>}
+        {foundNothing && !processError && <p className={styles.processError}>Nothing new found.</p>}
+        {error && (
+          <p className={styles.error} role="alert">
+            {error}
+          </p>
+        )}
+
         <Markdown>{entry.body}</Markdown>
+
+        {showPopup && <PendingItemsPopup entryId={entry.id} onClose={closePopup} />}
+
+        {confirmingPublish && (
+          <div className={styles.confirmBackdrop} role="presentation" onMouseDown={() => setConfirmingPublish(false)}>
+            <div
+              className={styles.confirmPanel}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Confirm publish"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <p className={styles.confirmText}>
+                Publish this entry to the public site? Anyone with the link will be able to read it,
+                exactly as it stands right now.
+              </p>
+              <div className={styles.actions}>
+                <button
+                  type="button"
+                  className={styles.cancelButton}
+                  onClick={() => setConfirmingPublish(false)}
+                  disabled={publishing}
+                >
+                  Cancel
+                </button>
+                <button type="button" className={styles.saveButton} onClick={() => void confirmPublish()} disabled={publishing}>
+                  {publishing ? 'Publishing' : 'Publish'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </article>
     );
   }

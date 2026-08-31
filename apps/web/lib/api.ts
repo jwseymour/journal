@@ -2,6 +2,7 @@ import type {
   AddAttachmentResponse,
   ApiError,
   ApiErrorCode,
+  ApproveBatchResponse,
   ApproveCategoryRequest,
   CategoriesResponse,
   ChatMessage,
@@ -16,6 +17,7 @@ import type {
   Entry,
   EntryPage,
   EntryPeriodsResponse,
+  EntryStatusResponse,
   DefineMetricFieldRequest,
   ListItemsResponse,
   ListItemUpdateSuggestionsResponse,
@@ -31,6 +33,8 @@ import type {
   OpinionStatementUpdateSuggestionsResponse,
   OpinionSubjectSummariesResponse,
   OpinionSummariesResponse,
+  PendingItemsResponse,
+  PendingItemStructureType,
   ProcessEntryResponse,
   PublishQueueResponse,
   QuestionsResponse,
@@ -266,15 +270,70 @@ export function addAttachment(entryId: string, file: Blob, filename: string): Pr
 }
 
 /**
- * Run AI extraction for one entry, live (`plan.md` M15) — every structure
- * type, one call each. Safe to call again on the same entry after an edit:
- * a touched record is never overwritten, only ever offered an update
- * suggestion, so this is the one operation both "finished writing" and
- * "finished editing" call. Throws `ApiRequestError` with code
+ * Run AI extraction for one entry, live (`plan.md` M15, rewritten M18) —
+ * every structure type, one call each. Nothing it finds commits directly
+ * anymore: every candidate becomes a pending item awaiting approval
+ * (`listPendingItems`, `approvePendingItem` below). Safe to call more than
+ * once on the same entry: a fresh run supersedes any still-undecided
+ * leftovers from an earlier run and diffs against everything already live,
+ * not only what has been touched. Throws `ApiRequestError` with code
  * `extraction_failed` if the server has no AI Gateway key configured.
  */
 export function processEntry(id: string): Promise<ProcessEntryResponse> {
   return request<ProcessEntryResponse>(`/entries/${encodeURIComponent(id)}/process`, { method: 'POST' });
+}
+
+/** Whether a live Process run is current for this entry (`plan.md` M18) —
+ * `'never_processed'` if Process has never been run at all. */
+export function getEntryStatus(id: string): Promise<EntryStatusResponse> {
+  return request<EntryStatusResponse>(`/entries/${encodeURIComponent(id)}/status`);
+}
+
+/** Visibility for an entry's own text (`requirements.md` §9.3, §11) —
+ * gated behind a confirmation dialog in the UI, since publishing diary
+ * text is a higher-stakes action than publishing a single derived record. */
+export async function publishEntry(id: string): Promise<void> {
+  await request<undefined>(`/entries/${encodeURIComponent(id)}/publish`, { method: 'POST' });
+}
+
+export async function unpublishEntry(id: string): Promise<void> {
+  await request<undefined>(`/entries/${encodeURIComponent(id)}/unpublish`, { method: 'POST' });
+}
+
+/**
+ * Every candidate a live Process run produced, still pending or already
+ * decided (`plan.md` M18) — powers both the post-Process popup (`entryId`
+ * given) and the unscoped fallback queue at `/pending` (`status: 'pending'`
+ * alone) with the same one call.
+ */
+export function listPendingItems(
+  options: { entryId?: string; structureType?: PendingItemStructureType; status?: string } = {},
+): Promise<PendingItemsResponse> {
+  const query = new URLSearchParams();
+  if (options.entryId) query.set('entryId', options.entryId);
+  if (options.structureType) query.set('structureType', options.structureType);
+  if (options.status) query.set('status', options.status);
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<PendingItemsResponse>(`/pending-items${suffix}`);
+}
+
+export async function approvePendingItem(id: string): Promise<void> {
+  await request<undefined>(`/pending-items/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+}
+
+export async function rejectPendingItem(id: string): Promise<void> {
+  await request<undefined>(`/pending-items/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+}
+
+/** What makes "approve all pending metrics" one click instead of many
+ * (`plan.md` M18) — each id is applied independently, so one bad item in
+ * the batch never blocks the rest; `failed` names which ones, and why. */
+export function approvePendingItemsBatch(ids: string[]): Promise<ApproveBatchResponse> {
+  return request<ApproveBatchResponse>('/pending-items/approve-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
 }
 
 /**
@@ -458,6 +517,13 @@ export async function rejectMetricFieldSuggestion(id: string): Promise<void> {
   await request<undefined>(`/metrics/fields/suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
 }
 
+/** Set aside for later, neither approved nor rejected (`plan.md` M18) — a
+ * passive list only; a parked suggestion is never resurfaced on its own
+ * (`requirements.md` §12: no reminders, ever). */
+export async function parkMetricFieldSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/metrics/fields/suggestions/${encodeURIComponent(id)}/park`, { method: 'POST' });
+}
+
 /** An enum field's approved values — reuses `CategoriesIndex` behind the
  * scenes, but addressed through this dedicated surface rather than
  * `/categories`, whose `structureType` enum is closed to the four core
@@ -618,6 +684,13 @@ export async function validateOpinionStatement(id: string): Promise<void> {
 
 export async function untouchOpinionStatement(id: string): Promise<void> {
   await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}/untouch`, { method: 'POST' });
+}
+
+/** Manual-only, mirrors `reopenQuestion` — a `kind: 'question'` statement
+ * only ever becomes resolved via the pending-item pipeline, but reopening
+ * one is a direct action (`requirements.md` §11, resolved 2026-08-30). */
+export async function reopenOpinionStatement(id: string): Promise<void> {
+  await request<undefined>(`/opinions/statements/${encodeURIComponent(id)}/reopen`, { method: 'POST' });
 }
 
 export async function publishOpinionStatement(id: string): Promise<void> {
@@ -840,6 +913,13 @@ export async function approveSuggestion(id: string): Promise<void> {
 
 export async function rejectSuggestion(id: string): Promise<void> {
   await request<undefined>(`/categories/suggestions/${encodeURIComponent(id)}/reject`, { method: 'POST' });
+}
+
+/** Set aside for later, neither approved nor rejected (`plan.md` M18) — a
+ * passive list only; a parked suggestion is never resurfaced on its own
+ * (`requirements.md` §12: no reminders, ever). */
+export async function parkSuggestion(id: string): Promise<void> {
+  await request<undefined>(`/categories/suggestions/${encodeURIComponent(id)}/park`, { method: 'POST' });
 }
 
 /**

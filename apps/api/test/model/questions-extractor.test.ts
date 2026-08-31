@@ -86,10 +86,49 @@ beforeEach(() => {
   extractor = new QuestionsExtractor(questionsIndex, modelClient);
 });
 
+describe('extractCandidates', () => {
+  it('shapes new-question output into candidates without writing to the index', async () => {
+    modelClient.handler = () => ({
+      newQuestions: [{ question: 'Should I stay in this job?', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'medium', confidenceReason: 'borderline but genuine' }],
+    });
+    const result = await extractor.extractCandidates(entry('e1', 'Wondering if I should stay.'));
+
+    expect(result.newQuestions).toHaveLength(1);
+    expect(result.newQuestions[0]).toMatchObject({ question: 'Should I stay in this job?', confidence: 'medium' });
+    expect(result.resolutions).toEqual([]);
+    expect(questionsIndex.list({ limit: 10 })).toEqual([]);
+  });
+
+  it('drops a resolution citing an id that was never actually offered, before it ever becomes a candidate', async () => {
+    modelClient.handler = () => ({
+      resolutions: [{ questionId: 'not-a-real-id', resolution: 'x', confidence: 'high', confidenceReason: null }],
+    });
+    const result = await extractor.extractCandidates(entry('e1', 'x'));
+    expect(result.resolutions).toEqual([]);
+  });
+
+  it('keeps a resolution candidate that cites a genuinely open id', async () => {
+    modelClient.handler = () => ({
+      newQuestions: [{ question: 'Should I stay in this job?', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
+    });
+    await extractor.extractEntry(entry('e1', 'Wondering if I should stay.'));
+    const [raised] = questionsIndex.listOpen();
+
+    modelClient.handler = () => ({
+      resolutions: [{ questionId: raised!.id, resolution: 'Decided to leave.', confidence: 'low', confidenceReason: 'uncertain link' }],
+    });
+    const result = await extractor.extractCandidates(entry('e2', 'x'));
+
+    expect(result.resolutions).toEqual([{ questionId: raised!.id, resolution: 'Decided to leave.', confidence: 'low', confidenceReason: 'uncertain link' }]);
+    // Still nothing committed — the question is still open.
+    expect(questionsIndex.getById(raised!.id)).toMatchObject({ status: 'open' });
+  });
+});
+
 describe('extractEntry', () => {
   it('raises a new open question when the model returns one', async () => {
     modelClient.handler = () => ({
-      newQuestions: [{ question: 'Should I stay in this job?', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      newQuestions: [{ question: 'Should I stay in this job?', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
 
     await extractor.extractEntry(entry('e1', 'Wondering if I should stay in this job.'));
@@ -111,13 +150,13 @@ describe('extractEntry', () => {
 
   it('resolves an existing open question when the model cites its real, currently-open id', async () => {
     modelClient.handler = () => ({
-      newQuestions: [{ question: 'Should I stay in this job?', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true }],
+      newQuestions: [{ question: 'Should I stay in this job?', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e1', 'Wondering if I should stay in this job.'));
     const [raised] = questionsIndex.listOpen();
 
     modelClient.handler = () => ({
-      resolutions: [{ questionId: raised!.id, resolution: 'Decided to leave and start freelancing.' }],
+      resolutions: [{ questionId: raised!.id, resolution: 'Decided to leave and start freelancing.', confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e2', 'I finally decided to leave and start freelancing.'));
 
@@ -133,7 +172,7 @@ describe('extractEntry', () => {
 
   it('drops a resolution citing an id that was never actually offered — never trusts a hallucinated citation', async () => {
     modelClient.handler = () => ({
-      resolutions: [{ questionId: 'not-a-real-id', resolution: 'This should never be stored.' }],
+      resolutions: [{ questionId: 'not-a-real-id', resolution: 'This should never be stored.', confidence: 'high', confidenceReason: null }],
     });
 
     await extractor.extractEntry(entry('e1', 'Some entry with nothing genuinely open.'));
@@ -144,7 +183,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time for a malformed eventTime', async () => {
     modelClient.handler = () => ({
-      newQuestions: [{ question: 'x', eventTime: 'not a timestamp', eventTimeExplicit: true }],
+      newQuestions: [{ question: 'x', eventTime: 'not a timestamp', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e1', 'x', '2026-07-20T21:00:00+01:00'));
     const [record] = questionsIndex.list({ limit: 10 });
@@ -153,11 +192,11 @@ describe('extractEntry', () => {
   });
 
   it('replaces only what this entry raised on a second extraction, leaving other entries’ questions alone', async () => {
-    modelClient.handler = () => ({ newQuestions: [{ question: 'A', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true }] });
+    modelClient.handler = () => ({ newQuestions: [{ question: 'A', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }] });
     await extractor.extractEntry(entry('e1', 'a'));
     await extractor.extractEntry(entry('e2', 'b'));
 
-    modelClient.handler = () => ({ newQuestions: [{ question: 'A revised', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true }] });
+    modelClient.handler = () => ({ newQuestions: [{ question: 'A revised', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }] });
     await extractor.extractEntry(entry('e1', 'a again'));
 
     const rows = questionsIndex.list({ limit: 10 });
@@ -170,7 +209,7 @@ describe('extractEntry', () => {
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.handler = () => ({
-      newQuestions: [{ question: 'x', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      newQuestions: [{ question: 'x', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e1', 'x'));
     extractor.removeEntry('e1');
@@ -180,7 +219,7 @@ describe('removeEntry', () => {
 
 describe('reprocessAll', () => {
   it('extracts every entry and clears what came before', async () => {
-    modelClient.handler = () => ({ newQuestions: [{ question: 'x', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true }] });
+    modelClient.handler = () => ({ newQuestions: [{ question: 'x', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }] });
     await extractor.extractEntry(entry('stale', 'leftover'));
 
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b')]);
@@ -193,12 +232,14 @@ describe('reprocessAll', () => {
     modelClient.handler = (prompt) => {
       if (prompt.includes('Wondering if I should switch careers.')) {
         return {
-          newQuestions: [{ question: 'Should I switch careers?', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true }],
+          newQuestions: [{ question: 'Should I switch careers?', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
         };
       }
       if (prompt.includes('I finally decided to switch careers.')) {
         const match = /\[id: (\S+)\] Should I switch careers\?/.exec(prompt);
-        return match ? { resolutions: [{ questionId: match[1]!, resolution: 'Decided to switch after all.' }] } : {};
+        return match
+          ? { resolutions: [{ questionId: match[1]!, resolution: 'Decided to switch after all.', confidence: 'high', confidenceReason: null }] }
+          : {};
       }
       return {};
     };

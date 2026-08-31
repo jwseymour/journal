@@ -13,6 +13,7 @@ import {
   listOpinionSummaries,
   publishOpinionStatement,
   rejectOpinionStatementUpdateSuggestion,
+  reopenOpinionStatement,
   untouchOpinionStatement,
   unpublishOpinionStatement,
   updateOpinionStatement,
@@ -29,14 +30,19 @@ interface OpinionsData {
 }
 
 /**
- * The opinion model (`plan.md` M8b, `requirements.md` §5.2) — two layers,
- * both rendered here, exactly as the API returns them. The regenerated,
- * cited summary per subject is the top layer — never hand-edited, only ever
- * whatever the last `npm run reprocess` wrote (`requirements.md` §9). The
- * full chronological statement record beneath it is what that summary was
- * built from, and the only layer editing touches — correcting a summary
- * means correcting (or discarding) the statement it cites and reprocessing,
- * not editing the summary directly.
+ * The concept model (`plan.md` M8b, `requirements.md` §5.2, reframed
+ * 2026-08-30) — grouped by subject, because grouping everything said about
+ * a concept is the actual point of this structure, not a side effect of
+ * it. Each subject's group leads with its full chronological statement
+ * record — the primary content, and the only layer editing touches. The
+ * regenerated, cited summary is secondary: collapsed behind a disclosure
+ * per subject rather than leading the page, never hand-edited, regenerated
+ * either by a past `npm run reprocess` or, since M18, the moment an
+ * approved statement changes what it should cite (`PendingItemApplier`'s
+ * own comment on why this moved out of extraction time). Correcting a
+ * summary means correcting (or discarding) the statement it cites and
+ * reprocessing (or, live, approving a fresh statement from the popup or
+ * `/pending` queue), not editing the summary directly.
  *
  * Editing and validating a statement (`requirements.md` §2, §6.4, `plan.md`
  * M10) is scoped to `statement` itself — `eventTime` correction is not yet
@@ -110,6 +116,26 @@ export default function OpinionsPage() {
       .finally(() => setBusyId(null));
   };
 
+  const reopen = (statement: OpinionStatement) => {
+    setBusyId(statement.id);
+    reopenOpinionStatement(statement.id)
+      .then(() =>
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              statements: current.statements.map((s) =>
+                s.id === statement.id
+                  ? { ...s, status: 'open', resolvedEntryId: null, resolution: null, touched: true }
+                  : s,
+              ),
+            },
+        ),
+      )
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not reopen.'))
+      .finally(() => setBusyId(null));
+  };
+
   const startEdit = (statement: OpinionStatement) => {
     setEditingId(statement.id);
     setDraft(statement.statement);
@@ -154,11 +180,20 @@ export default function OpinionsPage() {
     );
   }
 
+  // Grouped by subject — the primary organising unit of the concept model
+  // now, not a flat chronological feed (`requirements.md` §5.2, reframed
+  // 2026-08-30). Alphabetical, so the page doesn't reshuffle every time you
+  // write, matching the almanac/field-guide idiom the rest of the analysis
+  // surfaces use (`design.md` §5.3).
+  const subjects = Array.from(
+    new Set([...data.statements.map((s) => s.subject), ...data.summaries.map((s) => s.subject)]),
+  ).sort((a, b) => a.localeCompare(b));
+
   return (
     <div>
       {data.suggestions.length > 0 && (
         <section className={styles.section}>
-          <h2 className={styles.heading}>Reprocessing found changes to statements you've reviewed</h2>
+          <h2 className={styles.heading}>Reprocessing found changes to statements you’ve reviewed</h2>
           <ul className={styles.suggestionList}>
             {data.suggestions.map((suggestion) => (
               <li key={suggestion.id} className={styles.suggestionRow}>
@@ -191,114 +226,149 @@ export default function OpinionsPage() {
       )}
 
       <section className={styles.section}>
-        <h2 className={styles.heading}>Summaries</h2>
-        {data.summaries.length === 0 ? (
-          <p className={styles.empty}>
-            No summary yet — run <code>npm run reprocess</code> again once statements exist.
-          </p>
-        ) : (
-          data.summaries.map((summary) => (
-            <div key={summary.subject} className={styles.summaryGroup}>
-              <div className={styles.summaryHeadingRow}>
-                <h3 className={styles.subjectHeading}>{summary.subject}</h3>
-                {summary.generatedAt && (
-                  <span className={styles.generated}>Generated {formatTimestamp(summary.generatedAt)}</span>
-                )}
-              </div>
-              {summary.parts.map((part, index) => (
-                <p key={index} className={styles.part}>
-                  {part.text}
-                  <span className={styles.sources}>
-                    {part.sourceEntryIds.map((entryId) => (
-                      <Link key={entryId} href={`/entry/${entryId}`} className={styles.link}>
-                        Source entry
-                      </Link>
-                    ))}
-                  </span>
-                </p>
-              ))}
-            </div>
-          ))
-        )}
-      </section>
+        <h2 className={styles.heading}>Concepts</h2>
+        {subjects.map((subject) => {
+          const subjectSummary = data.summaries.find((s) => s.subject === subject) ?? null;
+          const subjectStatements = data.statements.filter((s) => s.subject === subject);
+          const openTopics = subjectStatements.filter((s) => s.kind === 'question' && s.status === 'open');
+          return (
+            <div key={subject} className={styles.subjectGroup}>
+              <h3 className={styles.subjectHeading}>{subject}</h3>
 
-      <section className={styles.section}>
-        <h2 className={styles.heading}>Statements</h2>
-        <ol className={styles.list}>
-          {data.statements.map((statement) => (
-            <li key={statement.id} className={styles.row}>
-              <div className={styles.main}>
-                <span className={styles.when}>
-                  <time dateTime={statement.eventTime}>{formatDate(statement.eventTime)}</time>
-                  <span>{formatTime(statement.eventTime)}</span>
-                  {!statement.eventTimeExplicit && <span>(from the entry’s own time)</span>}
-                  {statement.touched && <span className={styles.touched}>touched</span>}
-                  {statement.published && <span className={styles.published}>published</span>}
-                </span>
-                <span className={styles.subject}>{statement.subject}</span>
-                {editingId === statement.id ? (
-                  <div className={styles.editForm}>
-                    <textarea
-                      className={styles.textarea}
-                      value={draft}
-                      onChange={(event) => setDraft(event.target.value)}
-                      aria-label="Statement"
-                    />
-                    <div className={styles.actions}>
-                      <button
-                        type="button"
-                        className={styles.approveButton}
-                        onClick={() => saveEdit(statement.id)}
-                        disabled={busyId === statement.id}
-                      >
-                        Save
-                      </button>
-                      <button type="button" className={styles.rejectButton} onClick={() => setEditingId(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <span className={styles.text}>{statement.statement}</span>
-                )}
-                <Link href={`/entry/${statement.entryId}`} className={styles.link}>
-                  Source entry
-                </Link>
-              </div>
-              {editingId !== statement.id && (
-                <div className={styles.rowActions}>
-                  <button type="button" className={styles.editButton} onClick={() => startEdit(statement)}>
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.editButton}
-                    onClick={() => toggleTouched(statement)}
-                    disabled={busyId === statement.id}
-                  >
-                    {statement.touched ? 'Untouch' : 'Validate'}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.editButton}
-                    onClick={() => togglePublished(statement)}
-                    disabled={busyId === statement.id}
-                  >
-                    {statement.published ? 'Unpublish' : 'Publish'}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.discard}
-                    onClick={() => discard(statement.id)}
-                    disabled={removingId === statement.id}
-                  >
-                    Discard
-                  </button>
+              {openTopics.length > 0 && (
+                <div className={styles.openTopics}>
+                  <p className={styles.openTopicsHeading}>Still to raise</p>
+                  <ul className={styles.openTopicsList}>
+                    {openTopics.map((topic) => (
+                      <li key={topic.id}>{topic.statement}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
-            </li>
-          ))}
-        </ol>
+
+              {subjectSummary && subjectSummary.parts.length > 0 && (
+                <details className={styles.aiSummary}>
+                  <summary className={styles.aiSummaryToggle}>
+                    AI summary
+                    {subjectSummary.generatedAt && ` · generated ${formatTimestamp(subjectSummary.generatedAt)}`}
+                  </summary>
+                  {subjectSummary.parts.map((part, index) => (
+                    <p key={index} className={styles.part}>
+                      {part.text}
+                      <span className={styles.sources}>
+                        {part.sourceEntryIds.map((entryId) => (
+                          <Link key={entryId} href={`/entry/${entryId}`} className={styles.link}>
+                            Source entry
+                          </Link>
+                        ))}
+                      </span>
+                    </p>
+                  ))}
+                </details>
+              )}
+
+              <ol className={styles.list}>
+                {subjectStatements.map((statement) => (
+                  <li key={statement.id} className={styles.row}>
+                    <div className={styles.main}>
+                      <span className={styles.when}>
+                        <time dateTime={statement.eventTime}>{formatDate(statement.eventTime)}</time>
+                        <span>{formatTime(statement.eventTime)}</span>
+                        {!statement.eventTimeExplicit && <span>(from the entry’s own time)</span>}
+                        {statement.kind === 'question' && (
+                          <span className={statement.status === 'open' ? styles.openBadge : styles.touched}>
+                            {statement.status}
+                          </span>
+                        )}
+                        {statement.touched && <span className={styles.touched}>touched</span>}
+                        {statement.published && <span className={styles.published}>published</span>}
+                      </span>
+                      {editingId === statement.id ? (
+                        <div className={styles.editForm}>
+                          <textarea
+                            className={styles.textarea}
+                            value={draft}
+                            onChange={(event) => setDraft(event.target.value)}
+                            aria-label="Statement"
+                          />
+                          <div className={styles.actions}>
+                            <button
+                              type="button"
+                              className={styles.approveButton}
+                              onClick={() => saveEdit(statement.id)}
+                              disabled={busyId === statement.id}
+                            >
+                              Save
+                            </button>
+                            <button type="button" className={styles.rejectButton} onClick={() => setEditingId(null)}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className={styles.text}>{statement.statement}</span>
+                      )}
+                      {statement.status === 'resolved' && (
+                        <p className={styles.resolution}>
+                          Resolved: {statement.resolution}{' '}
+                          {statement.resolvedEntryId && (
+                            <Link href={`/entry/${statement.resolvedEntryId}`} className={styles.link}>
+                              Resolving entry
+                            </Link>
+                          )}
+                        </p>
+                      )}
+                      <Link href={`/entry/${statement.entryId}`} className={styles.link}>
+                        Source entry
+                      </Link>
+                    </div>
+                    {editingId !== statement.id && (
+                      <div className={styles.rowActions}>
+                        <button type="button" className={styles.editButton} onClick={() => startEdit(statement)}>
+                          Edit
+                        </button>
+                        {statement.status === 'resolved' && (
+                          <button
+                            type="button"
+                            className={styles.editButton}
+                            onClick={() => reopen(statement)}
+                            disabled={busyId === statement.id}
+                          >
+                            Reopen
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className={styles.editButton}
+                          onClick={() => toggleTouched(statement)}
+                          disabled={busyId === statement.id}
+                        >
+                          {statement.touched ? 'Untouch' : 'Validate'}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.editButton}
+                          onClick={() => togglePublished(statement)}
+                          disabled={busyId === statement.id}
+                        >
+                          {statement.published ? 'Unpublish' : 'Publish'}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.discard}
+                          onClick={() => discard(statement.id)}
+                          disabled={removingId === statement.id}
+                        >
+                          Discard
+                        </button>
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          );
+        })}
       </section>
     </div>
   );

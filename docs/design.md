@@ -195,7 +195,8 @@ A practical constraint shapes this as much as the aesthetic one. A browser tab d
 | `n` | New entry |
 | `/` | Search |
 | `j` `k` | Next / previous |
-| `↩` | Open |
+| `↩` | Open, or show more detail |
+| `a` `r` `p` | Approve / reject / park (the pending-review queue) |
 | `e` | Edit the open entry |
 | `t` | Day / night |
 | `g` then `h` `e` `s` `a` | Go to writing / entries / search / analysis |
@@ -203,6 +204,8 @@ A practical constraint shapes this as much as the aesthetic one. A browser tab d
 | `Esc` | Step back one level |
 
 `Esc` always steps back and never destroys. Nothing destructive is bound, because nothing destructive exists — there is no delete (`requirements.md` §4.4). `⌘K` lists every command alongside its shortcut, which is how the scheme stays discoverable without a manual.
+
+The pending-review queue (`/pending`, and the popup right after Process) reuses `j`/`k`/`↩` rather than inventing list-navigation keys of its own — `j`/`k` move a focus through every row in review order, `↩` opens the focused row's full text and detail. `a`/`r`/`p` are new: they decide the focused row (approve, reject, park a new-type suggestion) and, because deciding removes the row, the same focus position lands on whatever took its place — reading through the queue is `↩` to look, a decision key, repeat, with no `j`/`k` required in between unless you want to skip around.
 
 ### 5.3 Analysis surfaces
 
@@ -216,6 +219,8 @@ Practically:
 - Small multiples and sparklines in preference to large single charts
 - The same cream ground, ink, and green accent as everywhere else
 - Colour used only where it carries information
+
+**Noted for later, not yet needed anywhere:** where several stat or number blocks sit side by side in a single row, a vertical hairline should separate them — the same hairline vocabulary as everywhere else, just turned sideways, rather than relying on gap alone to imply grouping. Nothing in the app currently lays stat blocks out that way (`components/chat/stat-tile.tsx` renders one at a time); apply this the first time something does.
 
 This is what allows one coherent style (section 1.3) to serve both a calm writing surface and a dense analytical one without compromise.
 

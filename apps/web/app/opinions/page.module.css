@@ -16,19 +16,12 @@
   text-transform: uppercase;
 }
 
-.summaryGroup {
-  margin-top: var(--space-md);
+.subjectGroup {
+  margin-top: var(--space-lg);
 }
 
-.summaryGroup:first-child {
+.subjectGroup:first-child {
   margin-top: 0;
-}
-
-.summaryHeadingRow {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-md);
 }
 
 .subjectHeading {
@@ -39,10 +32,73 @@
   text-transform: capitalize;
 }
 
-.generated {
-  flex-shrink: 0;
-  color: var(--ink-faint);
+/* The AI summary — secondary to the statement list below it, so it starts
+ * collapsed behind a disclosure rather than leading the group
+ * (`requirements.md` §5.2, reframed 2026-08-30: grouping is the point,
+ * a generated summary is an optional extra on top of it). */
+.aiSummary {
+  margin-top: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--ground-raised);
+}
+
+.aiSummaryToggle {
+  color: var(--ink-muted);
   font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.aiSummaryToggle:hover {
+  color: var(--accent);
+}
+
+/* The per-person conversation-topics idea, folded into the concept model
+ * (`requirements.md` §11, resolved 2026-08-30) — a short, unmissable list
+ * ahead of the AI summary: unlike a note, an open question is something to
+ * act on, not just read back later. */
+.openTopics {
+  margin-top: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--hairline) solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.openTopicsHeading {
+  margin: 0 0 var(--space-3xs);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.openTopicsList {
+  margin: 0;
+  padding-left: var(--space-md);
+}
+
+.openTopicsList li + li {
+  margin-top: var(--space-3xs);
+}
+
+.openBadge {
+  padding: 0 var(--space-3xs);
+  border: var(--hairline) solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.resolution {
+  margin: var(--space-2xs) 0 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
 }
 
 .part {
@@ -85,15 +141,6 @@
   color: var(--ink-muted);
   font-size: var(--text-xs);
   letter-spacing: var(--tracking-wide);
-}
-
-.subject {
-  display: inline-block;
-  margin-top: var(--space-3xs);
-  color: var(--accent);
-  font-size: var(--text-xs);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
 }
 
 .text {

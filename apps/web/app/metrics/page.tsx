@@ -23,8 +23,10 @@ import styles from './page.module.css';
 const LIMIT = 100;
 
 /**
- * Extracted temporal metrics (`plan.md` M7, `requirements.md` §5.2) — never
- * live, only whatever the last `npm run reprocess` wrote. A plain list, not
+ * Extracted temporal metrics (`plan.md` M7, `requirements.md` §5.2) — what
+ * a past `npm run reprocess` wrote, plus whatever has since been approved
+ * from a live `Process` run's popup or `/pending` queue (`plan.md` M18);
+ * this list itself has no idea which. A plain list, not
  * an analysis surface: charts, small multiples, and the print
  * information-design treatment are `plan.md` M8's job (`design.md` §5.3).
  * This exists so the data extraction M7 built is actually visible, and so

@@ -166,6 +166,12 @@ export interface MetricsReader {
    * touched — approving is itself a review act. Rejecting leaves the touched
    * record exactly as it was. No-op if `id` is not a pending suggestion. */
   decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** Every current row for one entry, touched or not (`plan.md` M18) — see
+   * the concrete class for why this differs from `touchedForEntry`. */
+  liveForEntry(entryId: string): TemporalMetricRecord[];
+  /** Commits an approved `'new'` pending item as a real record (`plan.md`
+   * M18) — see the concrete class for the full reasoning. */
+  insertApproved(record: TemporalMetricRecord): void;
 }
 
 export class MetricsIndex implements MetricsReader {
@@ -294,6 +300,17 @@ export class MetricsIndex implements MetricsReader {
     const rows = this.#db
       .prepare('SELECT * FROM temporal_metrics WHERE entry_id = ? AND touched = 1')
       .all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
+  /** Every current row for one entry, touched or not — the live-diff
+   * counterpart to `touchedForEntry` (`plan.md` M18). The live pending-item
+   * processor compares fresh candidates against this, not just the touched
+   * half of it: a record already approved through the popup but never
+   * individually touched must not be re-proposed as a duplicate `'new'`
+   * item the next time the entry is processed. */
+  liveForEntry(entryId: string): TemporalMetricRecord[] {
+    const rows = this.#db.prepare('SELECT * FROM temporal_metrics WHERE entry_id = ?').all(entryId) as RawRow[];
     return rows.map(fromRaw);
   }
 
@@ -530,6 +547,36 @@ export class MetricsIndex implements MetricsReader {
       this.#db.prepare('SELECT COUNT(*) AS n FROM temporal_metrics').get() as { n: number }
     ).n;
     return { metricCount };
+  }
+
+  /** Commits an approved `'new'` pending item (`plan.md` M18,
+   * `model/pending-item-applier.ts`) as a real, queryable record — at
+   * whatever `touched` value it is given, which is always `false` for a
+   * batch-approved item: approving in the popup means "this is now real,"
+   * not "I individually verified this fact" (confirmed with the user at
+   * M18's planning). Deliberately a distinct method from `restoreTouched`
+   * below rather than a repurposing of it — that method's contract ("always
+   * touched, only ever called from durable-mirror recovery") stays a
+   * meaningful, undiluted invariant this way. */
+  insertApproved(record: TemporalMetricRecord): void {
+    this.#db
+      .prepare(
+        `INSERT INTO temporal_metrics
+           (id, entry_id, metric, event_time, event_epoch_ms, event_time_explicit, detail, fields, extracted_at, touched)
+         VALUES (@id, @entryId, @metric, @eventTime, @eventEpochMs, @eventTimeExplicit, @detail, @fields, @extractedAt, @touched)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        metric: record.metric,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        detail: record.detail,
+        fields: JSON.stringify(record.fields),
+        extractedAt: record.extractedAt,
+        touched: record.touched ? 1 : 0,
+      });
   }
 
   /** Restores one touched record read back from the durable off-index

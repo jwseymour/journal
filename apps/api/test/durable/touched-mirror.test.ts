@@ -151,7 +151,7 @@ describe('restoreAll — the actual bug this file exists to fix', () => {
     listsIndex.validate('l1', 'now');
     await mirror.sync('list_item', 'l1');
 
-    opinionStatementsIndex.replaceEntry('e1', [{ id: 'o1', subject: 'philosophy', statement: 'A view', eventTime: metric.eventTime, eventEpochMs: metric.eventEpochMs, eventTimeExplicit: true, extractedAt: metric.extractedAt, touched: false }]);
+    opinionStatementsIndex.replaceEntry('e1', [{ id: 'o1', subject: 'philosophy', statement: 'A view', kind: 'note', eventTime: metric.eventTime, eventEpochMs: metric.eventEpochMs, eventTimeExplicit: true, extractedAt: metric.extractedAt, touched: false }]);
     opinionStatementsIndex.validate('o1', 'now');
     await mirror.sync('opinion_statement', 'o1');
 

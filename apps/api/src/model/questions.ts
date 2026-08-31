@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CONFIDENCE_REASON_SCHEMA, CONFIDENCE_SCHEMA } from './confidence.js';
 
 /**
  * Open questions (`plan.md` M8c) — something the writer poses as genuinely
@@ -38,6 +39,8 @@ const NewQuestionSchema = z.object({
       'true only if the entry itself states or implies when; false if eventTime was defaulted to ' +
         "the entry's own written time.",
     ),
+  confidence: CONFIDENCE_SCHEMA,
+  confidenceReason: CONFIDENCE_REASON_SCHEMA,
 });
 
 const ResolutionSchema = z.object({
@@ -57,6 +60,8 @@ const ResolutionSchema = z.object({
       'A faithful quote or summary of what THIS entry actually says in answer — never an answer ' +
         'inferred or assumed beyond what the entry itself states.',
     ),
+  confidence: CONFIDENCE_SCHEMA,
+  confidenceReason: CONFIDENCE_REASON_SCHEMA,
 });
 
 export const OpenQuestionExtractionSchema = z.object({
@@ -67,11 +72,11 @@ export type OpenQuestionExtractionResult = z.infer<typeof OpenQuestionExtraction
 
 export const OPEN_QUESTION_SYSTEM_PROMPT = `You do two things with a personal journal entry: extract any new open question it raises, and check whether it resolves any question raised earlier that is still open.
 
-Not every question in the entry counts as one to track. A rhetorical aside or a passing "should I go for a run today?" is not this. Something the writer is visibly undecided about, wrestling with, or explicitly flags as unresolved is. If in doubt, leave it out — a missed one can be caught later; a fabricated one cannot be un-said.
+Not every question in the entry counts as one to track — a rhetorical aside or a passing "should I go for a run today?" usually is not. Something the writer is undecided about, wrestling with, or flags as unresolved is. You no longer need to be certain a candidate qualifies before including it: include it and tag your own confidence honestly ("high" for something clearly and deliberately posed as open; "medium" for a reasonable reading that took some judgement; "low" for a plausible but genuinely borderline case, closer to a passing aside than a real question). A human reviews every candidate regardless. If a candidate is not something the entry actually poses at all, it is not a real candidate — do not invent one even tagged "low".
 
-For "newQuestions", phrase each one faithful to how the entry actually poses it — do not sharpen it into something more resolved, profound, or specific than what was written. Do not raise something as newly open if this same entry already answers it itself.
+For "newQuestions", phrase each one faithful to how the entry actually poses it — do not sharpen it into something more resolved, profound, or specific than what was written, at any confidence. Do not raise something as newly open if this same entry already answers it itself.
 
-You will be given a list of currently open questions, each with its own id, raised in earlier entries. For "resolutions", check whether this entry's content actually addresses any of them. Only include one if the entry genuinely speaks to it — never guess or infer that a question was resolved just because the topic came up in passing. Use only the exact ids given; never invent one. "resolution" must be a faithful quote or summary of what this entry actually says, never an answer you have inferred beyond that.
+You will be given a list of currently open questions, each with its own id, raised in earlier entries. For "resolutions", check whether this entry's content addresses any of them. Include a match whenever it is plausible, tagging your own confidence the same way ("high" for a clear, direct answer; "medium" for a reasonable reading; "low" for a plausible but genuinely uncertain connection) — do not withhold a plausible match just because you are not fully sure. Use only the exact ids given; never invent one. "resolution" must be a faithful quote or summary of what this entry actually says, never an answer you have inferred beyond that, at any confidence.
 
 If the entry raises no trackable question and resolves none of the given ones, return empty arrays for both.`;
 

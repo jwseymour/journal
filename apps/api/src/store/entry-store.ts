@@ -26,7 +26,11 @@ export interface CreateEntryInput {
   location?: Coordinates;
 }
 
-export interface StoredEntry extends Entry {
+/** `published` is deliberately excluded here: it is computed at the HTTP
+ * layer from `Publisher.isPublished`, never stored — same exclusion
+ * `StoredDocument` already makes, for the same reason (`document-store.ts`'s
+ * own comment). */
+export interface StoredEntry extends Omit<Entry, 'published'> {
   /** Journal-root-relative, POSIX separators. Informational only — never a key. */
   path: string;
 }

@@ -92,6 +92,68 @@ beforeEach(() => {
   extractor = new Extractor(metricsIndex, metricFieldsIndex, categoriesIndex, modelClient);
 });
 
+describe('extractCandidates', () => {
+  it('shapes model output into candidates without writing to the index', async () => {
+    modelClient.result = {
+      metrics: [
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'medium', confidenceReason: 'implied by "went out"' },
+      ],
+    };
+    const result = await extractor.extractCandidates(entry('e1', 'Went out this morning.'));
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      metric: 'exercise',
+      detail: 'a run',
+      confidence: 'medium',
+      confidenceReason: 'implied by "went out"',
+    });
+    // The whole point of `extractCandidates` — nothing committed yet.
+    expect(metricsIndex.list({ limit: 10 })).toEqual([]);
+  });
+
+  it('passes suggestedCategory/Field/FieldValue through untouched', async () => {
+    modelClient.result = {
+      metrics: [],
+      suggestedCategory: { name: 'meditation', reason: 'mentioned repeatedly' },
+    };
+    const result = await extractor.extractCandidates(entry('e1', 'Meditated for 10 minutes.'));
+
+    expect(result.suggestedCategory).toEqual({ name: 'meditation', reason: 'mentioned repeatedly' });
+    // Still nothing committed — `extractCandidates` never calls `suggest()`.
+    expect(categoriesIndex.listSuggestions()).toEqual([]);
+  });
+
+  it('shares one extractedAt across every candidate in the same call', async () => {
+    modelClient.result = {
+      metrics: [
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'high', confidenceReason: null },
+        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'ok', fields: {}, confidence: 'high', confidenceReason: null },
+      ],
+    };
+    const result = await extractor.extractCandidates(entry('e1', 'x'));
+
+    expect(result.candidates[0]!.extractedAt).toBe(result.extractedAt);
+    expect(result.candidates[1]!.extractedAt).toBe(result.extractedAt);
+  });
+
+  it('extractEntry still produces the exact same committed records as before this split', async () => {
+    modelClient.result = {
+      metrics: [
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'low', confidenceReason: 'guessed' },
+      ],
+    };
+    await extractor.extractEntry(entry('e1', 'Went out.'));
+
+    const [record] = metricsIndex.list({ limit: 10 });
+    // Confidence never reaches the committed record — it is not a field on
+    // `TemporalMetricRecord` at all.
+    expect(record).not.toHaveProperty('confidence');
+    expect(record).not.toHaveProperty('confidenceReason');
+    expect(record).toMatchObject({ metric: 'exercise', detail: 'a run', touched: false });
+  });
+});
+
 describe('extractEntry', () => {
   it('sends the entry body and its written time to the model', async () => {
     await extractor.extractEntry(entry('e1', 'Went for a run this morning.'));
@@ -103,7 +165,7 @@ describe('extractEntry', () => {
   it('stores a record for each metric the model returns', async () => {
     modelClient.result = {
       metrics: [
-        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} },
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'high', confidenceReason: null },
       ],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run this morning.'));
@@ -126,7 +188,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time when the model returns a malformed eventTime', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'sleep', eventTime: 'not a timestamp', eventTimeExplicit: true, detail: 'ok', fields: {} }],
+      metrics: [{ metric: 'sleep', eventTime: 'not a timestamp', eventTimeExplicit: true, detail: 'ok', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Slept fine.', '2026-07-20T09:00:00+01:00'));
 
@@ -140,12 +202,12 @@ describe('extractEntry', () => {
 
   it('replaces old records for an entry rather than accumulating them', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {} }],
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run.'));
 
     modelClient.result = {
-      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'early night', fields: {} }],
+      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'early night', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Revised: went to bed early instead.'));
 
@@ -189,8 +251,8 @@ describe('extractEntry', () => {
   it('gives every record a distinct id, even within the same extraction', async () => {
     modelClient.result = {
       metrics: [
-        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {} },
-        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'nap', fields: {} },
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {}, confidence: 'high', confidenceReason: null },
+        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'nap', fields: {}, confidence: 'high', confidenceReason: null },
       ],
     };
     await extractor.extractEntry(entry('e1', 'A busy day.'));
@@ -240,7 +302,7 @@ describe('structured fields', () => {
           eventTime: '2026-07-20T07:00:00+01:00',
           eventTimeExplicit: true,
           detail: 'ran 8k',
-          fields: { distance_km: 8 },
+          fields: { distance_km: 8 }, confidence: 'high', confidenceReason: null,
         },
       ],
     };
@@ -371,8 +433,8 @@ describe('touched-record protection during reprocess (`plan.md` M10)', () => {
   it('a touched record survives reprocessAll unchanged, and an untouched sibling is still replaced', async () => {
     modelClient.result = {
       metrics: [
-        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} },
-        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'ok', fields: {} },
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'high', confidenceReason: null },
+        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'ok', fields: {}, confidence: 'high', confidenceReason: null },
       ],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run, slept fine.'));
@@ -386,9 +448,9 @@ describe('touched-record protection during reprocess (`plan.md` M10)', () => {
     // untouched records are simply replaced — but the touched one survives.
     modelClient.result = {
       metrics: [
-        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} },
-        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'ok', fields: {} },
-        { metric: 'sleep', eventTime: '2026-07-20T23:30:00+01:00', eventTimeExplicit: true, detail: 'woke once', fields: {} },
+        { metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'high', confidenceReason: null },
+        { metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: true, detail: 'ok', fields: {}, confidence: 'high', confidenceReason: null },
+        { metric: 'sleep', eventTime: '2026-07-20T23:30:00+01:00', eventTimeExplicit: true, detail: 'woke once', fields: {}, confidence: 'high', confidenceReason: null },
       ],
     };
     const store = new FakeEntryStore([entry('e1', 'Went for a run, slept fine, woke once.')]);
@@ -402,14 +464,14 @@ describe('touched-record protection during reprocess (`plan.md` M10)', () => {
 
   it('a clean 1:1 touched match proposes an update instead of overwriting, and inserts nothing new untouched', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} }],
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run.'));
     const [original] = metricsIndex.list({ limit: 10 });
     metricsIndex.update(original!.id, { detail: 'my own correction' }, 'now');
 
     modelClient.result = {
-      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a jog', fields: {} }],
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a jog', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     const store = new FakeEntryStore([entry('e1', 'Went for a jog.')]);
     await extractor.reprocessAll(store);
@@ -425,7 +487,7 @@ describe('touched-record protection during reprocess (`plan.md` M10)', () => {
 
   it('proposes nothing when the fresh extraction agrees with the touched record', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {} }],
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'a run', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run.'));
     const [original] = metricsIndex.list({ limit: 10 });
@@ -442,7 +504,7 @@ describe('touched-record protection during reprocess (`plan.md` M10)', () => {
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {} }],
+      metrics: [{ metric: 'exercise', eventTime: '2026-07-20T07:00:00+01:00', eventTimeExplicit: true, detail: 'run', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'Went for a run.'));
     extractor.removeEntry('e1');
@@ -453,7 +515,7 @@ describe('removeEntry', () => {
 describe('reprocessAll', () => {
   it('extracts every entry across multiple pages', async () => {
     modelClient.result = {
-      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: false, detail: '', fields: {} }],
+      metrics: [{ metric: 'sleep', eventTime: '2026-07-20T23:00:00+01:00', eventTimeExplicit: false, detail: '', fields: {}, confidence: 'high', confidenceReason: null }],
     };
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b'), entry('e3', 'c')]);
 

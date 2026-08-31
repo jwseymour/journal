@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CONFIDENCE_REASON_SCHEMA, CONFIDENCE_SCHEMA } from './confidence.js';
 
 /**
  * To-dos (`plan.md` M15) — an outstanding task, errand, or commitment the
@@ -36,6 +37,8 @@ const NewTodoSchema = z.object({
       'true only if the entry itself states or implies when; false if eventTime was defaulted to ' +
         "the entry's own written time.",
     ),
+  confidence: CONFIDENCE_SCHEMA,
+  confidenceReason: CONFIDENCE_REASON_SCHEMA,
 });
 
 const CompletionSchema = z.object({
@@ -55,6 +58,8 @@ const CompletionSchema = z.object({
       'A faithful quote or summary of what THIS entry actually says about it being done — never inferred ' +
         'or assumed beyond what the entry itself states.',
     ),
+  confidence: CONFIDENCE_SCHEMA,
+  confidenceReason: CONFIDENCE_REASON_SCHEMA,
 });
 
 export const TodoExtractionSchema = z.object({
@@ -65,11 +70,11 @@ export type TodoExtractionResult = z.infer<typeof TodoExtractionSchema>;
 
 export const TODO_SYSTEM_PROMPT = `You do two things with a personal journal entry: extract any new outstanding task, errand, or commitment it raises, and check whether it reports any to-do raised earlier as now done.
 
-A to-do is an action still to be taken — "need to call the dentist," "should fix the fence this weekend," "have to reply to that email." It is different from a question: a question is something undecided the writer is wrestling with; a to-do is a concrete action still outstanding. If the entry only poses something as undecided, that belongs to a question, not a to-do — do not extract the same sentence as both.
+A to-do is an action still to be taken — "need to call the dentist," "should fix the fence this weekend," "have to reply to that email." It is different from a question: a question is something undecided the writer is wrestling with; a to-do is a concrete action still outstanding. If the entry only poses something as undecided, that belongs to a question, not a to-do — do not extract the same sentence as both, at any confidence.
 
-For "newTodos", phrase each one faithful to how the entry actually states or implies it — do not sharpen it into something more specific, more urgent, or more resolved than what was written. Do not raise something as newly outstanding if this same entry already reports it done itself.
+For "newTodos", phrase each one faithful to how the entry actually states or implies it — do not sharpen it into something more specific, more urgent, or more resolved than what was written, at any confidence. Do not raise something as newly outstanding if this same entry already reports it done itself. You no longer need to be certain a candidate belongs before including it: include it and tag your own confidence honestly ("high" for a clearly stated commitment; "medium" for a reasonable reading that took some judgement; "low" for a plausible but genuinely borderline case). A human reviews every candidate regardless — if something is not a plausible to-do at all, it is not a real candidate, do not invent one even tagged "low".
 
-You will be given a list of currently open to-dos, each with its own id, some raised in earlier entries and some added directly without any entry behind them. For "completions", check whether this entry's content genuinely reports any of them done. Only include one if the entry actually says so — never guess or infer completion just because the topic came up in passing. Use only the exact ids given; never invent one. "resolution" must be a faithful quote or summary of what this entry actually says, never something you have inferred beyond that.
+You will be given a list of currently open to-dos, each with its own id, some raised in earlier entries and some added directly without any entry behind them. For "completions", check whether this entry's content reports any of them done. Include a match whenever it is plausible, tagging your own confidence the same way ("high" for an explicit report, "medium" for a reasonable reading, "low" for a plausible but genuinely uncertain connection) — do not withhold a plausible match just because you are not fully sure. Use only the exact ids given; never invent one. "resolution" must be a faithful quote or summary of what this entry actually says, never something you have inferred beyond that, at any confidence.
 
 If the entry raises no trackable to-do and reports none of the given ones done, return empty arrays for both.`;
 

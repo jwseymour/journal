@@ -1,0 +1,278 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.hint,
+.empty {
+  color: var(--ink-muted);
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+
+/* The `j`/`k`/`↩`/`a`/`r`/`p` scheme this list adds to `design.md` §5.2 —
+ * same convention `entry-view.tsx`'s composer uses for its own key hints
+ * (one `<kbd>` per symbol-plus-label pair). */
+.hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+}
+
+.keyHint {
+  color: var(--ink-muted);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+}
+
+.group {
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-md);
+}
+
+.group + .group {
+  margin-top: 0;
+}
+
+.groupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: var(--hairline) solid var(--rule);
+  background-color: var(--ground-sunken);
+}
+
+.groupTitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-normal);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.groupCount {
+  color: var(--ink-faint);
+}
+
+.approveAllButton {
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.approveAllButton:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.approveAllButton:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rows > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.row {
+  padding: var(--space-3xs) var(--space-sm);
+}
+
+/* Keyboard selection (`j` / `k`) — the identical treatment
+ * `home-browser.tsx`'s own list uses (`page.module.css` `.selected`), so the
+ * same visual means the same thing everywhere it appears. */
+.focused {
+  background-color: var(--ground-sunken);
+  box-shadow: inset var(--focus-width) 0 0 var(--accent);
+}
+
+.rowTop {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.rowToggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-xs);
+  border: none;
+  padding: var(--space-3xs) 0;
+  background: transparent;
+  font-family: var(--font-serif);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowToggle:hover .headline {
+  color: var(--accent);
+}
+
+.rowMeta {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.kindBadge {
+  padding: 0 var(--space-3xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+}
+
+.category {
+  color: var(--ink-muted);
+}
+
+.confidence {
+  color: var(--ink-faint);
+}
+
+.confidence-low {
+  color: var(--danger);
+}
+
+.confidence-medium {
+  color: var(--ink-muted);
+}
+
+.confidence-high {
+  color: var(--ink-faint);
+}
+
+.headline {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Always present, on every row — the affordance that a row always has
+ * something underneath it, not only the ones with a reason or a field to
+ * show. */
+.chevron {
+  flex-shrink: 0;
+  color: var(--ink-faint);
+}
+
+.rowToggle:hover .chevron {
+  color: var(--accent);
+}
+
+.expanded {
+  padding: 0 0 var(--space-2xs) 0;
+}
+
+/* The row's own text again, in full — the one thing every expanded panel
+ * carries regardless of structure type, so a truncated headline is never a
+ * dead end. */
+.fullText {
+  margin: 0;
+  color: var(--ink);
+  line-height: var(--leading-normal);
+}
+
+.detail {
+  margin: var(--space-3xs) 0 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+
+.reason {
+  margin: var(--space-3xs) 0 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  font-style: italic;
+}
+
+.visibility {
+  margin: var(--space-3xs) 0 0;
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+}
+
+.actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-2xs);
+}
+
+.approveButton,
+.rejectButton,
+.parkButton {
+  padding: var(--space-3xs) var(--space-xs);
+  border: var(--hairline) solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: var(--font-serif);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.approveButton {
+  color: var(--ink);
+}
+
+.approveButton:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.parkButton {
+  color: var(--ink-muted);
+}
+
+.parkButton:hover:not(:disabled) {
+  border-color: var(--ink-muted);
+}
+
+.rejectButton {
+  color: var(--ink-muted);
+}
+
+.rejectButton:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.approveButton:disabled,
+.rejectButton:disabled,
+.parkButton:disabled {
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  cursor: default;
+}

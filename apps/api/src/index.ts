@@ -3,11 +3,13 @@ import { ConfigError, loadConfig } from './config.js';
 import { createApp } from './http/app.js';
 import { CategoriesIndex } from './index/categories-index.js';
 import { DocumentsIndex } from './index/documents-index.js';
+import { EntryProcessingStatusIndex } from './index/entry-processing-status-index.js';
 import { ListsIndex } from './index/lists-index.js';
 import { MetricFieldsIndex } from './index/metric-fields-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
 import { OpinionStatementsIndex } from './index/opinion-statements-index.js';
 import { OpinionSummariesIndex } from './index/opinion-summaries-index.js';
+import { PendingItemsIndex } from './index/pending-items-index.js';
 import { PublicSearchIndex } from './index/public-search-index.js';
 import { PublishedIndex } from './index/published-index.js';
 import { QuestionsIndex } from './index/questions-index.js';
@@ -17,7 +19,6 @@ import { SqliteIndex } from './index/sqlite-index.js';
 import { TodosIndex } from './index/todos-index.js';
 import { VisibilityDefaultsIndex } from './index/visibility-defaults-index.js';
 import { ChatOrchestrator } from './model/chat-orchestrator.js';
-import { EntryProcessor } from './model/entry-processor.js';
 import { Extractor } from './model/extractor.js';
 import { GatewayChatClient, UnconfiguredChatClient } from './model/gateway-chat-client.js';
 import { GatewayModelClient, UnconfiguredModelClient } from './model/gateway-model-client.js';
@@ -26,6 +27,8 @@ import { LIST_TYPE_SEED_NAMES } from './model/lists.js';
 import { OpinionSummarizer } from './model/opinion-summarizer.js';
 import { OpinionsExtractor } from './model/opinions-extractor.js';
 import { OPINION_SUBJECT_SEED_NAMES } from './model/opinions.js';
+import { PendingItemApplier } from './model/pending-item-applier.js';
+import { LivePendingProcessor } from './model/pending-processor.js';
 import { QuestionsExtractor } from './model/questions-extractor.js';
 import { ReviewsExtractor } from './model/reviews-extractor.js';
 import { REVIEW_MEDIUM_SEED_NAMES } from './model/reviews.js';
@@ -162,14 +165,35 @@ async function main(): Promise<void> {
   const modelClient = config.aiGatewayApiKey
     ? new GatewayModelClient(config.aiGatewayApiKey, config.extractionModel)
     : new UnconfiguredModelClient();
-  const entryProcessor = new EntryProcessor(
+  // The live, one-entry pending-item pipeline (`plan.md` M18) — replaces
+  // the pre-M18 `EntryProcessor`, which committed directly. Nothing here
+  // commits on its own; see `LivePendingProcessor`'s own doc comment.
+  const pendingItemsIndex = new PendingItemsIndex(config.indexDbPath);
+  const entryProcessingStatusIndex = new EntryProcessingStatusIndex(config.indexDbPath);
+  const pendingProcessor = new LivePendingProcessor(
+    pendingItemsIndex,
+    metricsIndex,
     new Extractor(metricsIndex, metricFieldsIndex, categoriesIndex, modelClient),
+    reviewsIndex,
     new ReviewsExtractor(reviewsIndex, categoriesIndex, modelClient),
+    listsIndex,
     new ListsExtractor(listsIndex, categoriesIndex, modelClient),
+    opinionStatementsIndex,
     new OpinionsExtractor(opinionStatementsIndex, categoriesIndex, modelClient),
-    new OpinionSummarizer(opinionSummariesIndex, opinionStatementsIndex, modelClient),
+    questionsIndex,
     new QuestionsExtractor(questionsIndex, modelClient),
+    todosIndex,
     new TodosExtractor(todosIndex, modelClient),
+  );
+  const pendingItemApplier = new PendingItemApplier(
+    metricsIndex,
+    reviewsIndex,
+    listsIndex,
+    opinionStatementsIndex,
+    new OpinionSummarizer(opinionSummariesIndex, opinionStatementsIndex, modelClient),
+    questionsIndex,
+    todosIndex,
+    touchedMirror,
   );
   const app = createApp(
     store,
@@ -186,7 +210,10 @@ async function main(): Promise<void> {
     opinionSummariesIndex,
     questionsIndex,
     todosIndex,
-    entryProcessor,
+    pendingProcessor,
+    pendingItemsIndex,
+    pendingItemApplier,
+    entryProcessingStatusIndex,
     chatOrchestrator,
     publisher,
     visibilityDefaultsIndex,

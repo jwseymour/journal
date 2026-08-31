@@ -23,8 +23,9 @@ const LIMIT = 100;
 
 /**
  * Extracted atomic list items (`plan.md` M8, `requirements.md` §5.2) — for
- * example quotes. Same shape as `app/metrics/page.tsx`: a plain list, never
- * live, only whatever the last `npm run reprocess` wrote.
+ * example quotes. Same shape as `app/metrics/page.tsx`: a plain list of what
+ * a past `npm run reprocess` wrote, plus whatever has since been approved
+ * from a live `Process` run's popup or `/pending` queue (`plan.md` M18).
  *
  * Editing and validating (`requirements.md` §2, §6.4, `plan.md` M10) is
  * scoped to `text`, the item itself — `context`, `importance`, and

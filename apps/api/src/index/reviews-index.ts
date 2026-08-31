@@ -113,6 +113,12 @@ export interface ReviewsReader {
   untouch(id: string, now: string): void;
   listUpdateSuggestions(options?: { status?: ReviewUpdateSuggestion['status'] }): ReviewUpdateSuggestion[];
   decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** Every current row for one entry, touched or not (`plan.md` M18) — see
+   * `MetricsReader.liveForEntry` for the full reasoning. */
+  liveForEntry(entryId: string): ReviewRecord[];
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsReader.insertApproved` for the full reasoning. */
+  insertApproved(record: ReviewRecord): void;
 }
 
 export class ReviewsIndex implements ReviewsReader {
@@ -228,6 +234,13 @@ export class ReviewsIndex implements ReviewsReader {
 
   touchedForEntry(entryId: string): ReviewRecord[] {
     const rows = this.#db.prepare('SELECT * FROM reviews WHERE entry_id = ? AND touched = 1').all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
+  /** Every current row for one entry, touched or not (`plan.md` M18) — see
+   * `MetricsIndex.liveForEntry` for the full reasoning. */
+  liveForEntry(entryId: string): ReviewRecord[] {
+    const rows = this.#db.prepare('SELECT * FROM reviews WHERE entry_id = ?').all(entryId) as RawRow[];
     return rows.map(fromRaw);
   }
 
@@ -389,6 +402,32 @@ export class ReviewsIndex implements ReviewsReader {
       overall: toBuckets(countsFor(null)),
       byMedium: approvedMedia.map((medium) => ({ medium, buckets: toBuckets(countsFor(medium)) })),
     };
+  }
+
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsIndex.insertApproved` for the full reasoning; identical shape
+   * here. */
+  insertApproved(record: ReviewRecord): void {
+    this.#db
+      .prepare(
+        `INSERT INTO reviews
+           (id, entry_id, title, medium, rating, progress, opinion, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
+         VALUES (@id, @entryId, @title, @medium, @rating, @progress, @opinion, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @touched)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        title: record.title,
+        medium: record.medium,
+        rating: record.rating,
+        progress: record.progress,
+        opinion: record.opinion,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+        touched: record.touched ? 1 : 0,
+      });
   }
 
   /** Restores one touched record from the durable off-index mirror

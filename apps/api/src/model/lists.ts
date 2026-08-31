@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CONFIDENCE_REASON_SCHEMA, CONFIDENCE_SCHEMA } from './confidence.js';
 
 /**
  * The third derived structure (`plan.md` M8, `requirements.md` §5.2):
@@ -14,7 +15,7 @@ import { z } from 'zod';
  * with the one named example, "quote", grown only through the approval
  * routes `requirements.md` §5.3 requires.
  */
-export const LIST_TYPE_SEED_NAMES = ['quote'] as const;
+export const LIST_TYPE_SEED_NAMES = ['quote', 'project_idea', 'accomplishment', 'watchlist'] as const;
 
 const SuggestedCategorySchema = z
   .object({
@@ -77,6 +78,8 @@ function buildListItemSchema(approvedTypes: readonly string[]) {
             'true only if the entry itself states or implies when this was encountered; false if ' +
               "eventTime was defaulted to the entry's own written time.",
           ),
+        confidence: CONFIDENCE_SCHEMA,
+        confidenceReason: CONFIDENCE_REASON_SCHEMA,
       }),
     ),
     suggestedCategory: SuggestedCategorySchema,
@@ -87,11 +90,11 @@ export type ListExtractionResult = z.infer<ReturnType<typeof buildListItemSchema
 function buildListSystemPrompt(approvedTypes: readonly string[]): string {
   return `You extract atomic items from a personal journal entry — small, self-contained things worth keeping on their own, distinct from the surrounding prose.
 
-The only approved item types right now are: ${approvedTypes.join(', ')}. Only extract something the entry actually contains verbatim or near-verbatim — never invent or paraphrase a "quote" into different words. If the entry contains nothing that fits an approved type, return an empty list.
+The only approved item types right now are: ${approvedTypes.join(', ')}. Extract an item whenever the entry plausibly contains one worth keeping on its own — you no longer need to be certain it belongs. Tag your own confidence honestly: "high" if it's a clear, self-contained item; "medium" if it's a reasonable reading that took some judgement to separate from the surrounding prose; "low" if it's a plausible but genuinely marginal candidate. A human reviews every item regardless, so flag uncertainty honestly rather than staying silent. If the entry contains nothing that could plausibly fit an approved type, return an empty list.
 
-For "text", use the item exactly as written. For "context", use only what the entry actually states about where it came from or why it was noted — never guess.
+For "text", this confidence relaxation does NOT apply — always use the item exactly as written, verbatim, never invented or paraphrased, whatever your confidence in whether it belongs. For "context", use only what the entry actually states about where it came from or why it was noted — never guess.
 
-For "importance", use null unless the entry's own language signals this item mattered more than an ordinary note (strong emphasis, explicitly called important, described as something to remember) — then give a 1-5 rating. Do not infer importance just from the item's topic or type.
+For "importance", use null unless the entry's own language signals this item mattered more than an ordinary note (strong emphasis, explicitly called important, described as something to remember) — then give a 1-5 rating. Do not infer importance just from the item's topic or type; this, too, is independent of your confidence in the item itself.
 
 For "eventTime", resolve when this was actually encountered, not when the entry was written. Use the entry's own written time (given below) as the reference point for relative expressions. If nothing is said about when, use the entry's own written time exactly and mark eventTimeExplicit as false.
 

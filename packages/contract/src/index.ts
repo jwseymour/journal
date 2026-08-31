@@ -56,8 +56,12 @@ export interface EntrySummary extends EntryMetadata {
   excerpt: string;
 }
 
-/** An entry in full. The body is exactly the bytes on disk, minus frontmatter. */
-export interface Entry extends EntryMetadata {
+/** An entry in full. The body is exactly the bytes on disk, minus frontmatter.
+ * `published` is computed, the same way `Document.published` is (see
+ * `Published`'s own comment) — never a field written into the file itself
+ * (`requirements.md` §4.3's "nothing else" stays about file frontmatter, not
+ * about this kind of derived, always-recomputed status). */
+export interface Entry extends EntryMetadata, Published {
   body: string;
 
   /**
@@ -168,24 +172,107 @@ export interface UpdateEntryRequest {
 export type UpdateEntryResponse = Entry;
 
 /**
- * The result of running extraction for one entry — every structure type,
- * one call each (`plan.md` M15). Safe to call more than once on the same
- * entry: touched records are never overwritten, only ever offered an
- * update suggestion (`requirements.md` §6.4), so calling this again after
- * editing an already-processed entry is the same operation, not a
- * different one.
+ * The result of running live extraction for one entry — every structure
+ * type, one call each (`plan.md` M18). Unlike before M18, nothing here
+ * commits directly: every candidate becomes a `PendingExtractionItem`
+ * awaiting explicit approval (`requirements.md` §6.1, rewritten at M18).
+ * Safe to call more than once on the same entry — a fresh run supersedes
+ * any still-`pending` items from an earlier run on the same entry, and
+ * diffs its candidates against everything already live, not only what has
+ * been individually touched, so nothing duplicates.
  *
- * Each count is how many records extraction produced from this entry on
- * this pass — not a running total, and not distinct from what a touched
- * record's update-suggestion might still be waiting on approval for.
+ * `pendingItemCount` is how many items this pass produced (`'new'`,
+ * `'update'`, `'resolution'`, `'completion'` combined) — fetch
+ * `GET /pending-items?entryId=&processRunId=` for the actual items.
  */
 export interface ProcessEntryResponse {
-  metricCount: number;
-  reviewCount: number;
-  itemCount: number;
-  statementCount: number;
-  questionCount: number;
-  todoCount: number;
+  pendingItemCount: number;
+  processRunId: string;
+}
+
+/** The three confidence tiers a live extraction candidate is tagged with
+ * (`plan.md` M18). Only `'medium'`/`'high'` ever reach a `PendingExtractionItem`
+ * — `'low'` is dropped by `LivePendingProcessor` before it becomes one, so a
+ * `PendingExtractionItem.confidence` of `'low'` should not occur for anything
+ * produced after that cutoff shipped. Confidence otherwise arranges the
+ * review popup/queue (lowest-surfaced-confidence first, within its
+ * structure-type group); discarded the moment an item is approved, never
+ * stored on the committed record. A coarse categorical tier rather than a
+ * numeric score: models are not reliably calibrated self-reporters of a
+ * continuous probability, and every other open-ended judgment in this schema
+ * (`MetricFieldType`, `eventTimeExplicit`) is already a small enum, not a
+ * float. */
+export type PendingItemConfidence = 'high' | 'medium' | 'low';
+
+export type PendingItemStructureType = 'metric' | 'review' | 'list_item' | 'opinion_statement' | 'question' | 'todo';
+
+/** What kind of candidate this is (`plan.md` M18):
+ * - `'new'` — no live record exists yet; approving creates one.
+ * - `'update'` — a fresh extraction differs from an already-live record
+ *   (`targetRecordId`); approving applies it via that structure's own
+ *   `update()`, the same as an approved `*UpdateSuggestion` today.
+ * - `'resolution'` — this entry appears to resolve an open question, or an
+ *   open `kind: 'question'` opinion statement (`targetRecordId` names it);
+ *   approving calls that structure's own `resolveApproved`, bypassing the
+ *   touched-record guard the same way an approved `TodoCompletionSuggestion`
+ *   already bypasses todos' — the fix for the gap `QuestionsIndex.resolve()`'s
+ *   own comment has flagged since M10.
+ * - `'completion'` — this entry appears to complete an open to-do
+ *   (`targetRecordId` names it); approving calls the to-do's completion
+ *   path, same bypass. */
+export type PendingItemKind = 'new' | 'update' | 'resolution' | 'completion';
+
+/** One candidate produced by a live `POST /entries/:id/process` run
+ * (`plan.md` M18), awaiting explicit approval — nothing before this point
+ * is ever silently committed. `payload` carries the type-specific fields a
+ * `'new'`/`'update'` item would write, or the resolution/completion text
+ * for the other two kinds — see `apps/api/src/model/pending-item-applier.ts`
+ * for exactly how each `(structureType, kind)` pair is applied.
+ * `category` is the record's metric/medium/listType/subject, denormalized
+ * for grouping and the visibility-default check on approval — `null` for
+ * question/todo, which have no category. */
+export interface PendingExtractionItem {
+  id: string;
+  entryId: string;
+  processRunId: string;
+  structureType: PendingItemStructureType;
+  kind: PendingItemKind;
+  /** The existing live record this item targets — present for every kind
+   * except `'new'`. */
+  targetRecordId: string | null;
+  category: string | null;
+  payload: Record<string, unknown>;
+  confidence: PendingItemConfidence;
+  /** A brief note from the model, mainly meaningful when confidence is not
+   * `'high'` — why it read the entry this way. */
+  reason: string | null;
+  status: 'pending' | 'approved' | 'rejected' | 'superseded';
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface PendingItemsResponse {
+  items: PendingExtractionItem[];
+}
+
+/** What makes "approve all pending metrics" one click instead of many
+ * (`plan.md` M18) — applies each id's approval independently, so one bad
+ * item in the batch cannot block the rest. */
+export interface ApproveBatchRequest {
+  ids: string[];
+}
+
+export interface ApproveBatchResponse {
+  approved: string[];
+  failed: { id: string; error: string }[];
+}
+
+/** Whether an entry's live extraction is current (`plan.md` M18) — compares
+ * the entry's present `contentHash` against the hash stored the last time
+ * `POST /entries/:id/process` completed. `'never_processed'` if it has
+ * never been run at all. */
+export interface EntryStatusResponse {
+  state: 'never_processed' | 'stale' | 'up_to_date';
 }
 
 /**
@@ -240,10 +327,10 @@ export interface DocumentMetadata {
  * frontmatter, or a derived-structure row). Flipped only by the matching
  * `POST .../:id/publish`/`.../unpublish` route — a deliberate act distinct
  * from an ordinary edit or extraction, never a side effect of either.
- * Shared by documents (M15) and the five touchable derived-structure types —
- * metrics, reviews, list items, opinion statements, questions (M16). Entries
- * are published too but have no contract type of their own to attach this
- * to today — see `apps/api/src/http/app.ts`'s entry publish routes. */
+ * Shared by documents (M15), entries (M18 — the Publish button on an
+ * entry's own page finally needed to read this back, not only set it), and
+ * the five touchable derived-structure types — metrics, reviews, list
+ * items, opinion statements, questions (M16). */
 export interface Published {
   published: boolean;
 }
@@ -505,7 +592,10 @@ export interface MetricFieldSuggestion {
   description: string;
   reason: string;
   entryId: string;
-  status: 'pending' | 'approved' | 'rejected';
+  /** `'parked'` (`plan.md` M18): set aside to reconsider later, neither
+   * approved nor rejected — a plain, passive shelf with no reminders or
+   * resurfacing (non-negotiable #12). */
+  status: 'pending' | 'approved' | 'rejected' | 'parked';
   suggestedAt: string;
 }
 
@@ -645,12 +735,21 @@ export interface ListItemUpdateSuggestionsResponse {
 }
 
 /**
- * A model of opinions (`plan.md` M8, `requirements.md` §5.2) — two layers.
+ * The concept model (`plan.md` M8, `requirements.md` §5.2) — two layers.
  *
- * **Layer 1 — a statement.** One entry's expression of a view on a subject,
+ * **Layer 1 — a statement.** One entry's contribution to a subject —
  * exactly like the other structures: extracted per entry, linked to it,
- * corrected by discarding. `statement` is a faithful summary of what *this
+ * corrected by discarding. `statement` is a faithful record of what *this
  * entry* said, never extended beyond it.
+ *
+ * **The per-person conversation-topics idea, folded in rather than built
+ * separately** (raised in `requirements.md` §11, resolved 2026-08-30):
+ * `kind` distinguishes a plain note or fact (`'note'`) from something to
+ * raise with the subject later (`'question'`) — the latter carries the
+ * exact same open/resolved lifecycle `OpenQuestion` already has, just
+ * scoped to a concept subject instead of existing as its own flat list.
+ * `status`/`resolvedEntryId`/`resolution` are `null` for a `'note'` — they
+ * exist at all only for `'question'` statements.
  */
 export interface OpinionStatement extends Published {
   id: string;
@@ -661,8 +760,25 @@ export interface OpinionStatement extends Published {
   statement: string;
   eventTime: string;
   eventTimeExplicit: boolean;
+  /** Decided once at extraction time, immutable afterward — the same
+   * "an approved category, not free content" treatment `subject` itself
+   * gets, not something a later re-extraction reclassifies. */
+  kind: 'note' | 'question';
+  /** `null` for `kind: 'note'`. For `kind: 'question'`, whether it's still
+   * open or a later entry has answered it — resolved automatically by the
+   * same extraction pipeline `OpenQuestion` uses, never inferred beyond
+   * what that later entry actually said. */
+  status: 'open' | 'resolved' | null;
+  /** The entry that resolved this question, or `null` while open or for a
+   * `'note'`. */
+  resolvedEntryId: string | null;
+  /** A faithful quote or summary of what the resolving entry actually
+   * said — never an answer inferred beyond that. `null` while open or for
+   * a `'note'`. */
+  resolution: string | null;
   /** Whether the user has reviewed, corrected, or edited this record
-   * (`requirements.md` §2, §6.4, `plan.md` M10). */
+   * (`requirements.md` §2, §6.4, `plan.md` M10). Reopening a resolved
+   * question counts as a touch, the same as `OpenQuestion`. */
   touched: boolean;
 }
 
@@ -947,7 +1063,8 @@ export interface CategorySuggestion {
   name: string;
   reason: string;
   entryId: string;
-  status: 'pending' | 'approved' | 'rejected';
+  /** `'parked'` (`plan.md` M18) — see `MetricFieldSuggestion.status`. */
+  status: 'pending' | 'approved' | 'rejected' | 'parked';
   suggestedAt: string;
 }
 

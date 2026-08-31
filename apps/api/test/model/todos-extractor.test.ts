@@ -86,10 +86,48 @@ beforeEach(() => {
   extractor = new TodosExtractor(todosIndex, modelClient);
 });
 
+describe('extractCandidates', () => {
+  it('shapes new-todo output into candidates without writing to the index', async () => {
+    modelClient.handler = () => ({
+      newTodos: [{ text: 'Call the dentist', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'medium', confidenceReason: 'implied commitment' }],
+    });
+    const result = await extractor.extractCandidates(entry('e1', 'Really should call the dentist.'));
+
+    expect(result.newTodos).toHaveLength(1);
+    expect(result.newTodos[0]).toMatchObject({ text: 'Call the dentist', confidence: 'medium' });
+    expect(result.completions).toEqual([]);
+    expect(todosIndex.list({ limit: 10 })).toEqual([]);
+  });
+
+  it('drops a completion citing an id that was never actually offered, before it ever becomes a candidate', async () => {
+    modelClient.handler = () => ({
+      completions: [{ todoId: 'not-a-real-id', resolution: 'x', confidence: 'high', confidenceReason: null }],
+    });
+    const result = await extractor.extractCandidates(entry('e1', 'x'));
+    expect(result.completions).toEqual([]);
+  });
+
+  it('keeps a completion candidate that cites a genuinely open id, without applying it', async () => {
+    modelClient.handler = () => ({
+      newTodos: [{ text: 'Call the dentist', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
+    });
+    await extractor.extractEntry(entry('e1', 'Need to call the dentist.'));
+    const [raised] = todosIndex.listOpen();
+
+    modelClient.handler = () => ({
+      completions: [{ todoId: raised!.id, resolution: 'Called them.', confidence: 'low', confidenceReason: 'uncertain link' }],
+    });
+    const result = await extractor.extractCandidates(entry('e2', 'x'));
+
+    expect(result.completions).toEqual([{ todoId: raised!.id, resolution: 'Called them.', confidence: 'low', confidenceReason: 'uncertain link' }]);
+    expect(todosIndex.getById(raised!.id)).toMatchObject({ status: 'open' });
+  });
+});
+
 describe('extractEntry', () => {
   it('raises a new open to-do when the model returns one', async () => {
     modelClient.handler = () => ({
-      newTodos: [{ text: 'Call the dentist', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      newTodos: [{ text: 'Call the dentist', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
 
     await extractor.extractEntry(entry('e1', 'Need to call the dentist.'));
@@ -112,13 +150,13 @@ describe('extractEntry', () => {
 
   it('completes an existing open, untouched to-do when the model cites its real, currently-open id', async () => {
     modelClient.handler = () => ({
-      newTodos: [{ text: 'Call the dentist', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true }],
+      newTodos: [{ text: 'Call the dentist', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e1', 'Need to call the dentist.'));
     const [raised] = todosIndex.listOpen();
 
     modelClient.handler = () => ({
-      completions: [{ todoId: raised!.id, resolution: 'Called and rescheduled for next week.' }],
+      completions: [{ todoId: raised!.id, resolution: 'Called and rescheduled for next week.', confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e2', 'Finally called the dentist and rescheduled for next week.'));
 
@@ -134,14 +172,14 @@ describe('extractEntry', () => {
 
   it('proposes a completion suggestion, rather than applying or dropping it, when the matched to-do is touched', async () => {
     modelClient.handler = () => ({
-      newTodos: [{ text: 'Call the dentist', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true }],
+      newTodos: [{ text: 'Call the dentist', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e1', 'Need to call the dentist.'));
     const [raised] = todosIndex.listOpen();
     todosIndex.validate(raised!.id, 'now');
 
     modelClient.handler = () => ({
-      completions: [{ todoId: raised!.id, resolution: 'Called and rescheduled for next week.' }],
+      completions: [{ todoId: raised!.id, resolution: 'Called and rescheduled for next week.', confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e2', 'Finally called the dentist and rescheduled for next week.'));
 
@@ -161,7 +199,7 @@ describe('extractEntry', () => {
 
   it('drops a completion citing an id that was never actually offered — never trusts a hallucinated citation', async () => {
     modelClient.handler = () => ({
-      completions: [{ todoId: 'not-a-real-id', resolution: 'This should never be stored.' }],
+      completions: [{ todoId: 'not-a-real-id', resolution: 'This should never be stored.', confidence: 'high', confidenceReason: null }],
     });
 
     await extractor.extractEntry(entry('e1', 'Some entry with nothing genuinely outstanding.'));
@@ -172,7 +210,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time for a malformed eventTime', async () => {
     modelClient.handler = () => ({
-      newTodos: [{ text: 'x', eventTime: 'not a timestamp', eventTimeExplicit: true }],
+      newTodos: [{ text: 'x', eventTime: 'not a timestamp', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e1', 'x', '2026-07-20T21:00:00+01:00'));
     const [record] = todosIndex.list({ limit: 10 });
@@ -181,11 +219,11 @@ describe('extractEntry', () => {
   });
 
   it('replaces only what this entry raised on a second extraction, leaving other entries’ to-dos alone', async () => {
-    modelClient.handler = () => ({ newTodos: [{ text: 'A', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true }] });
+    modelClient.handler = () => ({ newTodos: [{ text: 'A', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }] });
     await extractor.extractEntry(entry('e1', 'a'));
     await extractor.extractEntry(entry('e2', 'b'));
 
-    modelClient.handler = () => ({ newTodos: [{ text: 'A revised', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true }] });
+    modelClient.handler = () => ({ newTodos: [{ text: 'A revised', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }] });
     await extractor.extractEntry(entry('e1', 'a again'));
 
     const rows = todosIndex.list({ limit: 10 });
@@ -200,7 +238,7 @@ describe('extractEntry', () => {
 
     modelClient.handler = (prompt) => {
       expect(prompt).toContain(`[id: ${created.id}] Water the plants`);
-      return { completions: [{ todoId: created.id, resolution: 'Watered them today.' }] };
+      return { completions: [{ todoId: created.id, resolution: 'Watered them today.', confidence: 'high', confidenceReason: null }] };
     };
     await extractor.extractEntry(entry('e1', 'Watered the plants today.'));
 
@@ -215,7 +253,7 @@ describe('extractEntry', () => {
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.handler = () => ({
-      newTodos: [{ text: 'x', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      newTodos: [{ text: 'x', eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     });
     await extractor.extractEntry(entry('e1', 'x'));
     extractor.removeEntry('e1');
@@ -225,7 +263,7 @@ describe('removeEntry', () => {
 
 describe('reprocessAll', () => {
   it('extracts every entry and clears what came before', async () => {
-    modelClient.handler = () => ({ newTodos: [{ text: 'x', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true }] });
+    modelClient.handler = () => ({ newTodos: [{ text: 'x', eventTime: '2026-07-20T20:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }] });
     await extractor.extractEntry(entry('stale', 'leftover'));
 
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b')]);
@@ -238,12 +276,14 @@ describe('reprocessAll', () => {
     modelClient.handler = (prompt) => {
       if (prompt.includes('Need to switch my car insurance.')) {
         return {
-          newTodos: [{ text: 'Switch car insurance', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true }],
+          newTodos: [{ text: 'Switch car insurance', eventTime: '2026-01-01T00:00:00Z', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
         };
       }
       if (prompt.includes('Finally switched car insurance.')) {
         const match = /\[id: (\S+)\] Switch car insurance/.exec(prompt);
-        return match ? { completions: [{ todoId: match[1]!, resolution: 'Switched to a cheaper provider.' }] } : {};
+        return match
+          ? { completions: [{ todoId: match[1]!, resolution: 'Switched to a cheaper provider.', confidence: 'high', confidenceReason: null }] }
+          : {};
       }
       return {};
     };

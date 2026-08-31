@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CONFIDENCE_PROMPT_PARAGRAPH, CONFIDENCE_REASON_SCHEMA, CONFIDENCE_SCHEMA } from './confidence.js';
 
 /**
  * The second derived structure (`plan.md` M8, `requirements.md` §5.2):
@@ -82,6 +83,8 @@ function buildReviewSchema(approvedMedia: readonly string[]) {
             'true only if the entry itself states or implies when this was encountered; false if ' +
               "eventTime was defaulted to the entry's own written time.",
           ),
+        confidence: CONFIDENCE_SCHEMA,
+        confidenceReason: CONFIDENCE_REASON_SCHEMA,
       }),
     ),
     suggestedCategory: SuggestedCategorySchema,
@@ -90,9 +93,9 @@ function buildReviewSchema(approvedMedia: readonly string[]) {
 export type ReviewExtractionResult = z.infer<ReturnType<typeof buildReviewSchema>>;
 
 function buildReviewSystemPrompt(approvedMedia: readonly string[]): string {
-  return `You extract reviews and opinions of specific named works from a personal journal entry — things like films, books, or music that are explicitly reviewed or reacted to.
+  return `You extract reviews and opinions of specific named works from a personal journal entry — things like films, books, or music that are reviewed or reacted to.
 
-The only approved media right now are: ${approvedMedia.join(', ')}. Only extract something the entry actually names and reacts to — never infer a title, medium, or rating that was not stated. If the entry mentions no reviewable work, return an empty list.
+The only approved media right now are: ${approvedMedia.join(', ')}. ${CONFIDENCE_PROMPT_PARAGRAPH} If the entry names no reviewable work at all, return an empty list.
 
 Each encounter is its own record, even for something reviewed before. If the entry reviews two different films, that is two records.
 

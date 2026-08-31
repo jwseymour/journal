@@ -28,6 +28,10 @@
   font-size: var(--text-xs);
 }
 
+/* Decorative, for peace of mind (`plan.md` M18) — autosave already means
+ * there is rarely anything genuinely unsaved; this button exists so a
+ * writer never has to wonder. */
+.saveButton,
 .finish {
   padding: var(--space-3xs) var(--space-xs);
   border: var(--hairline) solid var(--rule-strong);
@@ -41,11 +45,13 @@
     color var(--motion-fast) var(--ease);
 }
 
+.saveButton:hover:not(:disabled),
 .finish:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
 
+.saveButton:disabled,
 .finish:disabled {
   /* `--ink-faint` does not clear AA, which is exactly why its use is confined
    * to placeholders and disabled states (`design.md` §2.3). */

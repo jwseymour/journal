@@ -114,6 +114,12 @@ export interface ListItemsReader {
   untouch(id: string, now: string): void;
   listUpdateSuggestions(options?: { status?: ListItemUpdateSuggestion['status'] }): ListItemUpdateSuggestion[];
   decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** Every current row for one entry, touched or not (`plan.md` M18) — see
+   * `MetricsReader.liveForEntry` for the full reasoning. */
+  liveForEntry(entryId: string): ListItemRecord[];
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsReader.insertApproved` for the full reasoning. */
+  insertApproved(record: ListItemRecord): void;
 }
 
 export class ListsIndex implements ListItemsReader {
@@ -224,6 +230,13 @@ export class ListsIndex implements ListItemsReader {
     const rows = this.#db
       .prepare('SELECT * FROM list_items WHERE entry_id = ? AND touched = 1')
       .all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
+  /** Every current row for one entry, touched or not (`plan.md` M18) — see
+   * `MetricsIndex.liveForEntry` for the full reasoning. */
+  liveForEntry(entryId: string): ListItemRecord[] {
+    const rows = this.#db.prepare('SELECT * FROM list_items WHERE entry_id = ?').all(entryId) as RawRow[];
     return rows.map(fromRaw);
   }
 
@@ -364,6 +377,31 @@ export class ListsIndex implements ListItemsReader {
   summarize(approvedTypes: readonly string[]): ListTypeSummary[] {
     const stmt = this.#db.prepare('SELECT COUNT(*) AS n FROM list_items WHERE list_type = ?');
     return approvedTypes.map((listType) => ({ listType, count: (stmt.get(listType) as { n: number }).n }));
+  }
+
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsIndex.insertApproved` for the full reasoning; identical shape
+   * here. */
+  insertApproved(record: ListItemRecord): void {
+    this.#db
+      .prepare(
+        `INSERT INTO list_items
+           (id, entry_id, list_type, text, context, importance, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
+         VALUES (@id, @entryId, @listType, @text, @context, @importance, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @touched)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        listType: record.listType,
+        text: record.text,
+        context: record.context,
+        importance: record.importance,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+        touched: record.touched ? 1 : 0,
+      });
   }
 
   /** Restores one touched record from the durable off-index mirror

@@ -260,6 +260,7 @@ describe('publishing a derived-structure record (`plan.md` M16)', () => {
         eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
         eventTimeExplicit: true,
         extractedAt: nowTimestamp().canonical,
+        kind: 'note',
         touched: false,
       },
     ]);

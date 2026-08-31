@@ -1,0 +1,13 @@
+/* No literal values. Everything references a token (`design.md` §6.2). */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.intro {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}

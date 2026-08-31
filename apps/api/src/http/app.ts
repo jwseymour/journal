@@ -11,6 +11,7 @@ import { createSessionToken, verifySessionToken } from '../auth/session.js';
 import type {
   AddAttachmentResponse,
   ApiError,
+  ApproveBatchResponse,
   ApproveCategoryRequest,
   CategoriesResponse,
   ChatResponse,
@@ -21,6 +22,7 @@ import type {
   Entry,
   EntryPage,
   EntryPeriodsResponse,
+  EntryStatusResponse,
   HealthResponse,
   ListItemsResponse,
   ListItemUpdateSuggestionsResponse,
@@ -36,6 +38,7 @@ import type {
   OpinionStatementUpdateSuggestionsResponse,
   OpinionSubjectSummariesResponse,
   OpinionSummariesResponse,
+  PendingItemsResponse,
   ProcessEntryResponse,
   PublishDocumentResponse,
   PublishQueueResponse,
@@ -63,11 +66,13 @@ import type {
 import type { Config } from '../config.js';
 import { AppError, invalidRequest, recordNotFound, unauthorized } from '../errors.js';
 import type { CategoriesReader, CoreStructureType } from '../index/categories-index.js';
+import type { EntryProcessingStatusReader } from '../index/entry-processing-status-index.js';
 import type { ListItemsReader } from '../index/lists-index.js';
 import { resolveNumericField, type MetricFieldsReader } from '../index/metric-fields-index.js';
 import type { MetricsReader } from '../index/metrics-index.js';
 import type { OpinionStatementsReader } from '../index/opinion-statements-index.js';
 import type { OpinionSummariesReader } from '../index/opinion-summaries-index.js';
+import type { PendingItemsReader } from '../index/pending-items-index.js';
 import type { PublishableSourceType } from '../index/published-index.js';
 import type { QuestionsReader } from '../index/questions-index.js';
 import type { ReviewsReader } from '../index/reviews-index.js';
@@ -75,7 +80,8 @@ import type { TodosReader } from '../index/todos-index.js';
 import type { VisibilityDefaultsReader } from '../index/visibility-defaults-index.js';
 import type { TouchedMirror } from '../durable/touched-mirror.js';
 import type { ChatAnswerer } from '../model/chat-orchestrator.js';
-import type { EntryProcessing } from '../model/entry-processor.js';
+import type { PendingItemApplying } from '../model/pending-item-applier.js';
+import type { LivePendingProcessing } from '../model/pending-processor.js';
 import type { Publisher } from '../publish/publisher.js';
 import { isUlid, ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
@@ -373,17 +379,21 @@ const ChatRequestSchema = z
   })
   .strict();
 
-function entryResponse(entry: {
-  id: string;
-  created: string;
-  location?: { lat: number; lon: number };
-  body: string;
-  contentHash: string;
-}): Entry {
+function entryResponse(
+  entry: {
+    id: string;
+    created: string;
+    location?: { lat: number; lon: number };
+    body: string;
+    contentHash: string;
+  },
+  published: boolean,
+): Entry {
   return {
     id: entry.id,
     created: entry.created,
     ...(entry.location ? { location: entry.location } : {}),
+    published,
     body: entry.body,
     contentHash: entry.contentHash,
   };
@@ -461,7 +471,10 @@ export function createApp(
   opinionSummaries: OpinionSummariesReader,
   questions: QuestionsReader,
   todos: TodosReader,
-  processor: EntryProcessing,
+  pendingProcessor: LivePendingProcessing,
+  pendingItems: PendingItemsReader,
+  pendingItemApplier: PendingItemApplying,
+  entryProcessingStatus: EntryProcessingStatusReader,
   chat: ChatAnswerer,
   publisher: Publisher,
   visibilityDefaults: VisibilityDefaultsReader,
@@ -745,7 +758,7 @@ export function createApp(
     if (!entry) {
       return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
     }
-    return c.json(entryResponse(entry));
+    return c.json(entryResponse(entry, publisher.isPublished('entry', entry.id)));
   });
 
   app.put('/entries/:id', async (c) => {
@@ -773,7 +786,7 @@ export function createApp(
     // sync inline — a published entry that changes should never silently
     // drift from what the public surface serves (`plan.md` M15).
     await publisher.resyncIfPublished('entry', id);
-    const response: UpdateEntryResponse = entryResponse(entry);
+    const response: UpdateEntryResponse = entryResponse(entry, publisher.isPublished('entry', entry.id));
     return c.json(response);
   });
 
@@ -833,13 +846,20 @@ export function createApp(
   });
 
   /**
-   * Live, single-entry extraction (`plan.md` M15) — every structure type,
-   * for this one entry. Safe to call more than once on the same entry: a
-   * touched record is never silently overwritten, only ever offered an
-   * update suggestion (`requirements.md` §6.4), so this is exactly what
-   * runs both right after finishing a new entry and after finishing an edit
-   * to an existing one. Fails as `extraction_failed` (503) if
-   * `AI_GATEWAY_API_KEY` is not configured — see `UnconfiguredModelClient`.
+   * Live, single-entry extraction (`plan.md` M15, rewritten M18) — every
+   * structure type, for this one entry. **No longer commits anything
+   * directly**: every candidate becomes a `PendingExtractionItem` awaiting
+   * explicit approval (`GET/POST /pending-items*` below) — the mechanism
+   * behind `requirements.md` §6.1's rewrite. No longer triggered
+   * automatically by finishing a new entry or an edit either — a visible
+   * **Process** button is now the only trigger (`plan.md` M18), so this
+   * route is reached only by an explicit user action, never as a side
+   * effect of writing. Safe to call more than once on the same entry: a
+   * fresh run supersedes any still-undecided leftovers from an earlier run
+   * on the same entry and diffs its candidates against everything already
+   * live, not only what has been touched (`LivePendingProcessor`'s own
+   * comment). Fails as `extraction_failed` (503) if `AI_GATEWAY_API_KEY` is
+   * not configured — see `UnconfiguredModelClient`.
    */
   app.post('/entries/:id/process', async (c) => {
     const id = c.req.param('id');
@@ -848,7 +868,108 @@ export function createApp(
       return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
     }
 
-    const response: ProcessEntryResponse = await processor.processEntry(entry);
+    const result = await pendingProcessor.processEntry(entry);
+    entryProcessingStatus.recordProcessed(entry.id, entry.contentHash, nowTimestamp().canonical);
+    const response: ProcessEntryResponse = result;
+    return c.json(response);
+  });
+
+  /**
+   * Whether a live Process run is current for this entry (`plan.md` M18) —
+   * compares the entry's present `contentHash` against the hash recorded
+   * the last time a run completed. `'never_processed'` if no run has ever
+   * completed at all. Says nothing about whether that run's pending items
+   * were ever approved — "processed" means "a run happened," not "fully
+   * reviewed" (`EntryProcessingStatusIndex`'s own comment).
+   */
+  app.get('/entries/:id/status', async (c) => {
+    const id = c.req.param('id');
+    const entry = isUlid(id) ? await store.get(id) : null;
+    if (!entry) {
+      return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
+    }
+
+    const status = entryProcessingStatus.get(entry.id);
+    const state: EntryStatusResponse['state'] = !status
+      ? 'never_processed'
+      : status.lastProcessedContentHash === entry.contentHash
+        ? 'up_to_date'
+        : 'stale';
+    const response: EntryStatusResponse = { state };
+    return c.json(response);
+  });
+
+  const PENDING_ITEM_STRUCTURE_TYPES = ['metric', 'review', 'list_item', 'opinion_statement', 'question', 'todo'] as const;
+  const PENDING_ITEM_STATUSES = ['pending', 'approved', 'rejected', 'superseded'] as const;
+
+  /**
+   * Every candidate a live `POST /entries/:id/process` run produced, still
+   * awaiting a decision or already decided (`plan.md` M18) — powers both
+   * the popup (`entryId` given) and the fallback queue
+   * (`status=pending`, unscoped) with the same one query.
+   */
+  app.get('/pending-items', async (c) => {
+    const entryId = c.req.query('entryId');
+    const rawStructureType = c.req.query('structureType');
+    const rawStatus = c.req.query('status');
+    if (rawStructureType !== undefined && !PENDING_ITEM_STRUCTURE_TYPES.includes(rawStructureType as (typeof PENDING_ITEM_STRUCTURE_TYPES)[number])) {
+      throw invalidRequest(`'structureType' must be one of: ${PENDING_ITEM_STRUCTURE_TYPES.join(', ')}.`);
+    }
+    if (rawStatus !== undefined && !PENDING_ITEM_STATUSES.includes(rawStatus as (typeof PENDING_ITEM_STATUSES)[number])) {
+      throw invalidRequest(`'status' must be one of: ${PENDING_ITEM_STATUSES.join(', ')}.`);
+    }
+
+    const items = pendingItems.list({
+      ...(entryId ? { entryId } : {}),
+      ...(rawStructureType ? { structureType: rawStructureType as (typeof PENDING_ITEM_STRUCTURE_TYPES)[number] } : {}),
+      ...(rawStatus ? { status: rawStatus as (typeof PENDING_ITEM_STATUSES)[number] } : {}),
+    });
+    const response: PendingItemsResponse = { items };
+    return c.json(response);
+  });
+
+  /** Approving flips the row's status, then commits the actual change via
+   * `PendingItemApplier` — the only place that translation happens
+   * (`plan.md` M18). A no-op, not an error, if `id` is not currently
+   * pending, the same tolerance every other `decide`-shaped route already
+   * has. */
+  app.post('/pending-items/:id/approve', async (c) => {
+    const now = nowTimestamp().canonical;
+    const decided = pendingItems.decide(c.req.param('id'), 'approved', now);
+    if (decided) await pendingItemApplier.apply(decided, now);
+    return c.body(null, 204);
+  });
+
+  app.post('/pending-items/:id/reject', async (c) => {
+    pendingItems.decide(c.req.param('id'), 'rejected', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  const ApproveBatchSchema = z.object({ ids: z.array(z.string().min(1)) }).strict();
+
+  /** What makes "approve all pending metrics" one click (`plan.md` M18) —
+   * each id is approved and applied independently, so one bad item in the
+   * batch cannot block the rest; `failed` reports which ones, and why,
+   * rather than the whole request failing. */
+  app.post('/pending-items/approve-batch', async (c) => {
+    const { ids } = await parseUpdateBody(c, ApproveBatchSchema);
+    const now = nowTimestamp().canonical;
+    const approved: string[] = [];
+    const failed: { id: string; error: string }[] = [];
+    for (const id of ids) {
+      try {
+        const decided = pendingItems.decide(id, 'approved', now);
+        if (!decided) {
+          failed.push({ id, error: 'Not currently pending.' });
+          continue;
+        }
+        await pendingItemApplier.apply(decided, now);
+        approved.push(id);
+      } catch (error) {
+        failed.push({ id, error: error instanceof Error ? error.message : 'Unknown error.' });
+      }
+    }
+    const response: ApproveBatchResponse = { approved, failed };
     return c.json(response);
   });
 
@@ -1162,13 +1283,13 @@ export function createApp(
   app.get('/metrics/fields/suggestions', async (c) => {
     const metric = c.req.query('metric');
     const rawStatus = c.req.query('status');
-    if (rawStatus !== undefined && !['pending', 'approved', 'rejected'].includes(rawStatus)) {
-      throw invalidRequest("'status' must be one of: pending, approved, rejected.");
+    if (rawStatus !== undefined && !['pending', 'approved', 'rejected', 'parked'].includes(rawStatus)) {
+      throw invalidRequest("'status' must be one of: pending, approved, rejected, parked.");
     }
 
     const suggestions = metricFields.listSuggestions({
       ...(metric ? { metric } : {}),
-      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' } : {}),
+      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' | 'parked' } : {}),
     });
     const response: MetricFieldSuggestionsResponse = { suggestions };
     return c.json(response);
@@ -1181,6 +1302,14 @@ export function createApp(
 
   app.post('/metrics/fields/suggestions/:id/reject', async (c) => {
     metricFields.decide(c.req.param('id'), 'rejected', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  /** Set aside to reconsider later, neither approved nor rejected
+   * (`plan.md` M18) — a plain, passive shelf with no reminders or
+   * resurfacing (non-negotiable #12). */
+  app.post('/metrics/fields/suggestions/:id/park', async (c) => {
+    metricFields.decide(c.req.param('id'), 'parked', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 
@@ -1226,12 +1355,12 @@ export function createApp(
     const field = metricFields.get(c.req.param('id'));
     if (!field) return c.json({ suggestions: [] });
     const rawStatus = c.req.query('status');
-    if (rawStatus !== undefined && !['pending', 'approved', 'rejected'].includes(rawStatus)) {
-      throw invalidRequest("'status' must be one of: pending, approved, rejected.");
+    if (rawStatus !== undefined && !['pending', 'approved', 'rejected', 'parked'].includes(rawStatus)) {
+      throw invalidRequest("'status' must be one of: pending, approved, rejected, parked.");
     }
     const suggestions = categories.listSuggestions({
       structureType: `metric_field:${field.metric}:${field.fieldKey}`,
-      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' } : {}),
+      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' | 'parked' } : {}),
     });
     const response: SuggestionsResponse = { suggestions };
     return c.json(response);
@@ -1466,6 +1595,10 @@ export function createApp(
         statement: record.statement,
         eventTime: record.eventTime,
         eventTimeExplicit: record.eventTimeExplicit,
+        kind: record.kind,
+        status: record.status,
+        resolvedEntryId: record.resolvedEntryId,
+        resolution: record.resolution,
         touched: record.touched,
         published: publisher.isPublished('opinion_statement', record.id),
       })),
@@ -1506,6 +1639,19 @@ export function createApp(
     const id = c.req.param('id');
     if (isUlid(id)) {
       opinionStatements.untouch(id, nowTimestamp().canonical);
+      await touchedMirror.sync('opinion_statement', id);
+    }
+    return c.body(null, 204);
+  });
+
+  // Manual-only, mirrors `POST /questions/:id/reopen` — a `kind: 'question'`
+  // statement only ever becomes resolved via the pending-item pipeline, but
+  // reopening one (deciding it isn't actually settled) is a direct action,
+  // same as questions.
+  app.post('/opinions/statements/:id/reopen', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) {
+      opinionStatements.reopen(id);
       await touchedMirror.sync('opinion_statement', id);
     }
     return c.body(null, 204);
@@ -1887,13 +2033,13 @@ export function createApp(
       throw invalidRequest(`'structureType' must be one of: ${STRUCTURE_TYPES.join(', ')}.`);
     }
     const rawStatus = c.req.query('status');
-    if (rawStatus !== undefined && !['pending', 'approved', 'rejected'].includes(rawStatus)) {
-      throw invalidRequest("'status' must be one of: pending, approved, rejected.");
+    if (rawStatus !== undefined && !['pending', 'approved', 'rejected', 'parked'].includes(rawStatus)) {
+      throw invalidRequest("'status' must be one of: pending, approved, rejected, parked.");
     }
 
     const suggestions = categories.listSuggestions({
       ...(rawStructureType ? { structureType: rawStructureType as StructureType } : {}),
-      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' } : {}),
+      ...(rawStatus ? { status: rawStatus as 'pending' | 'approved' | 'rejected' | 'parked' } : {}),
     });
     // An explicit filter is already validated against the 4 core types
     // above, so this only ever trims the unfiltered case: metric-field enum
@@ -1914,6 +2060,14 @@ export function createApp(
 
   app.post('/categories/suggestions/:id/reject', async (c) => {
     categories.decide(c.req.param('id'), 'rejected', nowTimestamp().canonical);
+    return c.body(null, 204);
+  });
+
+  /** Set aside to reconsider later (`plan.md` M18) — see
+   * `/metrics/fields/suggestions/:id/park`'s comment. Covers enum field
+   * values too, which reuse this exact mechanism (see the route above). */
+  app.post('/categories/suggestions/:id/park', async (c) => {
+    categories.decide(c.req.param('id'), 'parked', nowTimestamp().canonical);
     return c.body(null, 204);
   });
 

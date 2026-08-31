@@ -83,6 +83,35 @@ beforeEach(() => {
   extractor = new ListsExtractor(listsIndex, categoriesIndex, modelClient);
 });
 
+describe('extractCandidates', () => {
+  it('shapes model output into candidates without writing to the index', async () => {
+    modelClient.result = {
+      items: [
+        { listType: 'quote', text: 'Say it plainly.', context: 'from a conversation', importance: null, eventTime: '2026-07-20T09:00:00+01:00', eventTimeExplicit: true, confidence: 'medium', confidenceReason: 'marginal candidate' },
+      ],
+    };
+    const result = await extractor.extractCandidates(entry('e1', 'Someone said: say it plainly.'));
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ text: 'Say it plainly.', confidence: 'medium' });
+    expect(listsIndex.list({ limit: 10 })).toEqual([]);
+  });
+
+  it('extractEntry still produces the exact same committed records as before this split', async () => {
+    modelClient.result = {
+      items: [
+        { listType: 'quote', text: 'Say it plainly.', context: '', importance: null, eventTime: '2026-07-20T09:00:00+01:00', eventTimeExplicit: true, confidence: 'low', confidenceReason: 'guessed' },
+      ],
+    };
+    await extractor.extractEntry(entry('e1', 'Someone said: say it plainly.'));
+
+    const [record] = listsIndex.list({ limit: 10 });
+    expect(record).not.toHaveProperty('confidence');
+    expect(record).not.toHaveProperty('confidenceReason');
+    expect(record).toMatchObject({ text: 'Say it plainly.', touched: false });
+  });
+});
+
 describe('extractEntry', () => {
   it('stores a record for each item the model returns, verbatim text preserved', async () => {
     modelClient.result = {
@@ -94,6 +123,8 @@ describe('extractEntry', () => {
           importance: null,
           eventTime: '2026-07-20T20:00:00+01:00',
           eventTimeExplicit: true,
+          confidence: 'high',
+          confidenceReason: null,
         },
       ],
     };
@@ -118,6 +149,8 @@ describe('extractEntry', () => {
           importance: 5,
           eventTime: '2026-07-20T20:00:00+01:00',
           eventTimeExplicit: true,
+          confidence: 'high',
+          confidenceReason: null,
         },
       ],
     };
@@ -133,7 +166,7 @@ describe('extractEntry', () => {
 
   it('falls back to the entry’s own written time for a malformed eventTime', async () => {
     modelClient.result = {
-      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: 'not a timestamp', eventTimeExplicit: true }],
+      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: 'not a timestamp', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'x', '2026-07-20T21:00:00+01:00'));
     const [record] = listsIndex.list({ limit: 10 });
@@ -158,7 +191,7 @@ describe('extractEntry', () => {
 describe('removeEntry', () => {
   it('delegates straight to the index', async () => {
     modelClient.result = {
-      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     };
     await extractor.extractEntry(entry('e1', 'x'));
     extractor.removeEntry('e1');
@@ -170,7 +203,7 @@ describe('reprocessAll', () => {
   it('extracts every entry and clears what came before', async () => {
     await extractor.extractEntry(entry('stale', 'leftover'));
     modelClient.result = {
-      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true }],
+      items: [{ listType: 'quote', text: 'x', context: '', importance: null, eventTime: '2026-07-20T20:00:00+01:00', eventTimeExplicit: true, confidence: 'high', confidenceReason: null }],
     };
     const store = new FakeEntryStore([entry('e1', 'a'), entry('e2', 'b')]);
 

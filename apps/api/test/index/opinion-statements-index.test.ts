@@ -18,6 +18,11 @@ const record = (overrides: Partial<Omit<OpinionStatementRecord, 'entryId'>> = {}
   eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
   eventTimeExplicit: true,
   extractedAt: '2026-07-20T21:00:00+01:00',
+  kind: 'note',
+  status: null,
+  resolvedEntryId: null,
+  resolution: null,
+  resolvedAt: null,
   touched: false,
   ...overrides,
 });
@@ -75,6 +80,77 @@ describe('removeEntry / remove', () => {
 
   it('remove is a no-op for an id that does not exist', () => {
     expect(() => index.remove('never-existed')).not.toThrow();
+  });
+});
+
+describe('conversation topics — kind: "question" (requirements.md §11, resolved 2026-08-30)', () => {
+  it('listOpenQuestions returns only open questions, oldest first, never notes', () => {
+    index.replaceEntry('e1', [
+      record({ id: 'q1', kind: 'question', status: 'open', eventEpochMs: 2000 }),
+      record({ id: 'note1', kind: 'note', status: null, eventEpochMs: 1500 }),
+    ]);
+    index.replaceEntry('e2', [record({ id: 'q2', kind: 'question', status: 'open', eventEpochMs: 1000 })]);
+    expect(index.listOpenQuestions().map((r) => r.id)).toEqual(['q2', 'q1']);
+  });
+
+  it('resolveApproved resolves an open question and forces touched', () => {
+    index.replaceEntry('e1', [record({ id: 'q1', kind: 'question', status: 'open' })]);
+    index.resolveApproved('q1', { resolvedEntryId: 'e2', resolution: 'Turned out fine.', resolvedAt: '2026-07-21T00:00:00Z' });
+    expect(index.getById('q1')).toMatchObject({
+      status: 'resolved',
+      resolvedEntryId: 'e2',
+      resolution: 'Turned out fine.',
+      touched: true,
+    });
+    expect(index.listOpenQuestions()).toEqual([]);
+  });
+
+  it('resolveApproved is a no-op for a note or an already-resolved question', () => {
+    index.replaceEntry('e1', [record({ id: 'note1', kind: 'note', status: null })]);
+    index.resolveApproved('note1', { resolvedEntryId: 'e2', resolution: 'x', resolvedAt: '2026-07-21T00:00:00Z' });
+    expect(index.getById('note1')).toMatchObject({ status: null, resolution: null });
+  });
+
+  it('resolve (reprocess path) never overwrites an already-touched question', () => {
+    index.replaceEntry('e1', [record({ id: 'q1', kind: 'question', status: 'open' })]);
+    index.validate('q1', '2026-07-20T00:00:00Z');
+    index.resolve('q1', { resolvedEntryId: 'e2', resolution: 'x', resolvedAt: '2026-07-21T00:00:00Z' });
+    expect(index.getById('q1')).toMatchObject({ status: 'open', resolution: null });
+  });
+
+  it('reopen clears the resolution and counts as a touch', () => {
+    index.replaceEntry('e1', [record({ id: 'q1', kind: 'question', status: 'open' })]);
+    index.resolveApproved('q1', { resolvedEntryId: 'e2', resolution: 'x', resolvedAt: '2026-07-21T00:00:00Z' });
+    index.reopen('q1');
+    expect(index.getById('q1')).toMatchObject({ status: 'open', resolvedEntryId: null, resolution: null, touched: true });
+  });
+
+  it('reopen is a no-op for a note or an already-open question', () => {
+    index.replaceEntry('e1', [record({ id: 'note1', kind: 'note', status: null })]);
+    index.reopen('note1');
+    expect(index.getById('note1')).toMatchObject({ status: null, touched: false });
+  });
+
+  it('replaceEntry never deletes a row this entry raised that a later entry has since resolved', () => {
+    index.replaceEntry('e1', [record({ id: 'q1', kind: 'question', status: 'open', statement: 'Original.' })]);
+    index.resolveApproved('q1', { resolvedEntryId: 'e2', resolution: 'Answered.', resolvedAt: '2026-07-21T00:00:00Z' });
+    // Re-extracting e1 (the raiser) must not clobber the resolution e2 gave it.
+    index.replaceEntry('e1', [record({ id: 'q1-new', kind: 'note', statement: 'Re-extracted differently.' })]);
+    expect(index.getById('q1')).toMatchObject({ status: 'resolved', resolution: 'Answered.' });
+  });
+
+  it('replaceUntouchedForEntry has the same resolved-row guard', () => {
+    index.replaceEntry('e1', [record({ id: 'q1', kind: 'question', status: 'open' })]);
+    index.resolveApproved('q1', { resolvedEntryId: 'e2', resolution: 'Answered.', resolvedAt: '2026-07-21T00:00:00Z' });
+    index.replaceUntouchedForEntry('e1', [record({ id: 'q1-new', kind: 'note' })]);
+    expect(index.getById('q1')).toMatchObject({ status: 'resolved', resolution: 'Answered.' });
+  });
+
+  it('removeEntry reopens anything the removed entry had resolved, before deleting what it raised', () => {
+    index.replaceEntry('e1', [record({ id: 'q1', kind: 'question', status: 'open' })]);
+    index.resolveApproved('q1', { resolvedEntryId: 'e2', resolution: 'Answered.', resolvedAt: '2026-07-21T00:00:00Z' });
+    index.removeEntry('e2');
+    expect(index.getById('q1')).toMatchObject({ status: 'open', resolvedEntryId: null, resolution: null });
   });
 });
 

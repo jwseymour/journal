@@ -3,26 +3,51 @@ import type { ReviewRecord, ReviewsIndex } from '../index/reviews-index.js';
 import { ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
 import type { EntryStore } from '../store/entry-store.js';
+import type { Confidence } from './confidence.js';
 import { resolveEventTime } from './event-time.js';
 import type { ModelClient } from './model-client.js';
-import { buildExtractionPrompt, buildReviewExtractionRequest } from './reviews.js';
+import { buildExtractionPrompt, buildReviewExtractionRequest, type ReviewExtractionResult } from './reviews.js';
 
 const PAGE_SIZE = 100;
 
+/** One review candidate from a live Process run (`plan.md` M18) — see
+ * `MetricCandidate` in `extractor.ts` for the full reasoning. */
+export interface ReviewCandidate {
+  id: string;
+  title: string;
+  medium: string;
+  rating: number | null;
+  progress: number | null;
+  opinion: string;
+  eventTime: string;
+  eventEpochMs: number;
+  eventTimeExplicit: boolean;
+  extractedAt: string;
+  confidence: Confidence;
+  confidenceReason: string | null;
+}
+
+export interface ReviewExtractionCandidates {
+  extractedAt: string;
+  candidates: ReviewCandidate[];
+  suggestedCategory: ReviewExtractionResult['suggestedCategory'];
+}
+
 /**
- * Turns one entry's body into review records via `ModelClient` — the same
+ * Turns one entry's body into review candidates via `ModelClient` — the same
  * shape as `Extractor` (`plan.md` M7's temporal metrics), a deliberately
  * separate class rather than a shared generic: the record shape (title,
  * medium, rating, opinion) is different enough from a temporal metric's
  * (metric, detail) that a generic abstraction would mostly be indirection.
  * What genuinely is identical — event-time resolution — is already shared,
- * via `resolveEventTime`.
+ * via `resolveEventTime`. `extractCandidates`/`extractEntry` split the same
+ * way as `Extractor`'s — see that file for the full reasoning.
  *
  * Never wired into autosave — a paid call on every keystroke would be both
  * wasteful and a surprise on the user's bill. Reached two ways instead:
  * `reprocessAll` (`npm run reprocess`, batch, corpus-wide) and
- * `EntryProcessor` (`POST /entries/:id/process`, live, one entry, only ever
- * on an explicit user action — `plan.md` M15).
+ * `LivePendingProcessor` (`POST /entries/:id/process`, live, one entry, only
+ * ever on an explicit user action — `plan.md` M15, M18).
  */
 export class ReviewsExtractor {
   readonly #reviewsIndex: ReviewsIndex;
@@ -35,13 +60,15 @@ export class ReviewsExtractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ reviewCount: number }> {
+  /** The pure model-call-and-shape step (`plan.md` M18) — see
+   * `Extractor.extractCandidates` for the full reasoning. */
+  async extractCandidates(entry: { id: string; created: string; body: string }): Promise<ReviewExtractionCandidates> {
     const approvedMedia = this.#categoriesIndex.approvedNames('review_medium');
     const { schema, system } = buildReviewExtractionRequest(approvedMedia);
     const result = await this.#modelClient.extract({ schema, system, prompt: buildExtractionPrompt(entry) });
 
     const extractedAt = nowTimestamp().canonical;
-    const records: Omit<ReviewRecord, 'entryId'>[] = result.reviews.map((review) => {
+    const candidates: ReviewCandidate[] = result.reviews.map((review) => {
       const resolved = resolveEventTime(review.eventTime, review.eventTimeExplicit, entry.created);
       return {
         id: ulid(Date.now()),
@@ -52,9 +79,30 @@ export class ReviewsExtractor {
         opinion: review.opinion,
         ...resolved,
         extractedAt,
-        touched: false,
+        confidence: review.confidence,
+        confidenceReason: review.confidenceReason,
       };
     });
+
+    return { extractedAt, candidates, suggestedCategory: result.suggestedCategory };
+  }
+
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ reviewCount: number }> {
+    const { extractedAt, candidates, suggestedCategory } = await this.extractCandidates(entry);
+    const records: Omit<ReviewRecord, 'entryId'>[] = candidates.map((candidate) => ({
+      id: candidate.id,
+      title: candidate.title,
+      medium: candidate.medium,
+      rating: candidate.rating,
+      progress: candidate.progress,
+      opinion: candidate.opinion,
+      eventTime: candidate.eventTime,
+      eventEpochMs: candidate.eventEpochMs,
+      eventTimeExplicit: candidate.eventTimeExplicit,
+      extractedAt: candidate.extractedAt,
+      touched: false,
+    }));
+    const result = { suggestedCategory };
 
     // See `Extractor.extractEntry` for the full reasoning — touched records
     // are protected from reprocess; a clean 1:1 match against fresh output

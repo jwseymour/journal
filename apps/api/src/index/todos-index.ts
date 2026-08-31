@@ -174,6 +174,20 @@ export interface TodosReader {
   decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
   listCompletionSuggestions(options?: { status?: TodoCompletionSuggestion['status'] }): TodoCompletionSuggestion[];
   decideCompletion(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** Every currently open to-do raised by this entry, touched or not
+   * (`plan.md` M18) — the live-diff counterpart to `touchedOpenRaisedBy`,
+   * see `MetricsReader.liveForEntry` for the full reasoning. */
+  openRaisedBy(entryId: string): TodoRecord[];
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsReader.insertApproved` for the full reasoning. Always
+   * `origin: 'extracted'`: a `'new'` candidate only ever comes from an
+   * entry (`createDirect` remains the one and only path for a user-authored
+   * to-do, unchanged by this milestone). */
+  insertApproved(record: TodoRecord): void;
+  /** Applies an approved pending `'completion'` item (`plan.md` M18) — see
+   * the concrete class for why this bypasses `completeFromExtraction`'s
+   * guard. */
+  completeApproved(id: string, completion: { doneEntryId: string; resolution: string; doneAt: string }): void;
 }
 
 export class TodosIndex implements TodosReader {
@@ -309,6 +323,16 @@ export class TodosIndex implements TodosReader {
     return rows.map(fromRaw);
   }
 
+  /** Every currently open to-do raised by this entry, touched or not
+   * (`plan.md` M18) — see `MetricsIndex.liveForEntry` for the full
+   * reasoning. */
+  openRaisedBy(entryId: string): TodoRecord[] {
+    const rows = this.#db
+      .prepare("SELECT * FROM todos WHERE entry_id = ? AND status = 'open'")
+      .all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
   /** A to-do created directly in the UI, with no source entry
    * (`requirements.md` §11, the deliberate exception to "origination is
    * always automatic" — `requirements.md` §2). `eventTime` is the moment
@@ -357,13 +381,32 @@ export class TodosIndex implements TodosReader {
    * (`requirements.md` §11) — see `proposeCompletion`/`decideCompletion`
    * for the touched path, which this design deliberately does not skip
    * (unlike `QuestionsIndex.resolve`, which currently drops that case
-   * silently). A no-op if `id` is not currently open or is touched. */
+   * silently). A no-op if `id` is not currently open or is touched. Still
+   * `reprocessAll`'s only caller as of `plan.md` M18 — the live path calls
+   * `completeApproved` below instead. */
   completeFromExtraction(id: string, completion: { doneEntryId: string; resolution: string; doneAt: string }): void {
     this.#db
       .prepare(
         `UPDATE todos
            SET status = 'done', done_entry_id = @doneEntryId, resolution = @resolution, done_at = @doneAt
          WHERE id = @id AND status = 'open' AND touched = 0`,
+      )
+      .run({ id, ...completion });
+  }
+
+  /** Applies an approved pending `'completion'` item (`plan.md` M18,
+   * `model/pending-item-applier.ts`) — the live-path counterpart to
+   * `completeFromExtraction`, without its `AND touched = 0` guard: a human
+   * has already approved this specific match, the same authorization
+   * `decideCompletion`'s approve branch already provides for the
+   * suggestion-queue path. Forces `touched = 1`, the same as `update()`.
+   * No-op if `id` is not currently open. */
+  completeApproved(id: string, completion: { doneEntryId: string; resolution: string; doneAt: string }): void {
+    this.#db
+      .prepare(
+        `UPDATE todos
+           SET status = 'done', done_entry_id = @doneEntryId, resolution = @resolution, done_at = @doneAt, touched = 1
+         WHERE id = @id AND status = 'open'`,
       )
       .run({ id, ...completion });
   }
@@ -585,6 +628,36 @@ export class TodosIndex implements TodosReader {
     const openCount = (this.#db.prepare("SELECT COUNT(*) AS n FROM todos WHERE status = 'open'").get() as { n: number }).n;
     const doneCount = (this.#db.prepare("SELECT COUNT(*) AS n FROM todos WHERE status = 'done'").get() as { n: number }).n;
     return { openCount, doneCount };
+  }
+
+  /** Commits an approved `'new'` pending item (`plan.md` M18) as a freshly
+   * raised, still-open to-do — see `MetricsIndex.insertApproved` for the
+   * full reasoning. Always `origin: 'extracted'`, ignoring whatever
+   * `record.origin` says: a `'new'` candidate only ever comes from this
+   * entry's own extraction, never from `createDirect`, so there is exactly
+   * one correct value here, the same as `replaceUntouchedRaised` hardcoding
+   * it. */
+  insertApproved(record: TodoRecord): void {
+    this.#db
+      .prepare(
+        `INSERT INTO todos
+           (id, entry_id, text, event_time, event_epoch_ms, event_time_explicit, extracted_at, status, done_entry_id, resolution, done_at, origin, touched)
+         VALUES (@id, @entryId, @text, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @status, @doneEntryId, @resolution, @doneAt, 'extracted', @touched)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        text: record.text,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+        status: record.status,
+        doneEntryId: record.doneEntryId,
+        resolution: record.resolution,
+        doneAt: record.doneAt,
+        touched: record.touched ? 1 : 0,
+      });
   }
 
   /** Restores one touched record from the durable off-index mirror

@@ -32,7 +32,9 @@ export type CoreStructureType = 'metric' | 'review_medium' | 'list_type' | 'opin
  * wider type here. */
 export type MetricFieldStructureType = `metric_field:${string}:${string}`;
 export type StructureType = CoreStructureType | MetricFieldStructureType;
-export type SuggestionStatus = 'pending' | 'approved' | 'rejected';
+/** `'parked'` (`plan.md` M18) — set aside to reconsider later, neither
+ * approved nor rejected; see `decide`'s own comment. */
+export type SuggestionStatus = 'pending' | 'approved' | 'rejected' | 'parked';
 
 export interface CategorySuggestion {
   id: string;
@@ -50,7 +52,11 @@ export interface CategoriesReader {
   approvedNames(structureType: StructureType): string[];
   approveDirectly(structureType: StructureType, name: string, now: string): void;
   listSuggestions(options?: { structureType?: StructureType; status?: SuggestionStatus }): CategorySuggestion[];
-  decide(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** `'parked'` (`plan.md` M18) is handled identically to `'rejected'` here
+   * — a plain status flip, no side effect — the only difference is the
+   * status value itself, which the frontend uses to show a passive "set
+   * aside" shelf distinct from an outright rejection. */
+  decide(id: string, decision: 'approved' | 'rejected' | 'parked', now: string): void;
 }
 
 export class CategoriesIndex implements CategoriesReader {
@@ -169,7 +175,7 @@ export class CategoriesIndex implements CategoriesReader {
    * to the approved set in the same transaction — the two must never
    * disagree with each other. A no-op, not an error, for a suggestion that
    * is not pending (already decided, or never existed). */
-  decide(id: string, decision: 'approved' | 'rejected', now: string): void {
+  decide(id: string, decision: 'approved' | 'rejected' | 'parked', now: string): void {
     const apply = this.#db.transaction(() => {
       const row = this.#db.prepare("SELECT * FROM category_suggestions WHERE id = ? AND status = 'pending'").get(id) as
         | RawSuggestion

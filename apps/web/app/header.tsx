@@ -47,6 +47,7 @@ export function Header() {
         <Link href="/search">Search</Link>
         <Link href="/analysis">Analysis</Link>
         <Link href="/documents">Documents</Link>
+        <Link href="/pending">Pending</Link>
         <Link href="/chat">Chat</Link>
         <Link href="/entry/new">Write</Link>
         <button type="button" className={styles.themeToggle} onClick={handleSignOut}>

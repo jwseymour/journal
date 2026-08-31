@@ -22,8 +22,9 @@ import styles from './page.module.css';
 const LIMIT = 100;
 
 /**
- * Extracted reviews (`plan.md` M8, `requirements.md` §5.2) — never live,
- * only whatever the last `npm run reprocess` wrote. Same shape as
+ * Extracted reviews (`plan.md` M8, `requirements.md` §5.2) — what a past
+ * `npm run reprocess` wrote, plus whatever has since been approved from a
+ * live `Process` run's popup or `/pending` queue (`plan.md` M18). Same shape as
  * `app/metrics/page.tsx`: a plain list, not an analysis surface, so the
  * data is visible and a wrong record can be discarded
  * (`requirements.md` §6.2) without `curl`.

@@ -4,24 +4,60 @@ import type { MetricsIndex, TemporalMetricRecord } from '../index/metrics-index.
 import { ulid } from '../record/id.js';
 import { nowTimestamp } from '../record/time.js';
 import type { EntryStore } from '../store/entry-store.js';
+import type { Confidence } from './confidence.js';
 import { resolveEventTime } from './event-time.js';
 import type { ModelClient } from './model-client.js';
-import { buildExtractionPrompt, buildMetricExtractionRequest } from './temporal-metrics.js';
+import { buildExtractionPrompt, buildMetricExtractionRequest, type ExtractionResult } from './temporal-metrics.js';
 
 const PAGE_SIZE = 100;
 
+/** One metric candidate from a live Process run (`plan.md` M18) — not yet a
+ * real record. Same shape `TemporalMetricRecord` will have once approved,
+ * minus `entryId`/`touched` (the applier's job to add) plus the confidence
+ * tag (discarded on approval, never stored). */
+export interface MetricCandidate {
+  id: string;
+  metric: string;
+  eventTime: string;
+  eventEpochMs: number;
+  eventTimeExplicit: boolean;
+  detail: string;
+  fields: Record<string, string | number | null>;
+  extractedAt: string;
+  confidence: Confidence;
+  confidenceReason: string | null;
+}
+
+export interface MetricExtractionCandidates {
+  /** Shared by every candidate and by the three suggestion timestamps below
+   * (`plan.md` M18) — one clock read per call, not one per field, so
+   * `extractEntry` can reuse the exact value rather than reading the clock
+   * a second time. */
+  extractedAt: string;
+  candidates: MetricCandidate[];
+  suggestedCategory: ExtractionResult['suggestedCategory'];
+  suggestedField: ExtractionResult['suggestedField'];
+  suggestedFieldValue: ExtractionResult['suggestedFieldValue'];
+}
+
 /**
- * Turns one entry's body into temporal-metric records via `ModelClient`, and
- * drives the full-corpus reprocess (`plan.md` M7).
+ * Turns one entry's body into temporal-metric candidates via `ModelClient`,
+ * and drives the full-corpus reprocess (`plan.md` M7). `extractCandidates`
+ * is the pure model-call-and-shape step — no index writes, used by the live
+ * pending-item pipeline (`model/pending-processor.ts`, `plan.md` M18).
+ * `extractEntry` wraps it with the commit/propose logic `reprocessAll`
+ * still depends on, unchanged since before M18 — nothing about a
+ * corpus-wide reprocess is gated behind live, popup-style approval; see
+ * that method's own comment for why.
  *
  * Extraction is real money, not local compute — unlike `SearchIndexer`
  * (`plan.md` M6), nothing here is wired into *autosave*: it fires on every
  * debounced keystroke, and a paid API call on every one of those would be
  * both wasteful and a surprise on the user's bill. `reprocessAll` (batch,
- * corpus-wide, `npm run reprocess`) and `EntryProcessor` (live, one entry,
- * `POST /entries/:id/process`) are the two deliberate, explicit ways this
- * runs instead — both only ever something the user chooses to trigger, never
- * a side effect of typing (`plan.md` M15).
+ * corpus-wide, `npm run reprocess`) and `LivePendingProcessor` (live, one
+ * entry, `POST /entries/:id/process`, `plan.md` M18) are the two deliberate,
+ * explicit ways this runs instead — both only ever something the user
+ * chooses to trigger, never a side effect of typing (`plan.md` M15).
  */
 export class Extractor {
   readonly #metricsIndex: MetricsIndex;
@@ -36,21 +72,25 @@ export class Extractor {
     this.#modelClient = modelClient;
   }
 
-  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ metricCount: number }> {
+  /** The pure model-call-and-shape step (`plan.md` M18) — no index writes.
+   * `extractEntry` below is now a thin wrapper: call this, then run exactly
+   * the commit/propose logic that already existed, dropping `confidence`/
+   * `confidenceReason` on the floor (a committed `TemporalMetricRecord` has
+   * no such field — see `confidence.ts`). The live pending-item pipeline
+   * (`model/pending-processor.ts`) calls this directly instead, and keeps
+   * the confidence tag rather than discarding it, since that pipeline's
+   * whole point is deferring the commit decision to a human. */
+  async extractCandidates(entry: { id: string; created: string; body: string }): Promise<MetricExtractionCandidates> {
     const approvedNames = this.#categoriesIndex.approvedNames('metric');
 
     const fieldsByMetric = new Map<string, MetricFieldDefinition[]>();
     const enumValuesByFieldId = new Map<string, readonly string[]>();
-    // Also indexed by (metric, fieldKey) — what validating `suggestedFieldValue`
-    // against the real, currently-known enum fields needs below.
-    const enumFieldsByMetricAndKey = new Map<string, MetricFieldDefinition>();
     for (const name of approvedNames) {
       const fields = this.#metricFieldsIndex.listForMetric(name);
       fieldsByMetric.set(name, fields);
       for (const field of fields) {
         if (field.fieldType === 'enum') {
           enumValuesByFieldId.set(field.id, this.#categoriesIndex.approvedNames(`metric_field:${field.metric}:${field.fieldKey}`));
-          enumFieldsByMetricAndKey.set(`${field.metric}:${field.fieldKey}`, field);
         }
       }
     }
@@ -59,7 +99,7 @@ export class Extractor {
     const result = await this.#modelClient.extract({ schema, system, prompt: buildExtractionPrompt(entry) });
 
     const extractedAt = nowTimestamp().canonical;
-    const records: Omit<TemporalMetricRecord, 'entryId'>[] = result.metrics.map((metric) => {
+    const candidates: MetricCandidate[] = result.metrics.map((metric) => {
       const resolved = resolveEventTime(metric.eventTime, metric.eventTimeExplicit, entry.created);
       return {
         id: ulid(Date.now()),
@@ -68,9 +108,47 @@ export class Extractor {
         detail: metric.detail,
         fields: metric.fields ?? {},
         extractedAt,
-        touched: false,
+        confidence: metric.confidence,
+        confidenceReason: metric.confidenceReason,
       };
     });
+
+    return {
+      extractedAt,
+      candidates,
+      suggestedCategory: result.suggestedCategory,
+      suggestedField: result.suggestedField,
+      suggestedFieldValue: result.suggestedFieldValue,
+    };
+  }
+
+  async extractEntry(entry: { id: string; created: string; body: string }): Promise<{ metricCount: number }> {
+    // `enumFieldsByMetricAndKey` is rebuilt here rather than threaded through
+    // `extractCandidates` — it is only ever needed to validate
+    // `suggestedFieldValue` below, which stays part of the commit step, not
+    // the candidate-shaping one.
+    const approvedNames = this.#categoriesIndex.approvedNames('metric');
+    const enumFieldsByMetricAndKey = new Map<string, MetricFieldDefinition>();
+    for (const name of approvedNames) {
+      for (const field of this.#metricFieldsIndex.listForMetric(name)) {
+        if (field.fieldType === 'enum') enumFieldsByMetricAndKey.set(`${field.metric}:${field.fieldKey}`, field);
+      }
+    }
+
+    const { extractedAt, candidates, suggestedCategory, suggestedField, suggestedFieldValue } =
+      await this.extractCandidates(entry);
+    const records: Omit<TemporalMetricRecord, 'entryId'>[] = candidates.map((candidate) => ({
+      id: candidate.id,
+      metric: candidate.metric,
+      eventTime: candidate.eventTime,
+      eventEpochMs: candidate.eventEpochMs,
+      eventTimeExplicit: candidate.eventTimeExplicit,
+      detail: candidate.detail,
+      fields: candidate.fields,
+      extractedAt: candidate.extractedAt,
+      touched: false,
+    }));
+    const result = { suggestedCategory, suggestedField, suggestedFieldValue };
 
     // Touched records for this entry are protected from reprocess
     // (`requirements.md` §2, §6.4, `plan.md` M10): only the untouched subset

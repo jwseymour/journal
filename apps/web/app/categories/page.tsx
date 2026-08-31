@@ -23,8 +23,11 @@ import {
   listMetricFieldValues,
   listMetricFieldValueSuggestions,
   listSuggestions,
+  parkMetricFieldSuggestion,
+  parkSuggestion,
   rejectMetricFieldSuggestion,
   rejectSuggestion,
+  updateMetricField,
 } from '@/lib/api';
 import styles from './page.module.css';
 
@@ -94,13 +97,35 @@ export default function CategoriesPage() {
   const [newValueByField, setNewValueByField] = useState<Record<string, string>>({});
   const [addingValueForField, setAddingValueForField] = useState<string | null>(null);
 
+  // Editing a field already defined (`PATCH /metrics/fields/:id`) — label,
+  // description, unit, and score bounds only; `metric`/`fieldKey`/`fieldType`
+  // are a field's identity and shape, not something this form touches.
+  const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editUnit, setEditUnit] = useState('');
+  const [editScoreMin, setEditScoreMin] = useState('');
+  const [editScoreMax, setEditScoreMax] = useState('');
+  const [savingFieldEdit, setSavingFieldEdit] = useState(false);
+
   const load = () => {
-    Promise.all([listCategories(), listSuggestions({ status: 'pending' }), listMetricFields(), listMetricFieldSuggestions({ status: 'pending' })])
-      .then(([categoriesResponse, suggestionsResponse, fieldsResponse, fieldSuggestionsResponse]) => {
+    Promise.all([
+      listCategories(),
+      listSuggestions({ status: 'pending' }),
+      listSuggestions({ status: 'parked' }),
+      listMetricFields(),
+      listMetricFieldSuggestions({ status: 'pending' }),
+      listMetricFieldSuggestions({ status: 'parked' }),
+    ])
+      .then(([categoriesResponse, pendingResponse, parkedResponse, fieldsResponse, pendingFieldsResponse, parkedFieldsResponse]) => {
         setCategories(categoriesResponse);
-        setSuggestions(suggestionsResponse.suggestions);
+        // Pending and parked share one list — a suggestion set aside "to be
+        // thought about" is still fully actionable here, just no longer
+        // nagging (`requirements.md` §12: no reminders, ever); only the
+        // section it renders under differs.
+        setSuggestions([...pendingResponse.suggestions, ...parkedResponse.suggestions]);
         setFields(fieldsResponse.fields);
-        setFieldSuggestions(fieldSuggestionsResponse.suggestions);
+        setFieldSuggestions([...pendingFieldsResponse.suggestions, ...parkedFieldsResponse.suggestions]);
 
         const enumFields = fieldsResponse.fields.filter((f) => f.fieldType === 'enum');
         Promise.all(
@@ -117,9 +142,9 @@ export default function CategoriesPage() {
 
   useEffect(load, []);
 
-  const decide = (id: string, decision: 'approve' | 'reject') => {
+  const decide = (id: string, decision: 'approve' | 'reject' | 'park') => {
     setDecidingId(id);
-    (decision === 'approve' ? approveSuggestion(id) : rejectSuggestion(id))
+    (decision === 'approve' ? approveSuggestion(id) : decision === 'reject' ? rejectSuggestion(id) : parkSuggestion(id))
       .then(() => {
         setSuggestions((current) => current?.filter((s) => s.id !== id) ?? current);
         if (decision === 'approve') load(); // the newly-approved name now belongs in the approved list too
@@ -128,9 +153,14 @@ export default function CategoriesPage() {
       .finally(() => setDecidingId(null));
   };
 
-  const decideField = (id: string, decision: 'approve' | 'reject') => {
+  const decideField = (id: string, decision: 'approve' | 'reject' | 'park') => {
     setDecidingId(id);
-    (decision === 'approve' ? approveMetricFieldSuggestion(id) : rejectMetricFieldSuggestion(id))
+    (decision === 'approve'
+      ? approveMetricFieldSuggestion(id)
+      : decision === 'reject'
+        ? rejectMetricFieldSuggestion(id)
+        : parkMetricFieldSuggestion(id)
+    )
       .then(() => {
         setFieldSuggestions((current) => current?.filter((s) => s.id !== id) ?? current);
         if (decision === 'approve') load(); // the newly-approved field now belongs in the definitions list too
@@ -193,6 +223,36 @@ export default function CategoriesPage() {
       .finally(() => setDefiningField(false));
   };
 
+  const startFieldEdit = (field: MetricFieldDefinition) => {
+    setEditingFieldId(field.id);
+    setEditLabel(field.label);
+    setEditDescription(field.description);
+    setEditUnit(field.unit ?? '');
+    setEditScoreMin(field.scoreMin === null ? '' : String(field.scoreMin));
+    setEditScoreMax(field.scoreMax === null ? '' : String(field.scoreMax));
+  };
+
+  const saveFieldEdit = (field: MetricFieldDefinition) => {
+    const label = editLabel.trim();
+    const description = editDescription.trim();
+    if (!label || !description) return;
+    setSavingFieldEdit(true);
+    updateMetricField(field.id, {
+      label,
+      description,
+      ...(field.fieldType === 'numeric' ? { unit: editUnit.trim() || null } : {}),
+      ...(field.fieldType === 'score'
+        ? { scoreMin: editScoreMin.trim() ? Number(editScoreMin) : null, scoreMax: editScoreMax.trim() ? Number(editScoreMax) : null }
+        : {}),
+    })
+      .then(() => {
+        setEditingFieldId(null);
+        load();
+      })
+      .catch((cause: unknown) => setError(cause instanceof ApiRequestError ? cause.message : 'Could not save field.'))
+      .finally(() => setSavingFieldEdit(false));
+  };
+
   const requestValue = (fieldId: string) => {
     const value = (newValueByField[fieldId] ?? '').trim();
     if (!value) return;
@@ -210,6 +270,14 @@ export default function CategoriesPage() {
   if (categories === null || suggestions === null || fields === null || fieldSuggestions === null) {
     return <p className={styles.hint}>Loading…</p>;
   }
+
+  // Parked (`plan.md` M18): set aside to reconsider later, not resurfaced on
+  // its own (`requirements.md` §12) — a plain, unbadged section rather than
+  // a queue that nags.
+  const pendingSuggestions = suggestions.filter((s) => s.status === 'pending');
+  const parkedSuggestions = suggestions.filter((s) => s.status === 'parked');
+  const pendingFieldSuggestions = fieldSuggestions.filter((s) => s.status === 'pending');
+  const parkedFieldSuggestions = fieldSuggestions.filter((s) => s.status === 'parked');
 
   return (
     <div>
@@ -265,11 +333,56 @@ export default function CategoriesPage() {
 
       <section className={styles.section}>
         <h2 className={styles.heading}>Suggested by the AI</h2>
-        {suggestions.length === 0 ? (
+        {pendingSuggestions.length === 0 ? (
           <p className={styles.empty}>Nothing pending.</p>
         ) : (
           <ul className={styles.suggestionList}>
-            {suggestions.map((suggestion) => (
+            {pendingSuggestions.map((suggestion) => (
+              <li key={suggestion.id} className={styles.suggestionRow}>
+                <div className={styles.suggestionMain}>
+                  <span className={styles.suggestionMeta}>
+                    {STRUCTURE_LABEL[suggestion.structureType as CoreStructureType] ?? suggestion.structureType}
+                  </span>
+                  <span className={styles.suggestionName}>{suggestion.name}</span>
+                  <span className={styles.suggestionReason}>{suggestion.reason}</span>
+                </div>
+                <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.approveButton}
+                    onClick={() => decide(suggestion.id, 'approve')}
+                    disabled={decidingId === suggestion.id}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.parkButton}
+                    onClick={() => decide(suggestion.id, 'park')}
+                    disabled={decidingId === suggestion.id}
+                  >
+                    Park
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.rejectButton}
+                    onClick={() => decide(suggestion.id, 'reject')}
+                    disabled={decidingId === suggestion.id}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {parkedSuggestions.length > 0 && (
+        <section className={styles.section}>
+          <h2 className={styles.heading}>Parked</h2>
+          <ul className={styles.suggestionList}>
+            {parkedSuggestions.map((suggestion) => (
               <li key={suggestion.id} className={styles.suggestionRow}>
                 <div className={styles.suggestionMain}>
                   <span className={styles.suggestionMeta}>
@@ -299,8 +412,8 @@ export default function CategoriesPage() {
               </li>
             ))}
           </ul>
-        )}
-      </section>
+        </section>
+      )}
 
       <section className={styles.section}>
         <h2 className={styles.heading}>Metric fields</h2>
@@ -320,14 +433,89 @@ export default function CategoriesPage() {
                       const enumState = enumFieldState[field.id];
                       return (
                         <li key={field.id} className={styles.fieldRow}>
-                          <div className={styles.fieldMain}>
-                            <span className={styles.fieldLabel}>{field.label}</span>
-                            <span className={styles.fieldMeta}>
-                              {fieldTypeLabel(field.fieldType)}
-                              {field.unit ? ` · ${field.unit}` : ''}
-                            </span>
-                            <span className={styles.suggestionReason}>{field.description}</span>
-                          </div>
+                          {editingFieldId === field.id ? (
+                            <div className={styles.fieldEditForm}>
+                              <input
+                                className={styles.input}
+                                type="text"
+                                placeholder="Label"
+                                value={editLabel}
+                                onChange={(event) => setEditLabel(event.target.value)}
+                                aria-label={`Label for ${field.label}`}
+                              />
+                              <input
+                                className={styles.input}
+                                type="text"
+                                placeholder="Description"
+                                value={editDescription}
+                                onChange={(event) => setEditDescription(event.target.value)}
+                                aria-label={`Description for ${field.label}`}
+                              />
+                              {field.fieldType === 'numeric' && (
+                                <input
+                                  className={styles.input}
+                                  type="text"
+                                  placeholder="Unit"
+                                  value={editUnit}
+                                  onChange={(event) => setEditUnit(event.target.value)}
+                                  aria-label={`Unit for ${field.label}`}
+                                />
+                              )}
+                              {field.fieldType === 'score' && (
+                                <>
+                                  <input
+                                    className={styles.input}
+                                    type="number"
+                                    placeholder="Min"
+                                    value={editScoreMin}
+                                    onChange={(event) => setEditScoreMin(event.target.value)}
+                                    aria-label={`Minimum score for ${field.label}`}
+                                  />
+                                  <input
+                                    className={styles.input}
+                                    type="number"
+                                    placeholder="Max"
+                                    value={editScoreMax}
+                                    onChange={(event) => setEditScoreMax(event.target.value)}
+                                    aria-label={`Maximum score for ${field.label}`}
+                                  />
+                                </>
+                              )}
+                              <div className={styles.actions}>
+                                <button
+                                  type="button"
+                                  className={styles.approveButton}
+                                  onClick={() => saveFieldEdit(field)}
+                                  disabled={savingFieldEdit || !editLabel.trim() || !editDescription.trim()}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.rejectButton}
+                                  onClick={() => setEditingFieldId(null)}
+                                  disabled={savingFieldEdit}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className={styles.fieldMain}>
+                              <span className={styles.fieldLabel}>{field.label}</span>
+                              <span className={styles.fieldMeta}>
+                                {fieldTypeLabel(field.fieldType)}
+                                {field.unit ? ` · ${field.unit}` : ''}
+                                {field.fieldType === 'score' && field.scoreMin !== null && field.scoreMax !== null
+                                  ? ` · ${field.scoreMin}–${field.scoreMax}`
+                                  : ''}
+                              </span>
+                              <span className={styles.suggestionReason}>{field.description}</span>
+                              <button type="button" className={styles.editButton} onClick={() => startFieldEdit(field)}>
+                                Edit
+                              </button>
+                            </div>
+                          )}
                           {field.fieldType === 'enum' && (
                             <div className={styles.fieldValues}>
                               {enumState && enumState.values.length > 0 ? (
@@ -481,11 +669,57 @@ export default function CategoriesPage() {
 
       <section className={styles.section}>
         <h2 className={styles.heading}>Fields suggested by the AI</h2>
-        {fieldSuggestions.length === 0 ? (
+        {pendingFieldSuggestions.length === 0 ? (
           <p className={styles.empty}>Nothing pending.</p>
         ) : (
           <ul className={styles.suggestionList}>
-            {fieldSuggestions.map((suggestion) => (
+            {pendingFieldSuggestions.map((suggestion) => (
+              <li key={suggestion.id} className={styles.suggestionRow}>
+                <div className={styles.suggestionMain}>
+                  <span className={styles.suggestionMeta}>
+                    {suggestion.metric} · {fieldTypeLabel(suggestion.fieldType)}
+                    {suggestion.unit ? ` · ${suggestion.unit}` : ''}
+                  </span>
+                  <span className={styles.suggestionName}>{suggestion.label}</span>
+                  <span className={styles.suggestionReason}>{suggestion.reason}</span>
+                </div>
+                <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.approveButton}
+                    onClick={() => decideField(suggestion.id, 'approve')}
+                    disabled={decidingId === suggestion.id}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.parkButton}
+                    onClick={() => decideField(suggestion.id, 'park')}
+                    disabled={decidingId === suggestion.id}
+                  >
+                    Park
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.rejectButton}
+                    onClick={() => decideField(suggestion.id, 'reject')}
+                    disabled={decidingId === suggestion.id}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {parkedFieldSuggestions.length > 0 && (
+        <section className={styles.section}>
+          <h2 className={styles.heading}>Parked fields</h2>
+          <ul className={styles.suggestionList}>
+            {parkedFieldSuggestions.map((suggestion) => (
               <li key={suggestion.id} className={styles.suggestionRow}>
                 <div className={styles.suggestionMain}>
                   <span className={styles.suggestionMeta}>
@@ -516,8 +750,8 @@ export default function CategoriesPage() {
               </li>
             ))}
           </ul>
-        )}
-      </section>
+        </section>
+      )}
     </div>
   );
 }

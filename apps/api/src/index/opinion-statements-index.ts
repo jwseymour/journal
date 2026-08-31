@@ -32,8 +32,21 @@ export interface OpinionStatementRecord {
   eventEpochMs: number;
   eventTimeExplicit: boolean;
   extractedAt: string;
+  /** A plain note/fact, or something to raise with the subject later —
+   * the per-person conversation-topics idea, folded into this structure
+   * rather than built as its own (`requirements.md` §11, resolved
+   * 2026-08-30). Decided once at extraction time, immutable afterward,
+   * the same treatment `subject` itself already gets. */
+  kind: 'note' | 'question';
+  /** `null` for `kind: 'note'`. For `kind: 'question'`, the same
+   * open/resolved lifecycle `QuestionRecord` has. */
+  status: 'open' | 'resolved' | null;
+  resolvedEntryId: string | null;
+  resolution: string | null;
+  resolvedAt: string | null;
   /** Whether the user has reviewed, corrected, or edited this record
-   * (`requirements.md` §2, §6.4, `plan.md` M10). */
+   * (`requirements.md` §2, §6.4, `plan.md` M10). Reopening counts as a
+   * touch, the same as `QuestionRecord`. */
   touched: boolean;
 }
 
@@ -93,6 +106,32 @@ export interface OpinionStatementsReader {
     status?: OpinionStatementUpdateSuggestion['status'];
   }): OpinionStatementUpdateSuggestion[];
   decideUpdate(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** Every current row for one entry, touched or not (`plan.md` M18) — see
+   * `MetricsReader.liveForEntry` for the full reasoning. */
+  liveForEntry(entryId: string): OpinionStatementRecord[];
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsReader.insertApproved` for the full reasoning. */
+  insertApproved(record: OpinionStatementRecord): void;
+
+  /** Every currently-open `kind: 'question'` statement, across every
+   * subject, oldest first — unbounded, mirrors `QuestionsReader.listOpen`
+   * exactly: what the extractor's in-prompt "still open" list is built
+   * from, so a later entry can be checked against it for a resolution. */
+  listOpenQuestions(): OpinionStatementRecord[];
+  /** The pre-M18 direct-commit resolve path (`reprocessAll` only) — see
+   * `QuestionsReader`'s equivalent. Guarded: never resolves an already
+   * touched question, since a touched one is the user's, not extraction's,
+   * to silently overwrite. */
+  resolve(id: string, input: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void;
+  /** The live M18 path — a human already approved this exact match in the
+   * pending-item popup, so unlike `resolve` this carries no touched guard
+   * and forces `touched: true`: resolving is itself a content change,
+   * protected like any other correction from here on. No-op if the target
+   * is not currently an open question. */
+  resolveApproved(id: string, input: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void;
+  /** Manual-only, mirrors `QuestionsReader.reopen` — reopening counts as a
+   * touch. No-op for an id that isn't a resolved question. */
+  reopen(id: string): void;
 }
 
 export class OpinionStatementsIndex implements OpinionStatementsReader {
@@ -140,17 +179,36 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
     if (!columns.some((c) => c.name === 'touched')) {
       this.#db.exec('ALTER TABLE opinion_statements ADD COLUMN touched INTEGER NOT NULL DEFAULT 0;');
     }
+    // The conversation-topics extension (`requirements.md` §11, resolved
+    // 2026-08-30) — every row predating this migration is a `'note'` with
+    // no question lifecycle, which is exactly what these defaults give it.
+    if (!columns.some((c) => c.name === 'kind')) {
+      this.#db.exec("ALTER TABLE opinion_statements ADD COLUMN kind TEXT NOT NULL DEFAULT 'note';");
+      this.#db.exec('ALTER TABLE opinion_statements ADD COLUMN status TEXT;');
+      this.#db.exec('ALTER TABLE opinion_statements ADD COLUMN resolved_entry_id TEXT;');
+      this.#db.exec('ALTER TABLE opinion_statements ADD COLUMN resolution TEXT;');
+      this.#db.exec('ALTER TABLE opinion_statements ADD COLUMN resolved_at TEXT;');
+    }
   }
 
   /** Always the full set for an entry — see `MetricsIndex.replaceEntry` for
-   * why a partial update is never the right shape here. */
-  replaceEntry(entryId: string, records: Omit<OpinionStatementRecord, 'entryId'>[]): void {
+   * why a partial update is never the right shape here.
+   *
+   * Never deletes a row this entry raised that has since been *resolved*
+   * by a later entry — exactly `QuestionsIndex.replaceRaised`'s own
+   * guard, for the same reason: a resolution's fields belong to whichever
+   * entry resolved it, and re-extracting the entry that only raised the
+   * question must never erase that. */
+  replaceEntry(
+    entryId: string,
+    records: Omit<OpinionStatementRecord, 'entryId' | 'status' | 'resolvedEntryId' | 'resolution' | 'resolvedAt'>[],
+  ): void {
     const insert = this.#db.transaction(() => {
-      this.#db.prepare('DELETE FROM opinion_statements WHERE entry_id = ?').run(entryId);
+      this.#db.prepare("DELETE FROM opinion_statements WHERE entry_id = ? AND status IS NOT 'resolved'").run(entryId);
       const stmt = this.#db.prepare(
         `INSERT INTO opinion_statements
-           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at)
-         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt)`,
+           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at, kind, status, resolved_entry_id, resolution, resolved_at)
+         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @kind, @status, @resolvedEntryId, @resolution, @resolvedAt)`,
       );
       for (const record of records) {
         stmt.run({
@@ -162,20 +220,32 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
           eventEpochMs: record.eventEpochMs,
           eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
           extractedAt: record.extractedAt,
+          kind: record.kind,
+          status: record.kind === 'question' ? 'open' : null,
+          resolvedEntryId: null,
+          resolution: null,
+          resolvedAt: null,
         });
       }
     });
     insert();
   }
 
-  /** The reprocess-safe sibling of `replaceEntry` (`plan.md` M10). */
-  replaceUntouchedForEntry(entryId: string, records: Omit<OpinionStatementRecord, 'entryId' | 'touched'>[]): void {
+  /** The reprocess-safe sibling of `replaceEntry` (`plan.md` M10) — same
+   * "never delete an already-resolved row" guard as `replaceEntry` above,
+   * on top of the existing "never delete a touched row" one. */
+  replaceUntouchedForEntry(
+    entryId: string,
+    records: Omit<OpinionStatementRecord, 'entryId' | 'touched' | 'status' | 'resolvedEntryId' | 'resolution' | 'resolvedAt'>[],
+  ): void {
     const insert = this.#db.transaction(() => {
-      this.#db.prepare('DELETE FROM opinion_statements WHERE entry_id = ? AND touched = 0').run(entryId);
+      this.#db
+        .prepare("DELETE FROM opinion_statements WHERE entry_id = ? AND touched = 0 AND status IS NOT 'resolved'")
+        .run(entryId);
       const stmt = this.#db.prepare(
         `INSERT INTO opinion_statements
-           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
-         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, 0)`,
+           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at, kind, status, resolved_entry_id, resolution, resolved_at, touched)
+         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @kind, @status, @resolvedEntryId, @resolution, @resolvedAt, 0)`,
       );
       for (const record of records) {
         stmt.run({
@@ -187,6 +257,11 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
           eventEpochMs: record.eventEpochMs,
           eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
           extractedAt: record.extractedAt,
+          kind: record.kind,
+          status: record.kind === 'question' ? 'open' : null,
+          resolvedEntryId: null,
+          resolution: null,
+          resolvedAt: null,
         });
       }
     });
@@ -200,8 +275,26 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
     return rows.map(fromRaw);
   }
 
+  /** Every current row for one entry, touched or not (`plan.md` M18) — see
+   * `MetricsIndex.liveForEntry` for the full reasoning. */
+  liveForEntry(entryId: string): OpinionStatementRecord[] {
+    const rows = this.#db.prepare('SELECT * FROM opinion_statements WHERE entry_id = ?').all(entryId) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
+  /** A resolution can't outlive its resolving entry — the same guard
+   * `QuestionsIndex.removeEntry` applies, for the same reason: reopens
+   * anything this entry resolved before deleting whatever it raised. */
   removeEntry(entryId: string): void {
-    this.#db.prepare('DELETE FROM opinion_statements WHERE entry_id = ?').run(entryId);
+    const run = this.#db.transaction(() => {
+      this.#db
+        .prepare(
+          "UPDATE opinion_statements SET status = 'open', resolved_entry_id = NULL, resolution = NULL, resolved_at = NULL WHERE resolved_entry_id = ?",
+        )
+        .run(entryId);
+      this.#db.prepare('DELETE FROM opinion_statements WHERE entry_id = ?').run(entryId);
+    });
+    run();
   }
 
   getById(id: string): OpinionStatementRecord | null {
@@ -321,6 +414,45 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
     return rows.map(fromRaw);
   }
 
+  /** Every currently-open question, oldest first, unbounded — see
+   * `QuestionsIndex.listOpen` for the identical pattern this mirrors. */
+  listOpenQuestions(): OpinionStatementRecord[] {
+    const rows = this.#db
+      .prepare("SELECT * FROM opinion_statements WHERE kind = 'question' AND status = 'open' ORDER BY event_epoch_ms ASC")
+      .all() as RawRow[];
+    return rows.map(fromRaw);
+  }
+
+  resolve(id: string, input: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void {
+    this.#db
+      .prepare(
+        `UPDATE opinion_statements
+           SET status = 'resolved', resolved_entry_id = @resolvedEntryId, resolution = @resolution, resolved_at = @resolvedAt
+         WHERE id = @id AND kind = 'question' AND status = 'open' AND touched = 0`,
+      )
+      .run({ id, ...input });
+  }
+
+  resolveApproved(id: string, input: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void {
+    this.#db
+      .prepare(
+        `UPDATE opinion_statements
+           SET status = 'resolved', resolved_entry_id = @resolvedEntryId, resolution = @resolution, resolved_at = @resolvedAt, touched = 1
+         WHERE id = @id AND kind = 'question' AND status = 'open'`,
+      )
+      .run({ id, ...input });
+  }
+
+  reopen(id: string): void {
+    this.#db
+      .prepare(
+        `UPDATE opinion_statements
+           SET status = 'open', resolved_entry_id = NULL, resolution = NULL, resolved_at = NULL, touched = 1
+         WHERE id = ? AND kind = 'question' AND status = 'resolved'`,
+      )
+      .run(id);
+  }
+
   /** One row per approved subject, in the order given — see
    * `ListsIndex.summarize` for the identical pattern this mirrors. */
   summarize(approvedSubjects: readonly string[]): OpinionSubjectSummary[] {
@@ -337,15 +469,15 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
     return rows.map((r) => r.subject);
   }
 
-  /** Restores one touched record from the durable off-index mirror
-   * (`durable/touched-mirror.ts`) — see `MetricsIndex.restoreTouched` for
-   * the full reasoning; identical shape here. */
-  restoreTouched(record: OpinionStatementRecord): void {
+  /** Commits an approved `'new'` pending item (`plan.md` M18) — see
+   * `MetricsIndex.insertApproved` for the full reasoning; identical shape
+   * here. */
+  insertApproved(record: OpinionStatementRecord): void {
     this.#db
       .prepare(
-        `INSERT OR REPLACE INTO opinion_statements
-           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at, touched)
-         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, 1)`,
+        `INSERT INTO opinion_statements
+           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at, kind, status, resolved_entry_id, resolution, resolved_at, touched)
+         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @kind, @status, @resolvedEntryId, @resolution, @resolvedAt, @touched)`,
       )
       .run({
         id: record.id,
@@ -356,6 +488,39 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
         eventEpochMs: record.eventEpochMs,
         eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
         extractedAt: record.extractedAt,
+        kind: record.kind,
+        status: record.status,
+        resolvedEntryId: record.resolvedEntryId,
+        resolution: record.resolution,
+        resolvedAt: record.resolvedAt,
+        touched: record.touched ? 1 : 0,
+      });
+  }
+
+  /** Restores one touched record from the durable off-index mirror
+   * (`durable/touched-mirror.ts`) — see `MetricsIndex.restoreTouched` for
+   * the full reasoning; identical shape here. */
+  restoreTouched(record: OpinionStatementRecord): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO opinion_statements
+           (id, entry_id, subject, statement, event_time, event_epoch_ms, event_time_explicit, extracted_at, kind, status, resolved_entry_id, resolution, resolved_at, touched)
+         VALUES (@id, @entryId, @subject, @statement, @eventTime, @eventEpochMs, @eventTimeExplicit, @extractedAt, @kind, @status, @resolvedEntryId, @resolution, @resolvedAt, 1)`,
+      )
+      .run({
+        id: record.id,
+        entryId: record.entryId,
+        subject: record.subject,
+        statement: record.statement,
+        eventTime: record.eventTime,
+        eventEpochMs: record.eventEpochMs,
+        eventTimeExplicit: record.eventTimeExplicit ? 1 : 0,
+        extractedAt: record.extractedAt,
+        kind: record.kind,
+        status: record.status,
+        resolvedEntryId: record.resolvedEntryId,
+        resolution: record.resolution,
+        resolvedAt: record.resolvedAt,
       });
   }
 
@@ -390,6 +555,11 @@ interface RawRow {
   event_epoch_ms: number;
   event_time_explicit: number;
   extracted_at: string;
+  kind: 'note' | 'question';
+  status: 'open' | 'resolved' | null;
+  resolved_entry_id: string | null;
+  resolution: string | null;
+  resolved_at: string | null;
   touched: number;
 }
 
@@ -403,6 +573,11 @@ function fromRaw(row: RawRow): OpinionStatementRecord {
     eventEpochMs: row.event_epoch_ms,
     eventTimeExplicit: row.event_time_explicit === 1,
     extractedAt: row.extracted_at,
+    kind: row.kind,
+    status: row.status,
+    resolvedEntryId: row.resolved_entry_id,
+    resolution: row.resolution,
+    resolvedAt: row.resolved_at,
     touched: row.touched === 1,
   };
 }

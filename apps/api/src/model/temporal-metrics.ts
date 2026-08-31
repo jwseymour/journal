@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { DefineFieldInput, MetricFieldDefinition } from '../index/metric-fields-index.js';
+import { CONFIDENCE_PROMPT_PARAGRAPH, CONFIDENCE_REASON_SCHEMA, CONFIDENCE_SCHEMA } from './confidence.js';
 
 /**
  * The first derived structure (`plan.md` M7, `requirements.md` §5.2):
@@ -181,6 +182,8 @@ function buildMetricVariantSchema(
           'duration, or kind, exactly as stated. Empty string if nothing beyond the bare fact was said.',
       ),
     fields: buildFieldsSchema(fields, enumValuesByFieldId),
+    confidence: CONFIDENCE_SCHEMA,
+    confidenceReason: CONFIDENCE_REASON_SCHEMA,
   });
 }
 
@@ -258,11 +261,11 @@ function buildMetricSchema(
 export type ExtractionResult = z.infer<ReturnType<typeof buildMetricSchema>>;
 
 /**
- * Autonomy is the default (`requirements.md` §6.1): explicit statements are
- * high-confidence and are committed without review, so the instruction here
- * is deliberately conservative in the other direction — say nothing rather
- * than guess, because a false positive is what someone would actually have
- * to notice and correct, while a missed one is simply not there yet.
+ * Every candidate now passes through explicit human approval before it
+ * becomes a real record (`requirements.md` §6.1, rewritten at `plan.md`
+ * M18) — a deliberate reversal of this file's original "say nothing rather
+ * than guess" stance. See `confidence.ts` for the full reasoning behind
+ * `CONFIDENCE_PROMPT_PARAGRAPH` below.
  */
 function buildMetricSystemPrompt(
   approvedNames: readonly string[],
@@ -285,9 +288,9 @@ function buildMetricSystemPrompt(
     .filter((p): p is string => p !== null)
     .join('\n\n');
 
-  return `You extract simple temporal metrics from a personal journal entry — things explicitly stated and stored against time.
+  return `You extract simple temporal metrics from a personal journal entry — things stated or plausibly implied and stored against time.
 
-The only approved categories right now are: ${approvedNames.join(', ')}. Only extract something that is explicitly stated in the entry — never infer, assume, or guess. If the entry does not mention one of the approved categories happening, do not produce a record for it. An entry mentioning none of them should produce an empty metrics list.
+The only approved categories right now are: ${approvedNames.join(', ')}. ${CONFIDENCE_PROMPT_PARAGRAPH} An entry giving no basis for any approved category should produce an empty metrics list.
 
 Each distinct occurrence is its own record. An entry mentioning both a morning run and an evening walk produces two "exercise" records, not one combined record.
 

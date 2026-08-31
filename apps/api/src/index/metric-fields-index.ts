@@ -51,7 +51,9 @@ export interface MetricFieldSuggestion {
   /** One sentence: what in the entry prompted this. */
   reason: string;
   entryId: string;
-  status: 'pending' | 'approved' | 'rejected';
+  /** `'parked'` (`plan.md` M18) — set aside to reconsider later, neither
+   * approved nor rejected. */
+  status: 'pending' | 'approved' | 'rejected' | 'parked';
   suggestedAt: string;
   decidedAt: string | null;
 }
@@ -95,7 +97,8 @@ export interface MetricFieldsReader {
   update(id: string, input: UpdateFieldInput): MetricFieldDefinition | null;
   remove(id: string): void;
   listSuggestions(options?: { metric?: string; status?: MetricFieldSuggestion['status'] }): MetricFieldSuggestion[];
-  decide(id: string, decision: 'approved' | 'rejected', now: string): void;
+  /** `'parked'` (`plan.md` M18) — see `CategoriesReader.decide`'s comment. */
+  decide(id: string, decision: 'approved' | 'rejected' | 'parked', now: string): void;
 }
 
 export class MetricFieldsIndex implements MetricFieldsReader {
@@ -261,7 +264,7 @@ export class MetricFieldsIndex implements MetricFieldsReader {
   /** Approving or rejecting a field suggestion. Approving also defines the
    * field in the same transaction — the two must never disagree. A no-op,
    * not an error, for a suggestion that is not pending. */
-  decide(id: string, decision: 'approved' | 'rejected', now: string): void {
+  decide(id: string, decision: 'approved' | 'rejected' | 'parked', now: string): void {
     const apply = this.#db.transaction(() => {
       const row = this.#db
         .prepare("SELECT * FROM metric_field_suggestions WHERE id = ? AND status = 'pending'")

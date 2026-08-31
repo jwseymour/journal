@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type {
   AddAttachmentResponse,
   ApiError,
+  ApproveBatchResponse,
   CategoriesResponse,
   ChatMessage,
   ChatResponse,
@@ -14,6 +15,7 @@ import type {
   DocumentPage,
   Entry,
   EntryPage,
+  EntryStatusResponse,
   HealthResponse,
   ListItem,
   ListItemsResponse,
@@ -25,6 +27,7 @@ import type {
   OpinionSubjectSummariesResponse,
   OpinionSummariesResponse,
   OpenQuestion,
+  PendingItemsResponse,
   ProcessEntryResponse,
   PublishQueueResponse,
   QuestionsResponse,
@@ -52,6 +55,7 @@ import { chatFailed, extractionFailed, transcriptionFailed } from '../../src/err
 import { TouchedMirror, type DurableBlobStore } from '../../src/durable/touched-mirror.js';
 import { createApp } from '../../src/http/app.js';
 import type { CategoriesReader, CategorySuggestion, SuggestionStatus } from '../../src/index/categories-index.js';
+import type { EntryProcessingStatusReader, EntryProcessingStatusRow } from '../../src/index/entry-processing-status-index.js';
 import type {
   ListItemRecord,
   ListItemsOptions,
@@ -113,12 +117,19 @@ import type {
   UpdateTodoInput,
 } from '../../src/index/todos-index.js';
 import { DocumentsIndex } from '../../src/index/documents-index.js';
+import type {
+  CreatePendingItemInput,
+  ListPendingItemsOptions,
+  PendingExtractionItem,
+  PendingItemsReader,
+} from '../../src/index/pending-items-index.js';
 import { PublicSearchIndex } from '../../src/index/public-search-index.js';
 import { PublishedIndex } from '../../src/index/published-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
 import { VisibilityDefaultsIndex } from '../../src/index/visibility-defaults-index.js';
 import type { ChatAnswerer } from '../../src/model/chat-orchestrator.js';
-import type { EntryProcessing } from '../../src/model/entry-processor.js';
+import type { PendingItemApplying } from '../../src/model/pending-item-applier.js';
+import type { LivePendingProcessing } from '../../src/model/pending-processor.js';
 import { createPublisher } from '../../src/publish/create-publisher.js';
 import type { Searcher } from '../../src/search/searcher.js';
 import { FsDocumentStore } from '../../src/store/fs-document-store.js';
@@ -228,6 +239,14 @@ class FakeMetricsReader implements MetricsReader {
     };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
+  }
+
+  liveForEntry(entryId: string): TemporalMetricRecord[] {
+    return this.records.filter((r) => r.entryId === entryId);
+  }
+
+  insertApproved(record: TemporalMetricRecord): void {
+    this.records = [...this.records, record];
   }
 
   validate(id: string): void {
@@ -388,6 +407,14 @@ class FakeReviewsReader implements ReviewsReader {
     return updated;
   }
 
+  liveForEntry(entryId: string): ReviewRecord[] {
+    return this.records.filter((r) => r.entryId === entryId);
+  }
+
+  insertApproved(record: ReviewRecord): void {
+    this.records = [...this.records, record];
+  }
+
   validate(id: string): void {
     this.records = this.records.map((r) => (r.id === id ? { ...r, touched: true } : r));
   }
@@ -460,6 +487,14 @@ class FakeListItemsReader implements ListItemsReader {
     };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
+  }
+
+  liveForEntry(entryId: string): ListItemRecord[] {
+    return this.records.filter((r) => r.entryId === entryId);
+  }
+
+  insertApproved(record: ListItemRecord): void {
+    this.records = [...this.records, record];
   }
 
   validate(id: string): void {
@@ -542,6 +577,43 @@ class FakeOpinionStatementsReader implements OpinionStatementsReader {
     return this.records.filter((r) => r.subject === subject);
   }
 
+  listOpenQuestions(): OpinionStatementRecord[] {
+    return this.records.filter((r) => r.kind === 'question' && r.status === 'open');
+  }
+
+  resolveCalls: Array<{ id: string; resolvedEntryId: string; resolution: string; resolvedAt: string }> = [];
+
+  resolve(id: string, input: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void {
+    this.resolveCalls.push({ id, ...input });
+    this.records = this.records.map((r) =>
+      r.id === id && r.kind === 'question' && r.status === 'open' && !r.touched
+        ? { ...r, status: 'resolved', resolvedEntryId: input.resolvedEntryId, resolution: input.resolution, resolvedAt: input.resolvedAt }
+        : r,
+    );
+  }
+
+  resolveApprovedCalls: Array<{ id: string; resolvedEntryId: string; resolution: string; resolvedAt: string }> = [];
+
+  resolveApproved(id: string, input: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void {
+    this.resolveApprovedCalls.push({ id, ...input });
+    this.records = this.records.map((r) =>
+      r.id === id && r.kind === 'question' && r.status === 'open'
+        ? { ...r, status: 'resolved', resolvedEntryId: input.resolvedEntryId, resolution: input.resolution, resolvedAt: input.resolvedAt, touched: true }
+        : r,
+    );
+  }
+
+  reopenCalls: string[] = [];
+
+  reopen(id: string): void {
+    this.reopenCalls.push(id);
+    this.records = this.records.map((r) =>
+      r.id === id && r.kind === 'question' && r.status === 'resolved'
+        ? { ...r, status: 'open', resolvedEntryId: null, resolution: null, resolvedAt: null, touched: true }
+        : r,
+    );
+  }
+
   summarizeCalls: Array<readonly string[]> = [];
   summaries: OpinionSubjectSummary[] = [];
 
@@ -564,6 +636,14 @@ class FakeOpinionStatementsReader implements OpinionStatementsReader {
     };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
+  }
+
+  liveForEntry(entryId: string): OpinionStatementRecord[] {
+    return this.records.filter((r) => r.entryId === entryId);
+  }
+
+  insertApproved(record: OpinionStatementRecord): void {
+    this.records = [...this.records, record];
   }
 
   validate(id: string): void {
@@ -678,6 +758,25 @@ class FakeQuestionsReader implements QuestionsReader {
     this.records = this.records.some((r) => r.id === record.id)
       ? this.records.map((r) => (r.id === record.id ? record : r))
       : [...this.records, record];
+  }
+
+  openRaisedBy(entryId: string): QuestionRecord[] {
+    return this.records.filter((r) => r.entryId === entryId && r.status === 'open');
+  }
+
+  insertApproved(record: QuestionRecord): void {
+    this.records = [...this.records, record];
+  }
+
+  resolveApprovedCalls: Array<{ id: string; resolvedEntryId: string; resolution: string; resolvedAt: string }> = [];
+
+  resolveApproved(id: string, resolution: { resolvedEntryId: string; resolution: string; resolvedAt: string }): void {
+    this.resolveApprovedCalls.push({ id, ...resolution });
+    this.records = this.records.map((r) =>
+      r.id === id && r.status === 'open'
+        ? { ...r, status: 'resolved', resolvedEntryId: resolution.resolvedEntryId, resolution: resolution.resolution, resolvedAt: resolution.resolvedAt, touched: true }
+        : r,
+    );
   }
 }
 
@@ -796,6 +895,25 @@ class FakeTodosReader implements TodosReader {
       ? this.records.map((r) => (r.id === record.id ? record : r))
       : [...this.records, record];
   }
+
+  openRaisedBy(entryId: string): TodoRecord[] {
+    return this.records.filter((r) => r.entryId === entryId && r.status === 'open');
+  }
+
+  insertApproved(record: TodoRecord): void {
+    this.records = [...this.records, record];
+  }
+
+  completeApprovedCalls: Array<{ id: string; doneEntryId: string; resolution: string; doneAt: string }> = [];
+
+  completeApproved(id: string, completion: { doneEntryId: string; resolution: string; doneAt: string }): void {
+    this.completeApprovedCalls.push({ id, ...completion });
+    this.records = this.records.map((r) =>
+      r.id === id && r.status === 'open'
+        ? { ...r, status: 'done', doneEntryId: completion.doneEntryId, resolution: completion.resolution, doneAt: completion.doneAt, touched: true }
+        : r,
+    );
+  }
 }
 
 /** The same fake-the-seam approach `publisher.test.ts`'s `FakeBlobStore`
@@ -835,22 +953,84 @@ class FakeChatAnswerer implements ChatAnswerer {
 
 /** Records which entries were processed and returns a canned response —
  * these tests exercise the route's own contract, never real extraction
- * (that is each extractor's own test file's job, and `entry-processor.test.ts`'s). */
-class FakeEntryProcessor implements EntryProcessing {
+ * (that is each extractor's own test file's job, and `pending-processor.test.ts`'s). */
+class FakePendingProcessor implements LivePendingProcessing {
   calls: { id: string; created: string; body: string }[] = [];
-  response: ProcessEntryResponse | 'FAIL' = {
-    metricCount: 0,
-    reviewCount: 0,
-    itemCount: 0,
-    statementCount: 0,
-    questionCount: 0,
-    todoCount: 0,
-  };
+  response: ProcessEntryResponse | 'FAIL' = { pendingItemCount: 0, processRunId: 'run-1' };
 
   async processEntry(entry: { id: string; created: string; body: string }): Promise<ProcessEntryResponse> {
     this.calls.push(entry);
     if (this.response === 'FAIL') throw extractionFailed('AI_GATEWAY_API_KEY is not set.');
     return this.response;
+  }
+}
+
+/** A plain in-memory stand-in for `PendingItemsIndex` — real filtering
+ * logic (not just canned responses), since several route tests exercise
+ * `entryId`/`structureType`/`status` query filtering directly. */
+class FakePendingItemsReader implements PendingItemsReader {
+  items: PendingExtractionItem[] = [];
+  decideCalls: Array<{ id: string; decision: 'approved' | 'rejected' }> = [];
+
+  list(options: ListPendingItemsOptions = {}): PendingExtractionItem[] {
+    return this.items.filter(
+      (i) =>
+        (options.entryId === undefined || i.entryId === options.entryId) &&
+        (options.structureType === undefined || i.structureType === options.structureType) &&
+        (options.status === undefined || i.status === options.status),
+    );
+  }
+
+  getById(id: string): PendingExtractionItem | null {
+    return this.items.find((i) => i.id === id) ?? null;
+  }
+
+  insertBatch(items: CreatePendingItemInput[]): void {
+    this.items = [...this.items, ...items.map((i) => ({ ...i, status: 'pending' as const, decidedAt: null }))];
+  }
+
+  supersedePendingForEntry(entryId: string, runId: string, now: string): void {
+    this.items = this.items.map((i) =>
+      i.entryId === entryId && i.processRunId !== runId && i.status === 'pending' ? { ...i, status: 'superseded' as const, decidedAt: now } : i,
+    );
+  }
+
+  decide(id: string, decision: 'approved' | 'rejected', now: string): PendingExtractionItem | null {
+    this.decideCalls.push({ id, decision });
+    const item = this.items.find((i) => i.id === id && i.status === 'pending');
+    if (!item) return null;
+    const decided: PendingExtractionItem = { ...item, status: decision, decidedAt: now };
+    this.items = this.items.map((i) => (i.id === id ? decided : i));
+    return decided;
+  }
+}
+
+/** Records which items were applied — approving/applying an item's real
+ * effect on the target structure is `pending-item-applier.test.ts`'s job,
+ * not the HTTP layer's. */
+class FakePendingItemApplier implements PendingItemApplying {
+  applyCalls: PendingExtractionItem[] = [];
+
+  async apply(item: PendingExtractionItem): Promise<void> {
+    this.applyCalls.push(item);
+  }
+}
+
+class FakeEntryProcessingStatusReader implements EntryProcessingStatusReader {
+  rows = new Map<string, EntryProcessingStatusRow>();
+  recordProcessedCalls: Array<{ entryId: string; contentHash: string }> = [];
+
+  get(entryId: string): EntryProcessingStatusRow | null {
+    return this.rows.get(entryId) ?? null;
+  }
+
+  recordProcessed(entryId: string, contentHash: string, now: string): void {
+    this.recordProcessedCalls.push({ entryId, contentHash });
+    this.rows.set(entryId, { entryId, lastProcessedContentHash: contentHash, lastProcessedAt: now });
+  }
+
+  removeEntry(entryId: string): void {
+    this.rows.delete(entryId);
   }
 }
 
@@ -877,7 +1057,10 @@ let opinionStatements: FakeOpinionStatementsReader;
 let opinionSummaries: FakeOpinionSummariesReader;
 let questions: FakeQuestionsReader;
 let todos: FakeTodosReader;
-let processor: FakeEntryProcessor;
+let processor: FakePendingProcessor;
+let pendingItems: FakePendingItemsReader;
+let pendingItemApplier: FakePendingItemApplier;
+let entryProcessingStatus: FakeEntryProcessingStatusReader;
 let chat: FakeChatAnswerer;
 let index: SqliteIndex;
 let documentsIndex: DocumentsIndex;
@@ -928,7 +1111,10 @@ beforeEach(async () => {
   opinionSummaries = new FakeOpinionSummariesReader();
   questions = new FakeQuestionsReader();
   todos = new FakeTodosReader();
-  processor = new FakeEntryProcessor();
+  processor = new FakePendingProcessor();
+  pendingItems = new FakePendingItemsReader();
+  pendingItemApplier = new FakePendingItemApplier();
+  entryProcessingStatus = new FakeEntryProcessingStatusReader();
   chat = new FakeChatAnswerer();
   index = new SqliteIndex(':memory:');
   documentsIndex = new DocumentsIndex(':memory:');
@@ -973,6 +1159,9 @@ beforeEach(async () => {
     questions,
     todos,
     processor,
+    pendingItems,
+    pendingItemApplier,
+    entryProcessingStatus,
     chat,
     publisher,
     visibilityDefaultsIndex,
@@ -1205,6 +1394,7 @@ describe('GET /entries/:id', () => {
       created: '2026-07-26T22:55:13+01:00',
       body: 'Line one\n\nLine two\n',
       contentHash: created.contentHash,
+      published: false,
     });
   });
 
@@ -1239,6 +1429,7 @@ describe('PUT /entries/:id', () => {
       created: created.created,
       body: 'Revised.\n',
       contentHash: updated.contentHash,
+      published: false,
     });
     expect(updated.contentHash).not.toBe(created.contentHash);
 
@@ -1286,6 +1477,50 @@ describe('PUT /entries/:id', () => {
     });
     expect(response.status).toBe(400);
     expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('POST /entries/:id/publish, /unpublish', () => {
+  it('flips published on GET /entries/:id and is idempotent', async () => {
+    const created = (await (await post({ body: 'A public thought.' })).json()) as CreateEntryResponse;
+
+    const before = (await (await app.request(`/entries/${created.id}`)).json()) as Entry;
+    expect(before.published).toBe(false);
+
+    const publishResponse = await app.request(`/entries/${created.id}/publish`, { method: 'POST' });
+    expect(publishResponse.status).toBe(204);
+    const afterPublish = (await (await app.request(`/entries/${created.id}`)).json()) as Entry;
+    expect(afterPublish.published).toBe(true);
+
+    // Publishing again is a no-op, not an error.
+    expect((await app.request(`/entries/${created.id}/publish`, { method: 'POST' })).status).toBe(204);
+
+    const unpublishResponse = await app.request(`/entries/${created.id}/unpublish`, { method: 'POST' });
+    expect(unpublishResponse.status).toBe(204);
+    const afterUnpublish = (await (await app.request(`/entries/${created.id}`)).json()) as Entry;
+    expect(afterUnpublish.published).toBe(false);
+  });
+
+  it('tolerates a malformed or missing id rather than erroring', async () => {
+    for (const id of ['01ARZ3NDEKTSV4RRFFQ69G5FAV', 'nonsense']) {
+      expect((await app.request(`/entries/${id}/publish`, { method: 'POST' })).status).toBe(204);
+      expect((await app.request(`/entries/${id}/unpublish`, { method: 'POST' })).status).toBe(204);
+    }
+  });
+
+  it('keeps the published mirror in sync after an edit', async () => {
+    const created = (await (await post({ body: 'Original.' })).json()) as CreateEntryResponse;
+    await app.request(`/entries/${created.id}/publish`, { method: 'POST' });
+
+    const updateResponse = await app.request(`/entries/${created.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: 'Revised.', contentHash: created.contentHash }),
+    });
+    const updated = (await updateResponse.json()) as UpdateEntryResponse;
+    // Still published — an edit to a published entry never silently
+    // unpublishes it (`plan.md` M15's resync-on-update behavior).
+    expect(updated.published).toBe(true);
   });
 });
 
@@ -1379,16 +1614,9 @@ describe('POST /entries/:id/process', () => {
     return app.request(`/entries/${id}/process`, { method: 'POST' });
   }
 
-  it('runs the processor against the entry and returns its counts', async () => {
+  it('runs the live pending processor against the entry and returns its pending-item count', async () => {
     const created = (await (await post({ body: 'Ran 5k. Need to buy milk.' })).json()) as CreateEntryResponse;
-    processor.response = {
-      metricCount: 1,
-      reviewCount: 0,
-      itemCount: 0,
-      statementCount: 0,
-      questionCount: 0,
-      todoCount: 1,
-    };
+    processor.response = { pendingItemCount: 2, processRunId: 'run-abc' };
 
     const response = await process(created.id);
     expect(response.status).toBe(200);
@@ -1399,12 +1627,21 @@ describe('POST /entries/:id/process', () => {
     expect(processor.calls[0]!.body).toBe('Ran 5k. Need to buy milk.\n');
   });
 
+  it('records the entry as processed, at its current content hash, on success', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    await process(created.id);
+
+    expect(entryProcessingStatus.recordProcessedCalls).toHaveLength(1);
+    expect(entryProcessingStatus.recordProcessedCalls[0]).toMatchObject({ entryId: created.id, contentHash: created.contentHash });
+  });
+
   it('is safe to call again on the same entry — same route, no special-casing', async () => {
     const created = (await (await post({ body: 'Edited later.' })).json()) as CreateEntryResponse;
 
     expect((await process(created.id)).status).toBe(200);
     expect((await process(created.id)).status).toBe(200);
     expect(processor.calls).toHaveLength(2);
+    expect(entryProcessingStatus.recordProcessedCalls).toHaveLength(2);
   });
 
   it('reports a missing entry as not found, without calling the processor', async () => {
@@ -1420,13 +1657,53 @@ describe('POST /entries/:id/process', () => {
     expect((await errorOf(response)).code).toBe('entry_not_found');
   });
 
-  it('surfaces extraction_failed when the model client is unconfigured', async () => {
+  it('surfaces extraction_failed when the model client is unconfigured, and does not record a processed status', async () => {
     const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
     processor.response = 'FAIL';
 
     const response = await process(created.id);
     expect(response.status).toBe(503);
     expect((await errorOf(response)).code).toBe('extraction_failed');
+    expect(entryProcessingStatus.recordProcessedCalls).toHaveLength(0);
+  });
+});
+
+describe('GET /entries/:id/status', () => {
+  function status(id: string) {
+    return app.request(`/entries/${id}/status`);
+  }
+
+  it('is never_processed before any Process run', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const response = await status(created.id);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual<EntryStatusResponse>({ state: 'never_processed' });
+  });
+
+  it('is up_to_date right after a successful process run', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    await app.request(`/entries/${created.id}/process`, { method: 'POST' });
+
+    expect(await (await status(created.id)).json()).toEqual<EntryStatusResponse>({ state: 'up_to_date' });
+  });
+
+  it('is stale once the entry is edited after a process run', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    await app.request(`/entries/${created.id}/process`, { method: 'POST' });
+
+    await app.request(`/entries/${created.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: 'x, edited', contentHash: created.contentHash }),
+    });
+
+    expect(await (await status(created.id)).json()).toEqual<EntryStatusResponse>({ state: 'stale' });
+  });
+
+  it('reports a missing entry as not found', async () => {
+    const response = await status('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
   });
 });
 
@@ -2697,6 +2974,11 @@ describe('GET /opinions/statements', () => {
     eventEpochMs: Date.parse('2026-07-20T19:00:00Z'),
     eventTimeExplicit: true,
     extractedAt: '2026-07-20T21:00:00+01:00',
+    kind: 'note',
+    status: null,
+    resolvedEntryId: null,
+    resolution: null,
+    resolvedAt: null,
     touched: false,
     ...overrides,
   });
@@ -2719,6 +3001,10 @@ describe('GET /opinions/statements', () => {
         statement: 'Believes in living deliberately.',
         eventTime: '2026-07-20T20:00:00+01:00',
         eventTimeExplicit: true,
+        kind: 'note',
+        status: null,
+        resolvedEntryId: null,
+        resolution: null,
         touched: false,
         published: false,
       },
@@ -2755,6 +3041,20 @@ describe('DELETE /opinions/statements/:id', () => {
     const response = await app.request('/opinions/statements/not-a-ulid', { method: 'DELETE' });
     expect(response.status).toBe(204);
     expect(opinionStatements.removeCalls).toEqual([]);
+  });
+});
+
+describe('POST /opinions/statements/:id/reopen', () => {
+  it('reopens the record and mirrors it', async () => {
+    const response = await app.request('/opinions/statements/01ARZ3NDEKTSV4RRFFQ69G5FAV/reopen', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(opinionStatements.reopenCalls).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FAV']);
+  });
+
+  it('is a no-op, not an error, for a malformed id', async () => {
+    const response = await app.request('/opinions/statements/not-a-ulid/reopen', { method: 'POST' });
+    expect(response.status).toBe(204);
+    expect(opinionStatements.reopenCalls).toEqual([]);
   });
 });
 

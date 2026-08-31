@@ -25,7 +25,7 @@ Precedence runs in that order. If any two conflict, the higher one wins and the 
 8. **No logic in the frontend.** All extraction, querying, aggregation, and search lives behind the API. The frontend calls endpoints and renders results.
 9. **No hardcoded colours, fonts, sizes, or spacing in components.** Everything references a token. Define and review the token set before building components.
 10. **The AI never creates new metrics on its own.** It may suggest; the user approves. Or the user requests directly.
-11. **The opinion model never extrapolates.** It organises and summarises opinions actually expressed, linked to their source entries. It does not infer positions the user has not stated.
+11. **The concept model never extrapolates.** Its primary job is grouping everything actually said about a subject — a fact, an event, a reflection, or a stated view — linked to their source entries; a generated cross-entry summary is a secondary, optional view on top of that grouping, never the reason the structure exists. It does not infer anything the user has not stated. (Reframed 2026-08-30 from a narrower "opinions only" model — see `docs/requirements.md` §5.2.)
 12. **No engagement mechanics, ever.** No streaks, gamification, reminders, notification badges, or encouragement. See `docs/design.md` §4.
 13. **Entry time is not event time.** When an entry describes something that happened earlier or elsewhere, the event's own time and place come from the prose, not from the entry's metadata.
 

@@ -34,6 +34,7 @@ function useExecutableActions(): Record<string, () => void> {
       'go-writing': () => router.push('/entry/new'),
       'go-entries': () => router.push('/'),
       'go-documents': () => router.push('/documents'),
+      'go-pending': () => router.push('/pending'),
       'go-chat': () => router.push('/chat'),
       'toggle-theme': () => toggleTheme(),
       'toggle-chrome': () => toggleChrome(),

@@ -30,8 +30,12 @@ interface QuestionsData {
 
 /**
  * Open questions (`plan.md` M8c) — something raised in one entry, and
- * possibly resolved by a later one. Never live, only whatever the last
- * `npm run reprocess` wrote. Two sections rather than one list split on
+ * possibly resolved by a later one: what a past `npm run reprocess` wrote,
+ * plus whatever has since been approved from a live `Process` run's popup
+ * or `/pending` queue, resolution included (`plan.md` M18 closes the gap
+ * `QuestionsIndex.resolve()`'s own comment flagged since M10 — a live
+ * resolution against a touched question previously had nowhere to go).
+ * Two sections rather than one list split on
  * this side of the boundary: the backend's `status` filter already does
  * the splitting (`requirements.md` §7.1).
  *

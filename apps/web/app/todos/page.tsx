@@ -36,8 +36,10 @@ interface TodosData {
  * To-dos (`plan.md` M15, `requirements.md` §11) — closest to `/questions`,
  * plus two things no other structure page has: adding one directly, with
  * no source entry, and checking one off directly, with no entry involved.
- * Never live, only whatever the last `npm run reprocess` wrote, except for
- * those two direct actions, which the API applies immediately.
+ * Otherwise what a past `npm run reprocess` wrote, plus whatever has since
+ * been approved from a live `Process` run's popup or `/pending` queue,
+ * completion included (`plan.md` M18) — those two direct actions are the
+ * only ones the API still applies immediately, with no approval step.
  *
  * Editing and validating is scoped to `text`, what was raised — never the
  * completion, which has its own dedicated checkbox and Reopen action.

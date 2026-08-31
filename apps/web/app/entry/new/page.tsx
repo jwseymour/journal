@@ -236,10 +236,10 @@ export default function NewEntryPage() {
     }
     if (entryIdRef.current) {
       endedRef.current = true;
-      // `?process=1`: `EntryView` reads this on arrival and runs the AI
-      // layer for this entry live (`plan.md` M15) — finishing a new entry
-      // is exactly the moment that pass should happen.
-      router.push(`/entry/${entryIdRef.current}?process=1`);
+      // No longer carries `?process=1` (`plan.md` M18) — Process is now a
+      // visible, explicit action on the entry's own page, never something
+      // finishing triggers on its own.
+      router.push(`/entry/${entryIdRef.current}`);
     } else {
       setFinishing(false);
     }
@@ -316,6 +316,14 @@ export default function NewEntryPage() {
           <kbd className={styles.hint}>⌘⇧P preview</kbd>
           <kbd className={styles.hint}>⌘S save</kbd>
           <kbd className={styles.hint}>⌘↩ finish</kbd>
+          <button
+            type="button"
+            className={styles.saveButton}
+            onClick={() => void flush()}
+            disabled={!hasWriting || conflict}
+          >
+            Save
+          </button>
           <button
             type="button"
             className={styles.finish}
