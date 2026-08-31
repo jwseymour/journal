@@ -406,6 +406,80 @@ export type UpdateDocumentResponse = Document;
  */
 export type PublishDocumentResponse = Document;
 
+export type MediaKind = 'image' | 'video';
+
+/**
+ * Everything a media-library item records about itself — the photo/video
+ * library, independent of any entry (M19).
+ *
+ * Unlike an attachment (§4.6), a media item is not written into an entry's
+ * own directory and carries no relative link back to one: it is uploaded in
+ * bulk, on its own, and any relation to an entry is a computed fact read
+ * back via `GET /entries/:id/media`, never an authored pointer stored on
+ * either side. It is also never modified once uploaded — the same "written
+ * once, never overwritten" stance §4.6 already takes on attachments — so
+ * there is no update request/response pair anywhere in this section.
+ */
+export interface MediaMetadata {
+  /** A ULID. Assigned once at upload, never changes, never reused. */
+  id: string;
+
+  kind: MediaKind;
+
+  /** e.g. `image/jpeg`, `video/quicktime`. Determines `kind` and the file's
+   * extension in storage; see `apps/api/src/record/media-filename.ts`. */
+  contentType: string;
+
+  byteSize: number;
+
+  /** As supplied by the uploader. Display only — never used to resolve the
+   * file, and never treated as a path. */
+  originalFilename: string;
+
+  width: number | null;
+  height: number | null;
+
+  /**
+   * The local wall-clock digits read from the file's own embedded metadata
+   * — EXIF `DateTimeOriginal`/`CreateDate` for an image, the `moov/mvhd`
+   * box for video — carrying no UTC offset, the same ambiguity the
+   * underlying formats themselves have (`record/time.ts`'s distinction
+   * between the wall clock and the instant — neither format gives the
+   * latter reliably). `null` when the file carried neither.
+   */
+  capturedAt: string | null;
+
+  /** RFC 3339, always carrying a UTC offset. When this item was uploaded —
+   * never when it was taken; that is `capturedAt`, and the two are
+   * frequently unrelated for a bulk upload of an old camera roll. */
+  uploadedAt: string;
+}
+
+/**
+ * One page of the library, newest-*uploaded*-first — see `MediaIndex`'s own
+ * comment for why upload order, not `capturedAt`, anchors the default list.
+ */
+export interface MediaPage {
+  media: MediaMetadata[];
+  /** Pass back as `cursor` for the next page. `null` means this was the last. */
+  nextCursor: string | null;
+}
+
+/** The newly-uploaded item, in full — `POST /media`. */
+export type UploadMediaResponse = MediaMetadata;
+
+/**
+ * Every media item captured on the same local calendar day as one entry's
+ * own `created` — `GET /entries/:id/media`. A pure, computed join: nothing
+ * here is stored, and there is no "touched" concept for it yet, the same
+ * way there is nothing to correct about a fact this mechanical
+ * (`requirements.md` §6.4's touched/untouched distinction only applies to
+ * something a model proposed).
+ */
+export interface EntryMediaResponse {
+  media: MediaMetadata[];
+}
+
 /**
  * The result of transcribing a recording (`requirements.md` §4.7).
  *
@@ -1333,6 +1407,11 @@ export type ApiErrorCode =
    * lose the audio; nothing about the recording itself is discarded when this
    * happens (`requirements.md` §4.7).
    */
+  /**
+   * `POST /media` carried a `contentType` the library does not accept —
+   * see `apps/api/src/record/media-filename.ts` for the supported list.
+   */
+  | 'unsupported_media_type'
   | 'transcription_failed'
   /**
    * The search index could not answer — most likely the local embedding

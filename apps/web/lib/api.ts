@@ -16,12 +16,14 @@ import type {
   DocumentPage,
   Entry,
   EntryPage,
+  EntryMediaResponse,
   EntryPeriodsResponse,
   EntryStatusResponse,
   DefineMetricFieldRequest,
   ListItemsResponse,
   ListItemUpdateSuggestionsResponse,
   ListsSummaryResponse,
+  MediaPage,
   MetricFieldsResponse,
   MetricFieldSummaryResponse,
   MetricFieldSuggestionsResponse,
@@ -68,6 +70,7 @@ import type {
   UpdateQuestionRequest,
   UpdateReviewRequest,
   UpdateTodoRequest,
+  UploadMediaResponse,
   VisibilityDefaultsResponse,
   VisibilityStructureType,
 } from '@journal/contract';
@@ -267,6 +270,46 @@ export function addAttachment(entryId: string, file: Blob, filename: string): Pr
     method: 'POST',
     body: form,
   });
+}
+
+/**
+ * Upload one file into the media library (`requirements.md` — photo
+ * library, M19) — independent of any entry, unlike `addAttachment`. A
+ * multi-file picker calls this once per file; there is no bulk endpoint of
+ * its own.
+ */
+export function uploadMedia(file: File): Promise<UploadMediaResponse> {
+  const form = new FormData();
+  form.set('file', file, file.name);
+  return request<UploadMediaResponse>('/media', { method: 'POST', body: form });
+}
+
+export function listMedia(options: { cursor?: string; limit?: number } = {}): Promise<MediaPage> {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return request<MediaPage>(`/media${suffix}`);
+}
+
+export async function deleteMedia(id: string): Promise<void> {
+  await request<undefined>(`/media/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Every media item captured on the same local calendar day as this entry —
+ * the "Photos from this day" section on the entry page. A computed,
+ * non-stored relation; see `EntryMediaResponse`'s own comment. */
+export function listEntryMedia(entryId: string): Promise<EntryMediaResponse> {
+  return request<EntryMediaResponse>(`/entries/${encodeURIComponent(entryId)}/media`);
+}
+
+/** The URL a media item's own bytes are served from — for an
+ * `<img>`/`<video>` element's `src` directly, never through `request()`
+ * (which parses a JSON body). Same reasoning `API_BASE`'s own comment gives
+ * for the Google sign-in `href`: this must resolve the same way in a
+ * server-rendered page as in the browser that later hydrates it. */
+export function mediaFileUrl(id: string): string {
+  return `${API_BASE}/media/${encodeURIComponent(id)}/file`;
 }
 
 /**

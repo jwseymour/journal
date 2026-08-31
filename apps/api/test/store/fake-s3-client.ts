@@ -56,7 +56,14 @@ export function createFakeS3Client(pageSize = 1000): FakeS3Client {
         const key = command.input.Key as string;
         const buffer = objects.get(key);
         if (!buffer) throw notFound('NoSuchKey');
-        return { Body: { transformToString: async () => buffer.toString('utf8') } };
+        return {
+          Body: {
+            transformToString: async () => buffer.toString('utf8'),
+            // `S3MediaStore` reads binary objects this way — a real
+            // `SdkStreamMixin` supports both transforms on the same body.
+            transformToByteArray: async () => new Uint8Array(buffer),
+          },
+        };
       }
 
       if (command instanceof HeadObjectCommand) {

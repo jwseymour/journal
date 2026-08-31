@@ -5,6 +5,7 @@ import { CategoriesIndex } from './index/categories-index.js';
 import { DocumentsIndex } from './index/documents-index.js';
 import { EntryProcessingStatusIndex } from './index/entry-processing-status-index.js';
 import { ListsIndex } from './index/lists-index.js';
+import { MediaIndex } from './index/media-index.js';
 import { MetricFieldsIndex } from './index/metric-fields-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
 import { OpinionStatementsIndex } from './index/opinion-statements-index.js';
@@ -43,6 +44,7 @@ import { SearchIndexer } from './search/indexer.js';
 import { HybridSearcher } from './search/searcher.js';
 import { createDocumentStore } from './store/create-document-store.js';
 import { createEntryStore } from './store/create-entry-store.js';
+import { createMediaStore } from './store/create-media-store.js';
 import { SearchingDocumentStore } from './store/searching-document-store.js';
 import { SearchingEntryStore } from './store/searching-entry-store.js';
 import { LocalTranscriber } from './transcribe/local-transcriber.js';
@@ -77,6 +79,12 @@ async function main(): Promise<void> {
   // (`plan.md` M17) — documents are now indexed for search alongside
   // entries, distinguished by `source_type` in the same `chunks` table.
   const documentStore = new SearchingDocumentStore(createDocumentStore(config, documentsIndex), indexer);
+  // The media library (`requirements.md` — photo library, M19) — its own
+  // store and index, independent of entries/documents the same way
+  // `documentStore` is independent of `store`. Not wrapped in a search
+  // decorator: there is no prose here for `SearchIndexer` to chunk.
+  const mediaIndex = new MediaIndex(config.indexDbPath);
+  const mediaStore = createMediaStore(config, mediaIndex);
   const transcriber = new LocalTranscriber(config.whisperModel, config.whisperCacheDir);
   const metricsIndex = new MetricsIndex(config.indexDbPath);
   const metricFieldsIndex = new MetricFieldsIndex(config.indexDbPath);
@@ -198,6 +206,7 @@ async function main(): Promise<void> {
   const app = createApp(
     store,
     documentStore,
+    mediaStore,
     config,
     transcriber,
     searcher,

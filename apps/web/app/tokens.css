@@ -149,6 +149,11 @@
    * headers can stack at predictable offsets as nested sections scroll. */
   --tree-row-height: 2.75rem;
 
+  /* A media-library thumbnail's edge — the entry page's "Photos from this
+   * day" strip and the `/photos` grid both size their tiles from this one
+   * value, so the two surfaces always read as the same object at a glance. */
+  --thumb-size: 6.5rem;
+
   /* ═══ Line and edge ════════════════════════════════════════════════════════
    *
    * Hairlines, never heavy rules (`design.md` §5.3). Radii are nearly nothing:

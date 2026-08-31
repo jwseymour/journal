@@ -20,6 +20,7 @@ import type {
   Document,
   DocumentPage,
   Entry,
+  EntryMediaResponse,
   EntryPage,
   EntryPeriodsResponse,
   EntryStatusResponse,
@@ -27,6 +28,7 @@ import type {
   ListItemsResponse,
   ListItemUpdateSuggestionsResponse,
   ListsSummaryResponse,
+  MediaPage,
   MetricFieldsResponse,
   MetricFieldSummaryResponse,
   MetricFieldSuggestionsResponse,
@@ -62,9 +64,10 @@ import type {
   TranscribeResponse,
   UpdateDocumentResponse,
   UpdateEntryResponse,
+  UploadMediaResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
-import { AppError, invalidRequest, recordNotFound, unauthorized } from '../errors.js';
+import { AppError, invalidRequest, recordNotFound, unauthorized, unsupportedMediaType } from '../errors.js';
 import type { CategoriesReader, CoreStructureType } from '../index/categories-index.js';
 import type { EntryProcessingStatusReader } from '../index/entry-processing-status-index.js';
 import type { ListItemsReader } from '../index/lists-index.js';
@@ -84,13 +87,20 @@ import type { PendingItemApplying } from '../model/pending-item-applier.js';
 import type { LivePendingProcessing } from '../model/pending-processor.js';
 import type { Publisher } from '../publish/publisher.js';
 import { isUlid, ulid } from '../record/id.js';
-import { nowTimestamp } from '../record/time.js';
+import { isSupportedMediaContentType } from '../record/media-filename.js';
+import { nowTimestamp, parseTimestamp } from '../record/time.js';
 import type { Searcher } from '../search/searcher.js';
 import type { Transcriber } from '../transcribe/transcriber.js';
 import type { DocumentStore } from './../store/document-store.js';
 import type { EntryStore } from './../store/entry-store.js';
+import type { MediaStore } from './../store/media-store.js';
 
 const STRUCTURE_TYPES: readonly StructureType[] = ['metric', 'review_medium', 'list_type', 'opinion_subject'];
+
+/** Same ceiling as an entry attachment — video pushes closer to it than a
+ * photo ever will, but this is a personal-scale library on a small host,
+ * not a place for an unbounded upload. */
+const MAX_MEDIA_BYTES = 200 * 1024 * 1024;
 
 /** A generous ceiling, not a tuned one — big enough for a long spoken entry's
  * worth of raw PCM, small enough that a request cannot hold the process open
@@ -459,6 +469,7 @@ const LoginSchema = z.object({ password: z.string().min(1) }).strict();
 export function createApp(
   store: EntryStore,
   documentStore: DocumentStore,
+  mediaStore: MediaStore,
   config: Config,
   transcriber: Transcriber,
   searcher: Searcher,
@@ -846,6 +857,34 @@ export function createApp(
   });
 
   /**
+   * Every media-library item captured on this entry's own local calendar
+   * day (`requirements.md` — photo library, M19) — a pure, computed join
+   * against `capturedAt`, nothing stored on either side (`MediaStore`'s own
+   * doc comment). Uses the entry's local wall-clock date, not its instant:
+   * two entries either side of midnight in the writer's own timezone must
+   * not be treated as the same day just because they are close together in
+   * UTC (`record/time.ts`'s wall-clock/instant distinction).
+   */
+  app.get('/entries/:id/media', async (c) => {
+    const id = c.req.param('id');
+    const entry = isUlid(id) ? await store.get(id) : null;
+    if (!entry) {
+      return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
+    }
+
+    const created = parseTimestamp(entry.created);
+    /* c8 ignore next 3 -- `entry.created` is always a value this same parser produced */
+    if (!created) {
+      return c.json({ media: [] } satisfies EntryMediaResponse);
+    }
+    const date = `${String(created.year).padStart(4, '0')}-${String(created.month).padStart(2, '0')}-${String(created.day).padStart(2, '0')}`;
+
+    const media = await mediaStore.listByCapturedDate(date);
+    const response: EntryMediaResponse = { media };
+    return c.json(response);
+  });
+
+  /**
    * Live, single-entry extraction (`plan.md` M15, rewritten M18) — every
    * structure type, for this one entry. **No longer commits anything
    * directly**: every candidate becomes a `PendingExtractionItem` awaiting
@@ -971,6 +1010,94 @@ export function createApp(
     }
     const response: ApproveBatchResponse = { approved, failed };
     return c.json(response);
+  });
+
+  /**
+   * Bulk-upload the media library (`requirements.md` — photo library, M19)
+   * — one file per request; a multi-file picker on the frontend is a loop
+   * of these, not a bulk endpoint of its own. Independent of any entry, the
+   * same way `POST /documents` is: there is no `:id` in this path at all.
+   * Metadata (dimensions, `capturedAt`) is extracted from the file's own
+   * bytes at upload time — see `record/media-metadata.ts` — never supplied
+   * by the caller.
+   */
+  app.post('/media', async (c) => {
+    const contentLength = Number(c.req.header('content-length') ?? '0');
+    if (contentLength > MAX_MEDIA_BYTES) {
+      throw invalidRequest(`The upload is larger than the ${MAX_MEDIA_BYTES} byte limit.`);
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.parseBody();
+    } catch {
+      throw invalidRequest('The request body is not valid multipart/form-data.');
+    }
+
+    const file = body['file'];
+    if (!(file instanceof File)) {
+      throw invalidRequest("A 'file' field carrying the media item is required.");
+    }
+    if (!isSupportedMediaContentType(file.type)) {
+      throw unsupportedMediaType(file.type);
+    }
+
+    const data = Buffer.from(await file.arrayBuffer());
+    const stored = await mediaStore.upload({ contentType: file.type, data, originalFilename: file.name });
+    const response: UploadMediaResponse = stored;
+    return c.json(response, 201);
+  });
+
+  app.get('/media', async (c) => {
+    const cursor = c.req.query('cursor');
+    const rawLimit = c.req.query('limit');
+
+    let limit = DEFAULT_LIMIT;
+    if (rawLimit !== undefined && rawLimit !== '') {
+      const value = Number(rawLimit);
+      if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+        throw invalidRequest(`'limit' must be a whole number between 1 and ${MAX_LIMIT}.`);
+      }
+      limit = value;
+    }
+
+    const result = await mediaStore.list({ limit, ...(cursor !== undefined && cursor !== '' ? { cursor } : {}) });
+    const page: MediaPage = { media: result.media, nextCursor: result.nextCursor };
+    return c.json(page);
+  });
+
+  app.get('/media/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) throw recordNotFound('media', id);
+    const media = await mediaStore.get(id);
+    if (!media) throw recordNotFound('media', id);
+    return c.json(media satisfies UploadMediaResponse);
+  });
+
+  /** The item's raw bytes, for `<img>`/`<video>` `src` — the one route in
+   * this app that ever returns something other than JSON. */
+  app.get('/media/:id/file', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) throw recordNotFound('media', id);
+    const bytes = await mediaStore.getBytes(id);
+    if (!bytes) throw recordNotFound('media', id);
+    // `Buffer`'s own `.buffer` is typed `ArrayBufferLike` (it may be a
+    // pooled/shared allocation); Hono's `Data` type wants a plain
+    // `Uint8Array<ArrayBuffer>`. Copying into a fresh `Uint8Array` is the
+    // simplest way to satisfy that without leaking Node's `Buffer` type
+    // into the one route in this app that returns raw bytes.
+    return c.body(new Uint8Array(bytes.data), 200, {
+      'Content-Type': bytes.contentType,
+      // Immutable once uploaded (`MediaStore`'s own doc comment) — safe to
+      // cache hard, the same as any other write-once asset.
+      'Cache-Control': 'private, max-age=31536000, immutable',
+    });
+  });
+
+  app.delete('/media/:id', async (c) => {
+    const id = c.req.param('id');
+    if (isUlid(id)) await mediaStore.remove(id);
+    return c.body(null, 204);
   });
 
   app.post('/documents', async (c) => {

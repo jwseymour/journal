@@ -79,6 +79,28 @@ export function formatTime(created: string): string {
   return at ? TIME.format(at) : '';
 }
 
+const CAPTURED_DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+/**
+ * `26 July 2026`, for a `MediaMetadata.capturedAt` — which, unlike `created`,
+ * carries no offset at all (EXIF has none to give). `new Date(capturedAt)`
+ * would be wrong here in a way `wallClock` above isn't: **without** an
+ * offset suffix, the `Date` constructor parses a date-time string as local
+ * to *this* runtime — different servers and browsers would read the same
+ * `capturedAt` as different instants, and formatting could silently roll
+ * the date itself over near midnight for a reader far from wherever the
+ * photo happened to be taken. `Date.UTC` from the digits directly avoids
+ * that parse altogether — there is no instant here to get wrong, only
+ * digits to display exactly as given.
+ */
+export function formatCapturedDate(capturedAt: string): string {
+  const match = CAPTURED_DATE.exec(capturedAt);
+  if (!match) return capturedAt;
+  const [, year, month, day] = match;
+  const at = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return SHORT_DATE.format(at);
+}
+
 const MONTH_NAMES = [
   'January',
   'February',

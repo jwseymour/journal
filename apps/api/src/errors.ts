@@ -56,6 +56,15 @@ export const attachmentConflict = (filename: string): AppError =>
     409,
   );
 
+/** A `POST /media` upload whose `contentType` is not one the library
+ * accepts (`apps/api/src/record/media-filename.ts`). */
+export const unsupportedMediaType = (contentType: string): AppError =>
+  new AppError(
+    'unsupported_media_type',
+    `'${contentType}' is not a supported media type.`,
+    415,
+  );
+
 export const transcriptionFailed = (message: string, cause?: unknown): AppError =>
   new AppError('transcription_failed', message, 503, cause === undefined ? undefined : { cause });
 

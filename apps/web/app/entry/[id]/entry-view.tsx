@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { Entry, EntryStatusResponse } from '@journal/contract';
+import type { Entry, EntryStatusResponse, MediaMetadata } from '@journal/contract';
 import { Composer } from '@/components/composer';
 import { Markdown } from '@/components/markdown';
 import { PendingItemsPopup } from '@/components/pending-items-popup';
@@ -9,6 +9,8 @@ import {
   addAttachment,
   ApiRequestError,
   getEntryStatus,
+  listEntryMedia,
+  mediaFileUrl,
   processEntry,
   publishEntry,
   unpublishEntry,
@@ -54,6 +56,17 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
   const [foundNothing, setFoundNothing] = useState(false);
   const [confirmingPublish, setConfirmingPublish] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [media, setMedia] = useState<MediaMetadata[]>([]);
+
+  // Photos from this day (`requirements.md` — photo library, M19) — a
+  // computed relation, read alongside the entry rather than stored on it.
+  // A failure here just means the strip stays empty; it is never a reason
+  // to block reading the entry itself.
+  useEffect(() => {
+    listEntryMedia(entry.id)
+      .then((response) => setMedia(response.media))
+      .catch(() => setMedia([]));
+  }, [entry.id]);
 
   const loadStatus = useCallback(() => {
     getEntryStatus(entry.id)
@@ -178,7 +191,7 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
         </header>
 
         <div className={styles.statusRow}>
-          <span className={styles.statusPill}>{status ? STATUS_LABEL[status] : ' '}</span>
+          <span className={styles.statusPill}>{status ? STATUS_LABEL[status] : ' '}</span>
           <button type="button" className={styles.processButton} onClick={() => void runProcessing()} disabled={processing}>
             {processing ? 'Processing…' : 'Process'}
           </button>
@@ -209,6 +222,30 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
         )}
 
         <Markdown>{entry.body}</Markdown>
+
+        {media.length > 0 && (
+          <section className={styles.media}>
+            <p className={styles.mediaHeading}>Photos from this day</p>
+            <div className={styles.mediaGrid}>
+              {media.map((item) => (
+                <a
+                  key={item.id}
+                  href={mediaFileUrl(item.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.mediaItem}
+                >
+                  {item.kind === 'video' ? (
+                    <video src={mediaFileUrl(item.id)} className={styles.mediaThumb} muted />
+                  ) : (
+                    // eslint-disable-next-line @next/next/no-img-element -- served by the API, not Next's own image pipeline
+                    <img src={mediaFileUrl(item.id)} alt={item.originalFilename} className={styles.mediaThumb} />
+                  )}
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
 
         {showPopup && <PendingItemsPopup entryId={entry.id} onClose={closePopup} />}
 

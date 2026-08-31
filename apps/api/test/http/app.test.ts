@@ -14,12 +14,14 @@ import type {
   Document,
   DocumentPage,
   Entry,
+  EntryMediaResponse,
   EntryPage,
   EntryStatusResponse,
   HealthResponse,
   ListItem,
   ListItemsResponse,
   ListsSummaryResponse,
+  MediaPage,
   MetricsResponse,
   MetricsSummaryResponse,
   MetricUpdateSuggestionsResponse,
@@ -48,6 +50,7 @@ import type {
   TranscribeResponse,
   UpdateDocumentResponse,
   UpdateEntryResponse,
+  UploadMediaResponse,
   VisibilityDefaultsResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
@@ -117,6 +120,7 @@ import type {
   UpdateTodoInput,
 } from '../../src/index/todos-index.js';
 import { DocumentsIndex } from '../../src/index/documents-index.js';
+import { MediaIndex } from '../../src/index/media-index.js';
 import type {
   CreatePendingItemInput,
   ListPendingItemsOptions,
@@ -134,6 +138,7 @@ import { createPublisher } from '../../src/publish/create-publisher.js';
 import type { Searcher } from '../../src/search/searcher.js';
 import { FsDocumentStore } from '../../src/store/fs-document-store.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
+import { FsMediaStore } from '../../src/store/fs-media-store.js';
 import type { Transcriber } from '../../src/transcribe/transcriber.js';
 
 /**
@@ -1064,6 +1069,7 @@ let entryProcessingStatus: FakeEntryProcessingStatusReader;
 let chat: FakeChatAnswerer;
 let index: SqliteIndex;
 let documentsIndex: DocumentsIndex;
+let mediaIndex: MediaIndex;
 let publishedIndex: PublishedIndex;
 let visibilityDefaultsIndex: VisibilityDefaultsIndex;
 
@@ -1118,10 +1124,12 @@ beforeEach(async () => {
   chat = new FakeChatAnswerer();
   index = new SqliteIndex(':memory:');
   documentsIndex = new DocumentsIndex(':memory:');
+  mediaIndex = new MediaIndex(':memory:');
   publishedIndex = new PublishedIndex(':memory:');
   visibilityDefaultsIndex = new VisibilityDefaultsIndex(':memory:');
   const entryStore = new FsEntryStore(root, index);
   const documentStore = new FsDocumentStore(root, documentsIndex);
+  const mediaStore = new FsMediaStore(root, mediaIndex);
   const publisher = createPublisher(
     config(root),
     publishedIndex,
@@ -1146,6 +1154,7 @@ beforeEach(async () => {
   app = createApp(
     entryStore,
     documentStore,
+    mediaStore,
     config(root),
     transcriber,
     searcher,
@@ -1172,6 +1181,7 @@ beforeEach(async () => {
 afterEach(async () => {
   index.close();
   documentsIndex.close();
+  mediaIndex.close();
   publishedIndex.close();
   visibilityDefaultsIndex.close();
   await rm(root, { recursive: true, force: true });
@@ -1606,6 +1616,162 @@ describe('POST /entries/:id/attachments', () => {
     const response = await upload(created.id, '../../etc/passwd', 'x');
     expect(response.status).toBe(400);
     expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+/** A minimal, well-formed MP4 `moov/mvhd` box tree — the same fixture shape
+ * `video-metadata.test.ts` and `media-store-contract.test.ts` verify — so
+ * media routes can be exercised with a file that has real, extractable
+ * `capturedAt` metadata. */
+function mediaFixture(captured: Date): Uint8Array {
+  const box = (type: string, body: Uint8Array): Uint8Array => {
+    const out = new Uint8Array(8 + body.length);
+    new DataView(out.buffer).setUint32(0, 8 + body.length);
+    out.set(new TextEncoder().encode(type), 4);
+    out.set(body, 8);
+    return out;
+  };
+  const macSeconds = Math.floor(captured.getTime() / 1000) + 2_082_844_800;
+  const mvhdBody = new Uint8Array(20);
+  new DataView(mvhdBody.buffer).setUint32(4, macSeconds);
+  const ftyp = box('ftyp', new TextEncoder().encode('isommp42'));
+  const moov = box('moov', box('mvhd', mvhdBody));
+  return new Uint8Array([...ftyp, ...moov]);
+}
+
+const MEDIA_CAPTURED = new Date(Date.UTC(2026, 6, 20, 15, 30, 0));
+const MEDIA_FIXTURE = mediaFixture(MEDIA_CAPTURED);
+
+describe('POST /media', () => {
+  function upload(filename: string, data: Uint8Array | string, type = 'video/mp4') {
+    const form = new FormData();
+    form.set('file', new File([data], filename, { type }));
+    return app.request('/media', { method: 'POST', body: form });
+  }
+
+  it('stores the item and returns it, with metadata extracted from its own bytes', async () => {
+    const response = await upload('IMG_0001.mp4', MEDIA_FIXTURE);
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as UploadMediaResponse;
+    expect(body.kind).toBe('video');
+    expect(body.contentType).toBe('video/mp4');
+    expect(body.originalFilename).toBe('IMG_0001.mp4');
+    expect(body.capturedAt).toBe('2026-07-20T15:30:00');
+  });
+
+  it('rejects a request with no file field', async () => {
+    const form = new FormData();
+    form.set('notFile', 'nope');
+    const response = await app.request('/media', { method: 'POST', body: form });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects an unsupported content type', async () => {
+    const response = await upload('voice.mp3', 'x', 'audio/mpeg');
+    expect(response.status).toBe(415);
+    expect((await errorOf(response)).code).toBe('unsupported_media_type');
+  });
+});
+
+describe('GET /media and GET /media/:id', () => {
+  async function uploadOne(filename = 'a.mp4'): Promise<UploadMediaResponse> {
+    const form = new FormData();
+    form.set('file', new File([MEDIA_FIXTURE], filename, { type: 'video/mp4' }));
+    const response = await app.request('/media', { method: 'POST', body: form });
+    return (await response.json()) as UploadMediaResponse;
+  }
+
+  it('lists every uploaded item', async () => {
+    const first = await uploadOne('first.mp4');
+    const second = await uploadOne('second.mp4');
+
+    const response = await app.request('/media');
+    const page = (await response.json()) as MediaPage;
+    expect(new Set(page.media.map((m) => m.id))).toEqual(new Set([first.id, second.id]));
+  });
+
+  it('fetches one item by id', async () => {
+    const uploaded = await uploadOne();
+    const response = await app.request(`/media/${uploaded.id}`);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as UploadMediaResponse).id).toBe(uploaded.id);
+  });
+
+  it('reports a missing item as not found', async () => {
+    const response = await app.request('/media/01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('record_not_found');
+  });
+});
+
+describe('GET /media/:id/file', () => {
+  it('serves the raw bytes with the stored content type', async () => {
+    const form = new FormData();
+    form.set('file', new File([MEDIA_FIXTURE], 'a.mp4', { type: 'video/mp4' }));
+    const uploaded = (await (await app.request('/media', { method: 'POST', body: form })).json()) as UploadMediaResponse;
+
+    const response = await app.request(`/media/${uploaded.id}/file`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('video/mp4');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    expect(bytes).toEqual(MEDIA_FIXTURE);
+  });
+
+  it('reports a missing item as not found', async () => {
+    const response = await app.request('/media/01ARZ3NDEKTSV4RRFFQ69G5FAV/file');
+    expect(response.status).toBe(404);
+  });
+});
+
+describe('DELETE /media/:id', () => {
+  it('removes the item', async () => {
+    const form = new FormData();
+    form.set('file', new File([MEDIA_FIXTURE], 'a.mp4', { type: 'video/mp4' }));
+    const uploaded = (await (await app.request('/media', { method: 'POST', body: form })).json()) as UploadMediaResponse;
+
+    const response = await app.request(`/media/${uploaded.id}`, { method: 'DELETE' });
+    expect(response.status).toBe(204);
+    expect((await app.request(`/media/${uploaded.id}`)).status).toBe(404);
+  });
+
+  it('is a tolerant no-op on an id that does not exist', async () => {
+    const response = await app.request('/media/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' });
+    expect(response.status).toBe(204);
+  });
+});
+
+describe('GET /entries/:id/media', () => {
+  it("returns media captured on the entry's own local calendar day", async () => {
+    const created = (await (
+      await post({ body: 'A day out.', created: '2026-07-20T09:00:00+01:00' })
+    ).json()) as CreateEntryResponse;
+
+    const form = new FormData();
+    form.set('file', new File([MEDIA_FIXTURE], 'a.mp4', { type: 'video/mp4' }));
+    await app.request('/media', { method: 'POST', body: form });
+
+    const response = await app.request(`/entries/${created.id}/media`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as EntryMediaResponse;
+    expect(body.media).toHaveLength(1);
+    expect(body.media[0]?.capturedAt).toBe('2026-07-20T15:30:00');
+  });
+
+  it('is empty when nothing was captured that day', async () => {
+    const created = (await (
+      await post({ body: 'A quiet day.', created: '2020-01-01T09:00:00+01:00' })
+    ).json()) as CreateEntryResponse;
+
+    const response = await app.request(`/entries/${created.id}/media`);
+    const body = (await response.json()) as EntryMediaResponse;
+    expect(body.media).toEqual([]);
+  });
+
+  it('reports a missing entry as not found', async () => {
+    const response = await app.request('/entries/01ARZ3NDEKTSV4RRFFQ69G5FAV/media');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
   });
 });
 

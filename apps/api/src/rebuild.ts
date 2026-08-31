@@ -2,6 +2,7 @@ import { ConfigError, loadConfig } from './config.js';
 import { createTouchedMirror } from './durable/create-touched-mirror.js';
 import { DocumentsIndex } from './index/documents-index.js';
 import { ListsIndex } from './index/lists-index.js';
+import { MediaIndex } from './index/media-index.js';
 import { MetricsIndex } from './index/metrics-index.js';
 import { OpinionStatementsIndex } from './index/opinion-statements-index.js';
 import { QuestionsIndex } from './index/questions-index.js';
@@ -13,6 +14,7 @@ import { SearchIndexer } from './search/indexer.js';
 import { LocalEmbedder } from './search/local-embedder.js';
 import { createDocumentStore } from './store/create-document-store.js';
 import { createEntryStore } from './store/create-entry-store.js';
+import { createMediaStore } from './store/create-media-store.js';
 
 /**
  * `rebuild --from-scratch` (`plan.md` M5/M6, `requirements.md` §6.4) — a
@@ -82,6 +84,16 @@ async function main(): Promise<void> {
     `[journal] document search chunks rebuilt in ${docSearchElapsedMs}ms: ${totalChunkCount} chunks total`,
   );
 
+  // The media-store rebuild — same free, local rebuild `documentStore`
+  // above gets, just re-deriving each item's metadata from its own bytes
+  // (`extractMediaMetadata`) instead of re-parsing markdown frontmatter.
+  const mediaIndex = new MediaIndex(config.indexDbPath);
+  const mediaStore = createMediaStore(config, mediaIndex);
+  const mediaBefore = Date.now();
+  const { mediaCount } = await mediaStore.rebuild();
+  const mediaElapsedMs = Date.now() - mediaBefore;
+  console.log(`[journal] media rebuilt in ${mediaElapsedMs}ms: ${mediaCount} items`);
+
   // The touched-record recovery path (`durable/touched-mirror.ts`) — reads
   // every durably-mirrored touched record back and reinserts it, so a
   // deleted-and-rebuilt `index.db` never silently loses a correction the
@@ -117,6 +129,7 @@ async function main(): Promise<void> {
   searchIndex.close();
   index.close();
   documentsIndex.close();
+  mediaIndex.close();
   metricsIndex.close();
   reviewsIndex.close();
   listsIndex.close();
