@@ -1013,6 +1013,27 @@ export interface ReviewsSummaryResponse {
   summaries: ReviewMediumSummary[];
 }
 
+/** One half-point rating value (1, 1.5, 2, ... 5) and how many reviews
+ * landed there. Every bucket is always present, zero-filled — the same
+ * "no silent gaps" convention `ReviewMediumSummary` already gives a medium
+ * with zero reviews (`design.md` §5.3's small-multiples idiom: "am I a
+ * generous rater, do I rate books harder than films" is a shape question,
+ * not a mean). */
+export interface ReviewRatingBucket {
+  rating: number;
+  count: number;
+}
+
+export interface ReviewMediumHistogram {
+  medium: string;
+  buckets: ReviewRatingBucket[];
+}
+
+export interface ReviewsHistogramResponse {
+  overall: ReviewRatingBucket[];
+  byMedium: ReviewMediumHistogram[];
+}
+
 export interface ListTypeSummary {
   listType: string;
   count: number;
@@ -1020,6 +1041,20 @@ export interface ListTypeSummary {
 
 export interface ListsSummaryResponse {
   summaries: ListTypeSummary[];
+}
+
+/** One approved concept subject and how many statements it's gathered —
+ * the analysis page's equivalent of `ListTypeSummary`, so a subject with
+ * zero statements yet still gets its own row rather than silently missing
+ * (`requirements.md` §5.2, reframed 2026-08-30: grouping by subject is the
+ * point of this structure, and the analysis surface should say so too). */
+export interface OpinionSubjectSummary {
+  subject: string;
+  count: number;
+}
+
+export interface OpinionSubjectSummariesResponse {
+  summaries: OpinionSubjectSummary[];
 }
 
 /**

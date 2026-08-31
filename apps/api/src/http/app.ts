@@ -34,6 +34,7 @@ import type {
   MetricUpdateSuggestionsResponse,
   OpinionStatementsResponse,
   OpinionStatementUpdateSuggestionsResponse,
+  OpinionSubjectSummariesResponse,
   OpinionSummariesResponse,
   ProcessEntryResponse,
   PublishDocumentResponse,
@@ -41,6 +42,7 @@ import type {
   QuestionsResponse,
   QuestionsSummaryResponse,
   QuestionUpdateSuggestionsResponse,
+  ReviewsHistogramResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
   ReviewUpdateSuggestionsResponse,
@@ -107,6 +109,22 @@ const METRICS_SUMMARY_WINDOW_DAYS = 30;
  * comfortably covers "all time" for a personal journal without letting the
  * query be truly unbounded. */
 const MAX_FIELD_SUMMARY_WINDOW_DAYS = 3650;
+
+/** Shared `?windowDays=` parsing for every windowed analysis route — the
+ * field-summary endpoint had this inline first; `/analysis/metrics` grew
+ * the identical need once the analysis page's shared time-window control
+ * (`design.md` §5.3) needed month/year views, not just the fixed 30-day
+ * default. Same ceiling, same validation message, one place to keep them
+ * agreeing. */
+function parseWindowDays(c: { req: { query: (key: string) => string | undefined } }, fallback: number): number {
+  const raw = c.req.query('windowDays');
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > MAX_FIELD_SUMMARY_WINDOW_DAYS) {
+    throw invalidRequest(`'windowDays' must be a whole number between 1 and ${MAX_FIELD_SUMMARY_WINDOW_DAYS}.`);
+  }
+  return value;
+}
 
 /**
  * Hosts this server will answer to.
@@ -1922,8 +1940,9 @@ export function createApp(
   // (`requirements.md` §7.1).
   app.get('/analysis/metrics', async (c) => {
     const approvedNames = categories.approvedNames('metric');
-    const summaries = metrics.summarize(approvedNames, METRICS_SUMMARY_WINDOW_DAYS);
-    const response: MetricsSummaryResponse = { summaries, windowDays: METRICS_SUMMARY_WINDOW_DAYS };
+    const windowDays = parseWindowDays(c, METRICS_SUMMARY_WINDOW_DAYS);
+    const summaries = metrics.summarize(approvedNames, windowDays);
+    const response: MetricsSummaryResponse = { summaries, windowDays };
     return c.json(response);
   });
 
@@ -1943,15 +1962,7 @@ export function createApp(
       filter = { field: rawFilter.slice(0, separator), value: rawFilter.slice(separator + 1) };
     }
 
-    const rawWindowDays = c.req.query('windowDays');
-    let windowDays = METRICS_SUMMARY_WINDOW_DAYS;
-    if (rawWindowDays !== undefined && rawWindowDays !== '') {
-      const value = Number(rawWindowDays);
-      if (!Number.isInteger(value) || value < 1 || value > MAX_FIELD_SUMMARY_WINDOW_DAYS) {
-        throw invalidRequest(`'windowDays' must be a whole number between 1 and ${MAX_FIELD_SUMMARY_WINDOW_DAYS}.`);
-      }
-      windowDays = value;
-    }
+    const windowDays = parseWindowDays(c, METRICS_SUMMARY_WINDOW_DAYS);
 
     const summary = metrics.sumByField(metric, fieldKey, windowDays, filter);
     const response: MetricFieldSummaryResponse = {
@@ -1977,6 +1988,18 @@ export function createApp(
   app.get('/analysis/lists', async (c) => {
     const approvedTypes = categories.approvedNames('list_type');
     const response: ListsSummaryResponse = { summaries: lists.summarize(approvedTypes) };
+    return c.json(response);
+  });
+
+  app.get('/analysis/reviews/histogram', async (c) => {
+    const approvedMedia = categories.approvedNames('review_medium');
+    const response: ReviewsHistogramResponse = reviews.histogram(approvedMedia);
+    return c.json(response);
+  });
+
+  app.get('/analysis/opinions', async (c) => {
+    const approvedSubjects = categories.approvedNames('opinion_subject');
+    const response: OpinionSubjectSummariesResponse = { summaries: opinionStatements.summarize(approvedSubjects) };
     return c.json(response);
   });
 

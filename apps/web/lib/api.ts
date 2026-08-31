@@ -29,12 +29,14 @@ import type {
   MetricUpdateSuggestionsResponse,
   OpinionStatementsResponse,
   OpinionStatementUpdateSuggestionsResponse,
+  OpinionSubjectSummariesResponse,
   OpinionSummariesResponse,
   ProcessEntryResponse,
   PublishQueueResponse,
   QuestionsResponse,
   QuestionsSummaryResponse,
   QuestionUpdateSuggestionsResponse,
+  ReviewsHistogramResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
   ReviewUpdateSuggestionsResponse,
@@ -865,16 +867,25 @@ export function listPublishQueue(): Promise<PublishQueueResponse> {
  * frontend only ever renders what comes back, never sums or averages
  * anything itself.
  */
-export function analysisMetrics(): Promise<MetricsSummaryResponse> {
-  return request<MetricsSummaryResponse>('/analysis/metrics');
+export function analysisMetrics(options: { windowDays?: number } = {}): Promise<MetricsSummaryResponse> {
+  const suffix = options.windowDays ? `?windowDays=${options.windowDays}` : '';
+  return request<MetricsSummaryResponse>(`/analysis/metrics${suffix}`);
 }
 
 export function analysisReviews(): Promise<ReviewsSummaryResponse> {
   return request<ReviewsSummaryResponse>('/analysis/reviews');
 }
 
+export function analysisReviewsHistogram(): Promise<ReviewsHistogramResponse> {
+  return request<ReviewsHistogramResponse>('/analysis/reviews/histogram');
+}
+
 export function analysisLists(): Promise<ListsSummaryResponse> {
   return request<ListsSummaryResponse>('/analysis/lists');
+}
+
+export function analysisOpinions(): Promise<OpinionSubjectSummariesResponse> {
+  return request<OpinionSubjectSummariesResponse>('/analysis/opinions');
 }
 
 export function analysisQuestions(): Promise<QuestionsSummaryResponse> {

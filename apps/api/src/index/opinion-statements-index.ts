@@ -14,6 +14,15 @@ import { dirname } from 'node:path';
  * itself a summary.
  */
 
+/** One approved subject and how many statements it's gathered — mirrors
+ * `ListsIndex`'s local `ListTypeSummary`, structurally identical to the
+ * contract's own `OpinionSubjectSummary` without importing it (same
+ * convention every sibling index file already uses). */
+export interface OpinionSubjectSummary {
+  subject: string;
+  count: number;
+}
+
 export interface OpinionStatementRecord {
   id: string;
   entryId: string;
@@ -71,6 +80,11 @@ export interface OpinionStatementsReader {
    * concrete class for `OpinionSummarizer`, now also part of the reader
    * interface so `/publish-queue` can depend on it too. */
   bySubject(subject: string): OpinionStatementRecord[];
+  /** One `OpinionSubjectSummary` per approved subject, in the order given,
+   * so a subject with zero statements yet still gets its own row — mirrors
+   * `ListsReader.summarize` (`requirements.md` §5.2, reframed 2026-08-30
+   * for the analysis page's own Opinions section). */
+  summarize(approvedSubjects: readonly string[]): OpinionSubjectSummary[];
   remove(id: string): void;
   update(id: string, input: UpdateOpinionStatementInput, now: string): OpinionStatementRecord | null;
   validate(id: string, now: string): void;
@@ -305,6 +319,13 @@ export class OpinionStatementsIndex implements OpinionStatementsReader {
       .prepare('SELECT * FROM opinion_statements WHERE subject = ? ORDER BY event_epoch_ms ASC')
       .all(subject) as RawRow[];
     return rows.map(fromRaw);
+  }
+
+  /** One row per approved subject, in the order given — see
+   * `ListsIndex.summarize` for the identical pattern this mirrors. */
+  summarize(approvedSubjects: readonly string[]): OpinionSubjectSummary[] {
+    const stmt = this.#db.prepare('SELECT COUNT(*) AS n FROM opinion_statements WHERE subject = ?');
+    return approvedSubjects.map((subject) => ({ subject, count: (stmt.get(subject) as { n: number }).n }));
   }
 
   /** Every subject with at least one statement — what `reprocess` iterates

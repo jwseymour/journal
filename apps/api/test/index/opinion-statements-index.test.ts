@@ -91,6 +91,23 @@ describe('bySubject', () => {
   });
 });
 
+describe('summarize', () => {
+  it('returns one row per approved subject, in the order given, with its statement count', () => {
+    index.replaceEntry('e1', [record({ id: 's1', subject: 'philosophy' })]);
+    index.replaceEntry('e2', [record({ id: 's2', subject: 'philosophy' })]);
+    index.replaceEntry('e3', [record({ id: 's3', subject: 'future' })]);
+    expect(index.summarize(['philosophy', 'future', 'identity'])).toEqual([
+      { subject: 'philosophy', count: 2 },
+      { subject: 'future', count: 1 },
+      { subject: 'identity', count: 0 },
+    ]);
+  });
+
+  it('is empty for an empty approved list', () => {
+    expect(index.summarize([])).toEqual([]);
+  });
+});
+
 describe('subjectsWithStatements', () => {
   it('lists every distinct subject with at least one statement', () => {
     index.replaceEntry('e1', [record({ id: 's1', subject: 'philosophy' })]);

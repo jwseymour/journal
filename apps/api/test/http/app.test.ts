@@ -22,6 +22,7 @@ import type {
   MetricsSummaryResponse,
   MetricUpdateSuggestionsResponse,
   OpinionStatementsResponse,
+  OpinionSubjectSummariesResponse,
   OpinionSummariesResponse,
   OpenQuestion,
   ProcessEntryResponse,
@@ -74,6 +75,7 @@ import type {
   OpinionStatementRecord,
   OpinionStatementsReader,
   OpinionStatementUpdateSuggestion,
+  OpinionSubjectSummary,
   UpdateOpinionStatementInput,
 } from '../../src/index/opinion-statements-index.js';
 import type { OpinionSummariesReader, OpinionSummaryPartRecord } from '../../src/index/opinion-summaries-index.js';
@@ -87,7 +89,9 @@ import type {
 } from '../../src/index/questions-index.js';
 import type {
   ListReviewsOptions,
+  ReviewMediumHistogram,
   ReviewMediumSummary,
+  ReviewRatingBucket,
   ReviewRecord,
   ReviewsReader,
   ReviewUpdateSuggestion,
@@ -337,6 +341,14 @@ class FakeReviewsReader implements ReviewsReader {
     return this.summaries;
   }
 
+  histogramCalls: Array<readonly string[]> = [];
+  histogramResult: { overall: ReviewRatingBucket[]; byMedium: ReviewMediumHistogram[] } = { overall: [], byMedium: [] };
+
+  histogram(approvedMedia: readonly string[]): { overall: ReviewRatingBucket[]; byMedium: ReviewMediumHistogram[] } {
+    this.histogramCalls.push(approvedMedia);
+    return this.histogramResult;
+  }
+
   updateSuggestions: ReviewUpdateSuggestion[] = [];
 
   update(id: string, input: UpdateReviewInput): ReviewRecord | null {
@@ -508,6 +520,14 @@ class FakeOpinionStatementsReader implements OpinionStatementsReader {
 
   bySubject(subject: string): OpinionStatementRecord[] {
     return this.records.filter((r) => r.subject === subject);
+  }
+
+  summarizeCalls: Array<readonly string[]> = [];
+  summaries: OpinionSubjectSummary[] = [];
+
+  summarize(approvedSubjects: readonly string[]): OpinionSubjectSummary[] {
+    this.summarizeCalls.push(approvedSubjects);
+    return this.summaries;
   }
 
   updateSuggestions: OpinionStatementUpdateSuggestion[] = [];
@@ -1652,6 +1672,17 @@ describe('GET /analysis/metrics', () => {
     const response = await app.request('/analysis/metrics');
     expect((await response.json()) as MetricsSummaryResponse).toEqual({ summaries: [summary], windowDays: 30 });
   });
+
+  it('accepts an explicit windowDays, up to a year and beyond — the shared time-window control', async () => {
+    await app.request('/analysis/metrics?windowDays=366');
+    expect(metrics.summarizeCalls).toEqual([{ approvedNames: [], windowDays: 366 }]);
+  });
+
+  it('rejects a windowDays outside the valid range', async () => {
+    const response = await app.request('/analysis/metrics?windowDays=0');
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
 });
 
 describe('GET /analysis/metrics/:metric/fields/:fieldKey', () => {
@@ -1743,6 +1774,20 @@ describe('GET /analysis/reviews', () => {
   });
 });
 
+describe('GET /analysis/reviews/histogram', () => {
+  it('passes the currently approved media to histogram', async () => {
+    categories.approved.review_medium = ['film', 'book'];
+    await app.request('/analysis/reviews/histogram');
+    expect(reviews.histogramCalls).toEqual([['film', 'book']]);
+  });
+
+  it('returns whatever the ReviewsReader produces', async () => {
+    reviews.histogramResult = { overall: [{ rating: 5, count: 3 }], byMedium: [{ medium: 'film', buckets: [{ rating: 5, count: 3 }] }] };
+    const response = await app.request('/analysis/reviews/histogram');
+    expect(await response.json()).toEqual(reviews.histogramResult);
+  });
+});
+
 describe('GET /analysis/lists', () => {
   it('passes the currently approved list types to summarize', async () => {
     categories.approved.list_type = ['quote'];
@@ -1755,6 +1800,21 @@ describe('GET /analysis/lists', () => {
     lists.summaries = [summary];
     const response = await app.request('/analysis/lists');
     expect((await response.json()) as ListsSummaryResponse).toEqual({ summaries: [summary] });
+  });
+});
+
+describe('GET /analysis/opinions', () => {
+  it('passes the currently approved subjects to summarize', async () => {
+    categories.approved.opinion_subject = ['philosophy', 'relationships'];
+    await app.request('/analysis/opinions');
+    expect(opinionStatements.summarizeCalls).toEqual([['philosophy', 'relationships']]);
+  });
+
+  it('returns whatever the OpinionStatementsReader produces', async () => {
+    const summary: OpinionSubjectSummary = { subject: 'philosophy', count: 4 };
+    opinionStatements.summaries = [summary];
+    const response = await app.request('/analysis/opinions');
+    expect((await response.json()) as OpinionSubjectSummariesResponse).toEqual({ summaries: [summary] });
   });
 });
 

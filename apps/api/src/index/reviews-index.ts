@@ -81,6 +81,20 @@ export interface ReviewMediumSummary {
   averageRating: number | null;
 }
 
+/** Structurally identical to the contract's own `ReviewRatingBucket`/
+ * `ReviewMediumHistogram` without importing them — the same convention
+ * every sibling index file already uses (see `OpinionSubjectSummary`'s
+ * own comment). */
+export interface ReviewRatingBucket {
+  rating: number;
+  count: number;
+}
+
+export interface ReviewMediumHistogram {
+  medium: string;
+  buckets: ReviewRatingBucket[];
+}
+
 /** Same shape as `MetricsReader` — the seam `http/app.ts` depends on. */
 export interface ReviewsReader {
   list(options: ListReviewsOptions): ReviewRecord[];
@@ -90,6 +104,10 @@ export interface ReviewsReader {
   allByMedium(medium: string): ReviewRecord[];
   remove(id: string): void;
   summarize(approvedMedia: readonly string[]): ReviewMediumSummary[];
+  /** A rating histogram — how many reviews landed at each half-point
+   * rating, overall and per approved medium (`design.md` §5.3). Every
+   * bucket 1 through 5 is always present, zero-filled. */
+  histogram(approvedMedia: readonly string[]): { overall: ReviewRatingBucket[]; byMedium: ReviewMediumHistogram[] };
   update(id: string, input: UpdateReviewInput, now: string): ReviewRecord | null;
   validate(id: string, now: string): void;
   untouch(id: string, now: string): void;
@@ -343,6 +361,34 @@ export class ReviewsIndex implements ReviewsReader {
       const row = stmt.get(medium) as { n: number; avg: number | null };
       return { medium, count: row.n, averageRating: row.avg };
     });
+  }
+
+  /** Half-point buckets, 1 through 5 — a rating schema of `min(1).max(5)`
+   * with no forced step, rounded here rather than at write time so the
+   * stored value stays exactly what was extracted. */
+  histogram(approvedMedia: readonly string[]): { overall: ReviewRatingBucket[]; byMedium: ReviewMediumHistogram[] } {
+    const RATING_BUCKETS = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+    const countsFor = (medium: string | null): Map<number, number> => {
+      const rows = (
+        medium === null
+          ? this.#db
+              .prepare('SELECT ROUND(rating * 2) / 2.0 AS bucket, COUNT(*) AS n FROM reviews WHERE rating IS NOT NULL GROUP BY bucket')
+              .all()
+          : this.#db
+              .prepare(
+                'SELECT ROUND(rating * 2) / 2.0 AS bucket, COUNT(*) AS n FROM reviews WHERE rating IS NOT NULL AND medium = ? GROUP BY bucket',
+              )
+              .all(medium)
+      ) as { bucket: number; n: number }[];
+      return new Map(rows.map((r) => [r.bucket, r.n]));
+    };
+    const toBuckets = (counts: Map<number, number>): ReviewRatingBucket[] =>
+      RATING_BUCKETS.map((rating) => ({ rating, count: counts.get(rating) ?? 0 }));
+
+    return {
+      overall: toBuckets(countsFor(null)),
+      byMedium: approvedMedia.map((medium) => ({ medium, buckets: toBuckets(countsFor(medium)) })),
+    };
   }
 
   /** Restores one touched record from the durable off-index mirror

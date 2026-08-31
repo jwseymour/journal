@@ -185,6 +185,32 @@ describe('summarize', () => {
   });
 });
 
+describe('histogram', () => {
+  it('zero-fills every half-point bucket from 1 to 5 when there are no reviews', () => {
+    const { overall, byMedium } = index.histogram(['film']);
+    expect(overall).toEqual([1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((rating) => ({ rating, count: 0 })));
+    expect(byMedium).toEqual([{ medium: 'film', buckets: overall }]);
+  });
+
+  it('buckets by half-point rating, overall and per medium, ignoring unrated reviews', () => {
+    index.replaceEntry('e1', [record({ id: 'm1', medium: 'film', rating: 4.5 })]);
+    index.replaceEntry('e2', [record({ id: 'm2', medium: 'film', rating: 4.5 })]);
+    index.replaceEntry('e3', [record({ id: 'm3', medium: 'book', rating: 3 })]);
+    index.replaceEntry('e4', [record({ id: 'm4', medium: 'book', rating: null })]);
+
+    const { overall, byMedium } = index.histogram(['film', 'book']);
+    expect(overall.find((b) => b.rating === 4.5)).toEqual({ rating: 4.5, count: 2 });
+    expect(overall.find((b) => b.rating === 3)).toEqual({ rating: 3, count: 1 });
+    expect(overall.reduce((sum, b) => sum + b.count, 0)).toBe(3); // the null rating never counted anywhere
+
+    const film = byMedium.find((m) => m.medium === 'film')!;
+    expect(film.buckets.find((b) => b.rating === 4.5)).toEqual({ rating: 4.5, count: 2 });
+    const book = byMedium.find((m) => m.medium === 'book')!;
+    expect(book.buckets.find((b) => b.rating === 3)).toEqual({ rating: 3, count: 1 });
+    expect(book.buckets.reduce((sum, b) => sum + b.count, 0)).toBe(1);
+  });
+});
+
 describe('restoreTouched (durable/touched-mirror.ts)', () => {
   it('inserts a record read back from the durable mirror into an index that never had it', () => {
     index.restoreTouched({ entryId: 'e1', ...record({ touched: true }) });
