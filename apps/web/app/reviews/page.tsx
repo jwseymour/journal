@@ -119,7 +119,7 @@ export default function ReviewsPage() {
     <div>
       {suggestions.length > 0 && (
         <section className={styles.suggestions}>
-          <p className={styles.heading}>Reprocessing found changes to records you've reviewed</p>
+          <p className={styles.heading}>Reprocessing found changes to records you&apos;ve reviewed</p>
           <ul className={styles.suggestionList}>
             {suggestions.map((suggestion) => (
               <li key={suggestion.id} className={styles.suggestionRow}>

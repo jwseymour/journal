@@ -26,8 +26,8 @@ export default function SearchPage() {
 
     const trimmed = query.trim();
     if (trimmed.length === 0) {
-      setHits(null);
-      setError(null);
+      // Drop any in-flight search; the input's onChange clears what's on screen.
+      requestId.current++;
       return;
     }
 
@@ -57,7 +57,14 @@ export default function SearchPage() {
         className={styles.field}
         placeholder="Search"
         value={query}
-        onChange={(event) => setQuery(event.target.value)}
+        onChange={(event) => {
+          const value = event.target.value;
+          setQuery(value);
+          if (value.trim().length === 0) {
+            setHits(null);
+            setError(null);
+          }
+        }}
         autoFocus
         aria-label="Search"
       />

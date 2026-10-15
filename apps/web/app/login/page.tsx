@@ -23,6 +23,9 @@ export default function LoginPage() {
   // `useSearchParams` so this page can stay statically rendered.
   useEffect(() => {
     const message = new URLSearchParams(window.location.search).get('error');
+    // Set after mount on purpose: reading the URL during render would
+    // differ between the static HTML and the client and break hydration.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (message) setError(message);
   }, []);
 

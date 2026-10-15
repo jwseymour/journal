@@ -214,7 +214,7 @@ export default function QuestionsPage() {
     <div>
       {data.suggestions.length > 0 && (
         <section className={styles.section}>
-          <h2 className={styles.heading}>Reprocessing found changes to questions you've reviewed</h2>
+          <h2 className={styles.heading}>Reprocessing found changes to questions you&apos;ve reviewed</h2>
           <ul className={styles.list}>
             {data.suggestions.map((suggestion) => (
               <li key={suggestion.id} className={styles.row}>
