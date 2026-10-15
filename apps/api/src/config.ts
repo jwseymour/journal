@@ -156,10 +156,10 @@ const DEFAULT_EXTRACTION_MODEL = 'anthropic/claude-sonnet-5';
  * there is no reason for day one to name a different model. */
 const DEFAULT_CHAT_MODEL = 'anthropic/claude-sonnet-5';
 
-/** The one person this system is for (`plan.md` M11). Overridable, but
- * defaulting it means a fresh deploy is gated to the right person even
- * before `.env` is fully filled in. */
-const DEFAULT_AUTHORIZED_EMAIL = 'seymour.w.jack@gmail.com';
+/** The one person this system is for (`plan.md` M11). A placeholder that
+ * nobody can sign in as, so a deploy that forgets `AUTHORIZED_EMAIL`
+ * locks everyone out instead of letting the wrong person in. */
+const DEFAULT_AUTHORIZED_EMAIL = 'you@example.com';
 
 function readEmbeddingDimensions(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_EMBEDDING_DIMENSIONS;

@@ -227,7 +227,7 @@ A consequence worth stating: because the boundary is clean, more than one fronte
 
 ### 7.2 Local first
 
-**As of M11, the journal runs online: S3 is the canonical store, and the API runs on a small persistent-disk host rather than my own machine.** This is a deliberate reversal of the position below, not an accretion on top of it — made because durability and reachability outweighed the overhead of external services, once §7.1's boundary made the move cheap enough to actually take.
+**As of M11, the journal is built to run online: S3 is the canonical store, and the API is meant to run on a small persistent-disk host rather than my own machine.** This is a deliberate reversal of the position below, not an accretion on top of it — made because durability and reachability outweighed the overhead of external services, once §7.1's boundary made the move cheap enough to actually take.
 
 The strongest possible version of Pillar 1 was running fully local, depending on nothing but a disk I control. Going online gives that up in exchange for durability and reachability, deliberately: it keeps the properties Pillar 1 actually cares about — plain markdown, no lock-in, trivial full export — while relocating *where* the files live. Going back to fully local remains a supported, low-friction operation (`aws s3 sync`, a local storage adapter), not a one-way door.
 
@@ -370,5 +370,5 @@ The following have been raised and deliberately set aside for later consideratio
 - Model and provider are always swappable; nothing is tied to one vendor.
 - The concept model groups everything said about a subject — fact, event, reflection, or view — and never extrapolates beyond it; a generated cross-entry summary is a secondary, optional layer on top, not the reason the structure exists.
 - Frontend and backend are cleanly separated; the frontend is disposable.
-- As of M11, journal storage and the API run online (S3, a hosted API) rather than purely on my own file system — the files stay canonical, and the separation above (§7.1) is what made that move cheap rather than a rewrite.
+- As of M11, journal storage and the API are built to run online (S3, a hosted API) rather than purely on my own file system — the files stay canonical, and the separation above (§7.1) is what made that move cheap rather than a rewrite.
 - Everything above the journal serves the journal, and never the reverse.

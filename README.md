@@ -13,6 +13,14 @@ The rest of this README is the long version. Most of it was written around miles
 and the code has moved on since, so [`docs/plan.md`](docs/plan.md) is the better guide
 to what exists now.
 
+![The pending queue: what the AI extracted from an entry, waiting for approve or reject](docs/screenshots/pending.png)
+
+*The queue of things the AI pulled out of entries, waiting on me. These screenshots use
+made-up entries I wrote for the purpose, run locally.*
+
+More: [concepts, with an AI summary above the source statements](docs/screenshots/concepts.png),
+[extracted reviews](docs/screenshots/reviews.png), and [an entry](docs/screenshots/entry.png).
+
 ---
 
 A personal journal, intended to hold its owner's writing for the rest of their life.
@@ -27,7 +35,10 @@ written to disk, [`docs/design.md`](docs/design.md) covers the current frontend,
 
 ## Current state
 
-**All of milestones 1–8, including the opinion model, are complete.** An entry can be
+**Milestones 1–8, including the opinion model, are what the next few sections describe.**
+Later work (S3 storage and single-user auth, documents, the public blog and its API,
+the reviewed pending-item pipeline, the media library, and analysis layouts) is
+in `docs/plan.md`, not in this README yet. An entry can be
 written, autosaved as you type, edited later, recorded by voice, and given attachments,
 with the full keyboard scheme, night mode, and rendered markdown. Listing, lookup,
 search, and every derived structure are backed by SQLite, entirely derived and
@@ -38,8 +49,9 @@ indexes, with the API behaving identically before and after.
 BM25 full-text and vector nearest-neighbour search run in parallel over paragraph-level
 chunks and are combined by reciprocal rank fusion (`requirements.md` §8).
 
-Four derived structures are extracted through one provider-agnostic seam,
-`ModelClient`, via `npm run reprocess`: **simple temporal metrics** (exercise, alcohol,
+Six derived structures are extracted through one provider-agnostic seam,
+`ModelClient`. The four below came first (`npm run reprocess`); questions and to-dos
+were added later and follow the same pattern. The first four: **simple temporal metrics** (exercise, alcohol,
 sleep, and whatever else gets approved), **reviews** (a title, medium, optional rating,
 and opinion, with every encounter its own record), **lists of atomic items** (for
 example quotes, kept verbatim), and **the opinion model** — views the writer has
@@ -125,7 +137,13 @@ after that — see `WHISPER_MODEL` below).
 | `EMBEDDING_DIMENSIONS` | `384` | The vector length `EMBEDDING_MODEL` produces. Not autodetected — boot must never wait on loading a model to find out (same reasoning as `WHISPER_MODEL`) — so a model swap means updating this too. |
 | `EMBEDDING_CACHE_DIR` | `~/.cache/journal/embedding-models` | Where the (one-time) downloaded embedding model weights are cached. |
 | `AI_GATEWAY_API_KEY` | *unset* | Vercel AI Gateway credential (`requirements.md` §7.6). Extraction refuses clearly if this is missing; nothing else in the application needs it or is affected by its absence. Put it in `.env` at the repository root (already `.gitignore`d) — never in a script argument, where it would sit in shell history. |
+| `CHAT_MODEL` | `anthropic/claude-sonnet-5` | The model behind `/chat`, same gateway and same `creator/model-name` format. |
 | `EXTRACTION_MODEL` | `anthropic/claude-sonnet-5` | The `creator/model-name` string the gateway resolves. The *only* place any model or provider is named — see "The model boundary" below. |
+
+This table is the original local setup. `.env.example` lists every variable, including
+`STORAGE_BACKEND`, the S3 settings, auth (`SESSION_SECRET`, `AUTHORIZED_EMAIL`, Google
+OAuth) and the public API. `AUTHORIZED_EMAIL` has no real default: set it yourself if
+you turn auth on.
 
 ### The API
 
@@ -252,14 +270,17 @@ matter in practice, not something to invent here.
 
 ## The model boundary
 
-`apps/api/src/model/model-client.ts` is the single file in which any AI provider is
-ever named (`requirements.md` §7.6). Everything else — prompts, Zod schemas, the four
+`apps/api/src/model/model-client.ts` defines the interface, and the only code that
+imports the AI SDK is `gateway-model-client.ts` (extraction) and `gateway-chat-client.ts`
+(chat) beside it (`requirements.md` §7.6). Everything else — prompts, Zod schemas, the four
 extraction pipelines — calls `ModelClient.extract()` and knows nothing about the Vercel
 AI Gateway, the AI SDK, or which of Claude, GPT, or Gemini actually answered. Changing
 model or provider is changing `EXTRACTION_MODEL`, or swapping what implements
 `ModelClient`; nothing above that seam changes shape.
 
-**Four independent extraction pipelines, not one generic one.** Temporal metrics
+**Independent extraction pipelines, not one generic one.** This section covers the
+first four; questions (`questions.ts`, `questions-extractor.ts`) and to-dos (`todos.ts`,
+`todos-extractor.ts`) were added later the same way. Temporal metrics
 (`apps/api/src/model/temporal-metrics.ts` + `extractor.ts`), reviews (`reviews.ts` +
 `reviews-extractor.ts`), atomic list items (`lists.ts` + `lists-extractor.ts`), and
 opinion statements (`opinions.ts` + `opinions-extractor.ts`) each have their own schema,
@@ -325,11 +346,12 @@ film/book/music, quote, philosophy/future — and grown only two ways:
 - **The user requests one directly**, via `POST /categories` — approved immediately, no
   review step.
 
-**Extraction never runs live.** Unlike the free, local embedder M6 wires into every
-write, an extraction call costs real money per entry, and now there are three of them
-per entry (one per structure type). Autosave fires on every debounced keystroke; paid
-API calls on every one of those would be both wasteful and a surprise on the bill. So
-extraction only ever runs as a deliberate, explicit batch:
+**Batch extraction is explicit.** An extraction call costs real money per entry, and
+autosave fires on every debounced keystroke, so nothing extracts on save. There are two
+ways to run it, both on purpose. One is the **Process** button on an entry
+(`POST /entries/:id/process`), which runs the model over that single entry and returns
+*pending items* for you to approve or reject (`plan.md` M18). The other is the
+corpus-wide batch:
 
 ```sh
 JOURNAL_DIR=~/Journal npm run reprocess
@@ -339,12 +361,13 @@ This is `rebuild-index`'s counterpart, kept as a *separate* command rather than 
 in: `rebuild-index` stays fast, local, and free whether or not extraction is
 configured, and nothing ever spends money on your behalf just because you asked to
 rebuild the local indexes. `reprocess` re-sends every entry to the model, once per
-structure type, and replaces every extracted record from scratch
-(`requirements.md` §6.4) — nothing is carried over from a previous run, sequentially
+structure type, and replaces every untouched extracted record from scratch
+(`requirements.md` §6.4). Records you've reviewed or edited are yours and aren't
+overwritten silently. Sequentially
 rather than in parallel, so cost per entry stays predictable rather than arriving as a
 burst. Once every entry has produced its opinion statements, a second pass regenerates
-every subject's cited summary from them — necessarily after, since it reads across
-entries rather than within one. Approved categories are the one exception: seeding is
+every subject's cited summary from them, since it reads across entries rather than
+within one. Approved categories are the one exception: seeding is
 idempotent and never clears what a human already approved, because an approval is a
 decision, not a cache.
 
@@ -363,18 +386,14 @@ record and instead suggested "meditation" with a one-sentence reason — approve
 `POST /categories/suggestions/:id/approve`, after which it appeared in
 `GET /categories` and would be extracted against on the next `reprocess`.
 
-**Correcting a mistake (`requirements.md` §6.2) doesn't survive a reprocess.**
-`DELETE /metrics/:id` (or `/reviews/:id`, `/lists/:id`, `/opinions/statements/:id`)
-discards one wrong record now, but running `reprocess` again — or even just re-saving
-the entry it came from, once/if extraction is ever wired into live writes —
-regenerates it from the entry fresh. That is the honest consequence of §6.4 taken
-seriously: the derived layer holds nothing that isn't reproducible from the entries
-alone, and a correction that *had* to survive a full rebuild would quietly make the
-derived store a record of something, which it must never be. Category *approvals* are
-different and deliberately exempt — see above. Opinion *summaries* are never directly
-correctable at all: discarding a statement leaves any summary part citing it stale
-until the next `reprocess` regenerates it, since a summary is a derived view of the
-statements, not something with its own independent correction.
+**Correcting a mistake (`requirements.md` §6.2, §6.4).** `DELETE /metrics/:id` (or
+`/reviews/:id`, `/lists/:id`, `/opinions/statements/:id`) discards one wrong record.
+Records you leave alone are a cache, and a reprocess regenerates them from the
+entries. Once you edit or validate a record it's *touched*, and from then on it's
+yours: a reprocess may propose an update to it, but never overwrites it. Category
+*approvals* are exempt in the same way. Opinion *summaries* are never directly
+correctable. Discarding a statement leaves any summary part citing it stale until the
+next `reprocess` regenerates it, since a summary is a derived view of the statements.
 
 ## The frontend surfaces for all of this
 
@@ -391,9 +410,10 @@ metrics with a 30-day sparkline per category, a hairline-ruled table of reviews 
 medium with average rating, a table of list-item counts by type, and a cross-link to
 `/opinions` — the print information-design tradition throughout, no chart junk, the same
 cream, ink, and green as everywhere else. None of `/metrics`, `/reviews`, `/lists`,
-`/opinions`, or `/categories` are in the header or the keyboard scheme; every one is
-reached only via a cross-link from `/analysis`, keeping the settled top-level surface
-(`design.md` §5.1/§5.2) exactly Search/Analysis/Write.
+`/opinions`, or `/categories` are in the header; they're reached from `/analysis`. The
+header now also has Documents, Photos, Pending and Chat, which came after this was
+written, and `/analysis` itself has since been reworked around saved layouts
+(`plan.md` M20), so the description of it above is of the first version.
 
 **Every number on `/analysis` is computed behind the API, never in the frontend**
 (`requirements.md` §7.1). `GET /analysis/metrics`, `/analysis/reviews`, and
@@ -432,14 +452,18 @@ toolchain installed.
 apps/
   api/            the backend, its own process
     src/record/   ids, timestamps, filenames, frontmatter — what goes on disk
-    src/store/    EntryStore, the filesystem implementation of it, and the search-indexing decorator
+    src/store/    EntryStore with filesystem and S3 implementations, documents, media, layouts, and the search-indexing decorator
     src/index/    the SQLite indexes — listing/lookup, search, metrics, reviews, lists, categories; derived, disposable, never authoritative
     src/search/   Embedder, chunking, the search index, fusion, and the query orchestrator
-    src/model/    ModelClient — the one file naming a provider — the three extraction pipelines, and the shared event-time resolver
+    src/model/    ModelClient, the gateway clients, the six extraction pipelines, the pending-item processor, and the shared event-time resolver
+    src/auth/     single-user session auth (Google OAuth and a password fallback)
+    src/publish/  the public mirror: what gets copied out when something is marked public
+    src/layout/   the analysis layout language and its compiler
+    src/durable/  durable backing for touched derived records
     src/transcribe/  the Transcriber interface, and the local Whisper implementation
     src/http/     routes, thin, no logic
     src/rebuild.ts  `npm run rebuild-index` — reconstruct the local indexes from the files alone
-    src/reprocess.ts  `npm run reprocess` — re-extract every entry against all three structures via the model
+    src/reprocess.ts  `npm run reprocess` — re-extract every entry against every structure via the model
   web/            the frontend, its own process, disposable
     lib/keyboard.tsx  the keyboard scheme's mechanism, designed once
     lib/recorder.ts   raw-PCM microphone capture for voice entries
@@ -448,8 +472,11 @@ apps/
     app/metrics/, app/reviews/, app/lists/  plain lists of what extraction found, each with Discard
     app/categories/  approved categories, AI suggestions with Approve/Reject, and the direct-request form
     app/analysis/ the analysis surface — small multiples, sparklines, hairline tables (`g` `a`)
+  public-api/     read-only API over what's been published; no auth, its own process
+  blog/           the public-facing frontend that reads public-api
 packages/
   contract/       shared API types, and nothing else
+infra/            Terraform, Caddy and systemd files for the hosted setup (`docs/deployment.md`)
 ```
 
 ## Known toolchain notes
@@ -495,12 +522,10 @@ packages/
   through M6.** `ai@7` requires `zod@^3.25.76 || ^4.1.8` as a peer dependency; the
   minimal in-range bump was taken rather than jumping to zod 4, which would need a
   broader migration this project doesn't otherwise need yet.
-- **`npm audit` reports high-severity findings** in `sharp` and `postcss`, both reached
-  only through `next` itself, and (redundantly) through `@huggingface/transformers`'s own
-  use of `sharp` for image preprocessing this project never calls. There is no fixed
-  `next` release — 16.2.12 is the current latest, and `npm audit fix --force` "resolves"
-  it by installing Next 9. `sharp` is used only by `next/image`, which this application
-  does not use.
+- **`npm audit` reports vulnerabilities.** On 2026-10-15 it reported 16 (2 moderate,
+  11 high, 3 critical), in `next`, `vitest`, `tinypool`, `sharp`, `postcss` and a few
+  transitive packages. I haven't triaged them. `npm audit fix --force` wants to
+  install a much older Next, so I haven't run it.
 
 ## What "local" means for voice and search
 
@@ -519,3 +544,9 @@ entirely, capturing raw PCM instead via an `AudioWorklet` — see
 `apps/web/lib/recorder.ts`. Decoding an arbitrary container format server-side would have
 meant a native decoder dependency or a subprocess, exactly what the local-only
 requirement exists to avoid.
+
+## Licence
+
+MIT, see [`LICENSE`](LICENSE). The one exception is the Literata font files in
+`apps/web/public/fonts/` and `apps/blog/public/fonts/`. They aren't mine. They're under the
+SIL Open Font License 1.1, and the licence text sits beside them as `OFL.txt`.

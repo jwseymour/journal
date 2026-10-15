@@ -1094,7 +1094,7 @@ const config = (journalDir: string): Config => ({
   awsAccessKeyId: undefined,
   awsSecretAccessKey: undefined,
   s3AssumeRoleArn: undefined,
-  authorizedEmail: 'seymour.w.jack@gmail.com',
+  authorizedEmail: 'you@example.com',
   googleClientId: undefined,
   googleClientSecret: undefined,
   authPasswordHash: undefined,
