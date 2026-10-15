@@ -15,11 +15,48 @@ to what exists now.
 
 ![The pending queue: what the AI extracted from an entry, waiting for approve or reject](docs/screenshots/pending.png)
 
-*The queue of things the AI pulled out of entries, waiting on me. These screenshots use
-made-up entries I wrote for the purpose, run locally.*
+*The queue of things the AI pulled out of entries, waiting on me. Nothing it extracts is
+kept until I approve it.*
 
-More: [concepts, with an AI summary above the source statements](docs/screenshots/concepts.png),
-[extracted reviews](docs/screenshots/reviews.png), and [an entry](docs/screenshots/entry.png).
+## Screenshots
+
+All of these use made-up entries I wrote for the purpose, run locally. The AI-derived
+records in them came from the real extraction pipeline.
+
+**Search** finds passages by meaning as well as by word. It runs BM25 and vector search
+and fuses the two rankings.
+
+![Search for "times I thought about regret"](docs/screenshots/search.png)
+
+**Chat** answers questions about the journal and lists numbered sources.
+
+![Asking which books and films I rated 5 out of 5](docs/screenshots/chat.png)
+
+**Layouts.** I describe how I want the analysis page arranged in a sentence. The AI
+compiles that into a small layout language, which I can read and edit before saving.
+
+![A prose description compiled into the layout language](docs/screenshots/layout-prose.png)
+
+![The analysis page after saving that layout](docs/screenshots/layout-result.png)
+
+**Analysis.** An aligned matrix of metrics over 90 days, then the open questions and
+to-dos found in entries, each linking to its source entry.
+
+![Aligned matrix of metrics](docs/screenshots/matrix.png)
+
+![Open questions and to-dos](docs/screenshots/threads.png)
+
+**Concepts.** Everything said about a subject, grouped, with an AI summary on top and the
+source statements below it.
+
+![Concepts, with an AI summary above the source statements](docs/screenshots/concepts.png)
+
+**Documents** are markdown I write myself and can publish. **The blog** is a separate
+read-only app that only ever sees what I've marked public.
+
+![A published document](docs/screenshots/document.png)
+
+![The public blog showing an entry](docs/screenshots/blog-entry.png)
 
 ---
 
