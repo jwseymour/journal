@@ -1,5 +1,20 @@
 # Journal
 
+I want to keep what I write for the rest of my life. Apps don't last that long, so the
+entries are plain markdown files and nothing else holds them. If this code vanished
+tomorrow I'd still have every entry, and any text editor could open it.
+
+An AI reads the entries and pulls out metrics, reviews, lists and opinions by subject.
+All of that sits on top of the files as a cache. Delete it and it gets rebuilt from the
+entries alone. The one exception is anything I've reviewed or corrected by hand. That's
+mine, and a rebuild only proposes changes to it.
+
+The rest of this README is the long version. Most of it was written around milestone 8
+and the code has moved on since, so [`docs/plan.md`](docs/plan.md) is the better guide
+to what exists now.
+
+---
+
 A personal journal, intended to hold its owner's writing for the rest of their life.
 
 Entries are plain markdown files in a directory you control. Everything else — this
