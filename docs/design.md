@@ -224,6 +224,31 @@ Practically:
 
 This is what allows one coherent style (section 1.3) to serve both a calm writing surface and a dense analytical one without compromise.
 
+### 5.3.1 The panel kit
+
+The analysis surface is not one hand-built layout — it is a kit of panels a *layout* arranges (`requirements.md` §8 "Layout control"). Each panel is a `Panel` component (eyebrow, optional "all →" link, body) wrapped around one **view kind** from a fixed vocabulary. The current set, each a chart primitive already in `components/analysis-charts.tsx`:
+
+| View kind | What it draws | Reads |
+|---|---|---|
+| `presence` | occurrence calendar, one mark-slot per metric per day | metrics (≤5) |
+| `register` | statistical-yearbook table: n, total, mean, min, max, last, trend | numeric/score metric fields |
+| `horizon` | horizon-chart bands, one per field, intensity by opacity | numeric/score metric fields |
+| `matrix` | every metric one row, shared day columns | metrics |
+| `breakdown` | a numeric field's total split by a sibling enum field | metric fields |
+| `correlation` | range-frame scatter of a metric's two numeric fields | metrics with two numeric fields |
+| `reviews` | reading-diary table + per-medium tally | reviews |
+| `rating-distribution` | rating histogram, overall + per-medium small multiples | reviews |
+| `rating-spread` | strip plot, every rating a tick in its medium's lane | reviews |
+| `questions` / `todos` | open/closed status bar + a short feed | questions / to-dos |
+| `lists` / `concepts` | type/subject count table | list items / concept statements |
+| `aging` | dot plot of the longest-open threads | questions + to-dos |
+
+Adding a category still means dropping in a panel, not inventing a layout — the difference is that the arrangement is now the layout's, not the page's. A view kind whose identifiers a layout names but the catalog no longer has degrades to a quiet "couldn't resolve" note in that one panel's place, never a broken chart.
+
+### 5.3.2 Editing a layout
+
+The analysis page's "Customize" control opens onto the layout, not a set of toggles. It holds a switcher for the named layouts, a prose box ("Describe how you want this page arranged") that compiles into the syntax below it, and the layout language itself as an editable text field with parse errors shown as plain muted lines underneath. Copy stays quiet in the section 4 sense — "Layout saved.", "Couldn't parse line 7: unknown panel 'foo'." — no toasts, no confirmation flourish. The time-window control stays where it is; it is a per-device lens over whatever the layout specifies, not part of the layout.
+
 ---
 
 ## 6. Implementation constraints

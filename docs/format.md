@@ -150,3 +150,24 @@ Everything derived lives in the application's own data directory, **outside the 
 Its format is an implementation detail and is free to change without notice, because it can always be rebuilt from the files described above.
 
 **One exception.** A *touched* record — a metric, review, list item, opinion statement, question, or to-do the user has reviewed, corrected, or edited — is not a pure function of the journal files the way an untouched one is; nothing can regenerate a hand correction by re-reading the entry. So a touched record's content is also durably mirrored, one JSON object per record, in the same durable storage the journal and `public/` mirror already live in — a `derived/touched/` prefix, sibling to `public/`. This mirror is what "free to change without notice" above still means for the cache itself while keeping non-negotiable #6 true for what a touched record actually contains: the cache can be deleted and rebuilt at any time, and a touched record's content survives that regardless, restored from `derived/touched/` rather than lost with it.
+
+## 8. The layout store
+
+The concrete form of `requirements.md` §8 "Layout control", in the same relationship to it that §7 above has to §6.4. A *layout* arranges an analysis surface — which graphics appear, in what order, under what headings. It is directly authored (the user hand-edits it, or edits a description the AI compiled into it), so nothing can regenerate it from the journal files; like a touched record, it is durable, not cache.
+
+```
+~/Journal/                                  (or the S3 bucket root)
+  derived/
+    layouts/
+      01K3F9X2VQ8N7M4TQXYZ8ABCDE.dsl        the layout language, canonical
+      01K3F9X2VQ8N7M4TQXYZ8ABCDE.meta.json  { id, surface, name, prose, isDefault, createdAt, updatedAt }
+```
+
+Sibling to `derived/touched/`, under the same storage root, written the same way (atomic temp-file-then-rename on `fs`; a single `PutObject` on S3). Two objects per layout, not one, so the `.dsl` diffs cleanly in the scheduled git mirror (`requirements.md` §7.4) instead of sitting escaped inside a JSON string.
+
+- **The `.dsl` file is canonical.** It is the layout language — a small, line-oriented syntax specific to this application's structures (sections, panels, per-panel options). Plain UTF-8 text, LF endings, re-serialised to a canonical form on every save so a round-trip through the parser changes nothing. Readable and editable without the application, the same standard §3 holds an entry to.
+- **The id is a ULID, never the name.** A layout's name is edited over its life; deriving the filename from it would mean renaming the file or leaving a stale one, exactly the reasoning §6 gives for document filenames.
+- **`prose`** on the meta file is the last description the layout was compiled from, kept as provenance. It is not authoritative — once the `.dsl` is hand-edited it may no longer describe the layout, and nothing re-runs it.
+- **The parsed spec is not stored here.** It lives only in the disposable index (`format.md` §7), cached from the `.dsl` text and rebuilt from it by `rebuild.ts` — which restores the layout store the same way it restores the touched mirror. Deleting the index and rebuilding loses nothing.
+
+Which surfaces a layout may arrange, and the vocabulary of view kinds each surface offers, are an application concern (`docs/design.md` §5.3.1), not part of this format. The `.dsl` names them as bare identifiers; a name that no longer resolves degrades that one panel at render time and never corrupts the stored file.

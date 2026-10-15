@@ -367,6 +367,42 @@ describe.each(backends)('%s — EntryStore contract', (_name, makeHarness) => {
     });
   });
 
+  describe('listAttachments / getAttachment', () => {
+    it('lists every attachment written on the entry', async () => {
+      const entry = await h.store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+      await h.store.addAttachment(entry.id, { filename: 'photo.jpg', data: Buffer.from('a') });
+      await h.store.addAttachment(entry.id, { filename: 'voice.wav', data: Buffer.from('b') });
+
+      const attachments = await h.store.listAttachments(entry.id);
+      expect(attachments.map((a) => a.filename).sort()).toEqual(['photo.jpg', 'voice.wav']);
+    });
+
+    it('is empty for an entry with no attachments, and for an entry that does not exist', async () => {
+      const entry = await h.store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+      expect(await h.store.listAttachments(entry.id)).toEqual([]);
+      expect(await h.store.listAttachments('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toEqual([]);
+    });
+
+    it('reads back exactly the bytes that were written, with a content type inferred from the extension', async () => {
+      const entry = await h.store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+      const data = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+      await h.store.addAttachment(entry.id, { filename: 'photo.jpg', data });
+
+      const bytes = await h.store.getAttachment(entry.id, 'photo.jpg');
+      expect(bytes?.data).toEqual(data);
+      expect(bytes?.contentType).toBe('image/jpeg');
+    });
+
+    it('is null for a filename that does not exist, an entry that does not exist, or a traversal attempt', async () => {
+      const entry = await h.store.create({ body: 'x', created: '2026-07-26T22:55:13+01:00' });
+      await h.store.addAttachment(entry.id, { filename: 'photo.jpg', data: Buffer.from('a') });
+
+      expect(await h.store.getAttachment(entry.id, 'missing.jpg')).toBeNull();
+      expect(await h.store.getAttachment('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'photo.jpg')).toBeNull();
+      expect(await h.store.getAttachment(entry.id, '../../etc/passwd')).toBeNull();
+    });
+  });
+
   describe('rebuild', () => {
     it('reproduces the same list output as the index built incrementally', async () => {
       await h.store.create({ body: 'First', created: '2026-07-01T09:00:00Z' });

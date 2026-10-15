@@ -13,6 +13,11 @@ import type { PublicApiConfig } from './config.js';
 export interface StorageReader {
   /** The raw file text at `relPath`, or `null` if it is gone. */
   read(relPath: string): Promise<string | null>;
+
+  /** The raw bytes at `relPath`, or `null` if it is gone — a published
+   * entry's mirrored attachment (`plan.md` M19), never a snapshot, which
+   * `read` above already handles as text. */
+  readBytes(relPath: string): Promise<Buffer | null>;
 }
 
 function isNotFound(error: unknown): boolean {
@@ -36,6 +41,15 @@ class FsStorageReader implements StorageReader {
       throw error;
     }
   }
+
+  async readBytes(relPath: string): Promise<Buffer | null> {
+    try {
+      return await readFile(join(this.#root, relPath));
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
 }
 
 class S3StorageReader implements StorageReader {
@@ -51,6 +65,17 @@ class S3StorageReader implements StorageReader {
     try {
       const response = await this.#s3.send(new GetObjectCommand({ Bucket: this.#bucket, Key: relPath }));
       return await (response.Body as { transformToString(): Promise<string> }).transformToString();
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  async readBytes(relPath: string): Promise<Buffer | null> {
+    try {
+      const response = await this.#s3.send(new GetObjectCommand({ Bucket: this.#bucket, Key: relPath }));
+      const bytes = await (response.Body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
+      return Buffer.from(bytes);
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;

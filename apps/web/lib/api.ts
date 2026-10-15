@@ -4,6 +4,7 @@ import type {
   ApiErrorCode,
   ApproveBatchResponse,
   ApproveCategoryRequest,
+  AttachMediaRequest,
   CategoriesResponse,
   ChatMessage,
   ChatRequest,
@@ -42,6 +43,18 @@ import type {
   QuestionsResponse,
   QuestionsSummaryResponse,
   QuestionUpdateSuggestionsResponse,
+  CompileLayoutRequest,
+  CompileLayoutResponse,
+  CreateLayoutRequest,
+  Layout,
+  LayoutsResponse,
+  LayoutSurface,
+  ParseLayoutRequest,
+  ParseLayoutResponse,
+  RenderLayoutRequest,
+  ResolvedLayout,
+  SetDefaultLayoutResponse,
+  UpdateLayoutRequest,
   ReviewsHistogramResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
@@ -273,6 +286,22 @@ export function addAttachment(entryId: string, file: Blob, filename: string): Pr
 }
 
 /**
+ * Attach a media-library item to an entry (`plan.md` M19) — the library
+ * counterpart to `addAttachment`. The bytes never pass through the
+ * browser: the server copies them straight from `mediaStore` into the
+ * entry's own attachment directory, and this resolves to the same
+ * relative link fragment a direct upload would.
+ */
+export function attachMediaToEntry(entryId: string, mediaId: string): Promise<AddAttachmentResponse> {
+  const body: AttachMediaRequest = { mediaId };
+  return request<AddAttachmentResponse>(`/entries/${encodeURIComponent(entryId)}/attachments/from-media`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
  * Upload one file into the media library (`requirements.md` — photo
  * library, M19) — independent of any entry, unlike `addAttachment`. A
  * multi-file picker calls this once per file; there is no bulk endpoint of
@@ -310,6 +339,16 @@ export function listEntryMedia(entryId: string): Promise<EntryMediaResponse> {
  * server-rendered page as in the browser that later hydrates it. */
 export function mediaFileUrl(id: string): string {
   return `${API_BASE}/media/${encodeURIComponent(id)}/file`;
+}
+
+/** The URL an attachment's own bytes are served from (`plan.md` M19) — the
+ * entry-attachment twin of `mediaFileUrl`, for resolving a relative
+ * `![](stem/photo.jpg)` link in a rendered body into something an `<img>`
+ * can actually load. Only the filename matters to the API; the `stem`
+ * portion of the link exists solely so the link resolves in a plain
+ * markdown viewer (`format.md` §4), not for addressing it here. */
+export function attachmentFileUrl(entryId: string, filename: string): string {
+  return `${API_BASE}/entries/${encodeURIComponent(entryId)}/attachments/${encodeURIComponent(filename)}`;
 }
 
 /**
@@ -1027,6 +1066,99 @@ export function analysisQuestions(): Promise<QuestionsSummaryResponse> {
 
 export function analysisTodos(): Promise<TodosSummaryResponse> {
   return request<TodosSummaryResponse>('/analysis/todos');
+}
+
+/**
+ * The analysis page's whole render in one round trip (`requirements.md` §7.1,
+ * M20): the backend parses the layout, resolves every panel's identifiers
+ * against live catalog state, and assembles each panel's data. This frontend
+ * only ever renders what comes back. Omitting `syntax` renders the surface's
+ * built-in default; `windowDays` is the per-device window override sitting on
+ * top of the layout's own `window:`.
+ */
+export function renderAnalysisLayout(
+  options: { layoutId?: string; syntax?: string; windowDays?: number } = {},
+): Promise<ResolvedLayout> {
+  const body: RenderLayoutRequest = {};
+  if (options.layoutId !== undefined) body.layoutId = options.layoutId;
+  if (options.syntax !== undefined) body.syntax = options.syntax;
+  if (options.windowDays !== undefined) body.windowDays = options.windowDays;
+  return request<ResolvedLayout>('/analysis/render', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+// ── Named, durable layouts (`requirements.md` §8, M20) ──────────────────────
+// Transport only — every judgement (parse, validate, canonicalise, resolve)
+// is the API's (`requirements.md` §7.1).
+
+export function listLayouts(surface: LayoutSurface): Promise<LayoutsResponse> {
+  return request<LayoutsResponse>(`/layouts?surface=${encodeURIComponent(surface)}`);
+}
+
+export function getLayout(id: string): Promise<Layout> {
+  return request<Layout>(`/layouts/${encodeURIComponent(id)}`);
+}
+
+export function createLayout(body: CreateLayoutRequest): Promise<Layout> {
+  return request<Layout>('/layouts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Throws `ApiRequestError` with code `edit_conflict` if `expectedUpdatedAt`
+ * no longer matches, and `layout_invalid` if the new syntax does not parse. */
+export function updateLayout(id: string, body: UpdateLayoutRequest): Promise<Layout> {
+  return request<Layout>(`/layouts/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function setDefaultLayout(id: string): Promise<SetDefaultLayoutResponse> {
+  return request<SetDefaultLayoutResponse>(`/layouts/${encodeURIComponent(id)}/default`, { method: 'POST' });
+}
+
+export function deleteLayout(id: string): Promise<undefined> {
+  return request<undefined>(`/layouts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
+ * Prose → DSL + spec (`requirements.md` §8, M20). Does not save — the caller
+ * reviews the result and saves it. Throws `ApiRequestError` with code
+ * `layout_compile_failed` if the AI gateway is unconfigured or unreachable;
+ * the hand-edit path stays usable regardless.
+ */
+export function compileLayout(body: CompileLayoutRequest): Promise<CompileLayoutResponse> {
+  return request<CompileLayoutResponse>('/layouts/compile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Live validation for the syntax editor — parse + re-serialise, no save. */
+export function parseLayoutSyntax(surface: LayoutSurface, syntax: string): Promise<ParseLayoutResponse> {
+  return request<ParseLayoutResponse>('/layouts/parse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ surface, syntax } satisfies ParseLayoutRequest),
+  });
+}
+
+/** One-shot migration of the pre-M20 `journal:analysis-prefs` customization
+ * into a durable "My layout" default. The caller drops the legacy keys after. */
+export function importLegacyAnalysisPrefs(prefs: unknown): Promise<Layout> {
+  return request<Layout>('/layouts/import-legacy-prefs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefs }),
+  });
 }
 
 /** A numeric field's total/average across a window, optionally filtered to

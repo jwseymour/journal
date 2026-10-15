@@ -8,6 +8,7 @@ import { PendingItemsPopup } from '@/components/pending-items-popup';
 import {
   addAttachment,
   ApiRequestError,
+  attachMediaToEntry,
   getEntryStatus,
   listEntryMedia,
   mediaFileUrl,
@@ -150,6 +151,11 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
     return relativeLink;
   };
 
+  const attachFromLibrary = async (mediaId: string): Promise<string> => {
+    const { relativeLink } = await attachMediaToEntry(entry.id, mediaId);
+    return relativeLink;
+  };
+
   const confirmPublish = async (): Promise<void> => {
     setPublishing(true);
     try {
@@ -221,7 +227,7 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
           </p>
         )}
 
-        <Markdown>{entry.body}</Markdown>
+        <Markdown entryId={entry.id}>{entry.body}</Markdown>
 
         {media.length > 0 && (
           <section className={styles.media}>
@@ -297,6 +303,8 @@ export function EntryView({ entry: initial }: { entry: Entry }) {
         onSave={() => void save()}
         onFinish={() => void finishEditing()}
         onAttachAudio={attachAudio}
+        onAttachFromLibrary={attachFromLibrary}
+        entryId={entry.id}
         disabled={conflict}
         autoFocus
         ariaLabel="Edit entry"

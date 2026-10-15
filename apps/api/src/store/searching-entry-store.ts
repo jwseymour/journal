@@ -2,6 +2,8 @@ import type { SearchIndexer } from '../search/indexer.js';
 import type {
   AddAttachmentInput,
   AddAttachmentResult,
+  AttachmentBytes,
+  AttachmentInfo,
   CreateEntryInput,
   EntryStore,
   ListOptions,
@@ -60,6 +62,14 @@ export class SearchingEntryStore implements EntryStore {
 
   addAttachment(id: string, input: AddAttachmentInput): Promise<AddAttachmentResult> {
     return this.#inner.addAttachment(id, input);
+  }
+
+  listAttachments(id: string): Promise<AttachmentInfo[]> {
+    return this.#inner.listAttachments(id);
+  }
+
+  getAttachment(id: string, filename: string): Promise<AttachmentBytes | null> {
+    return this.#inner.getAttachment(id, filename);
   }
 
   list(options: ListOptions): Promise<ListResult> {

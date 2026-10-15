@@ -31,6 +31,6 @@ Precedence runs in that order. If any two conflict, the higher one wins and the 
 
 ## Before implementing
 
-Check `docs/requirements.md` §10 and `docs/plan.md` for what is still open. **Ask rather than inventing an answer.**
+Check `docs/requirements.md` §11 and `docs/plan.md` for what is still open. **Ask rather than inventing an answer.**
 
 The typeface, palette, and keyboard scheme were open and are now settled in `docs/design.md` §3, §2.3, and §5.2. Nothing in that document is currently open.

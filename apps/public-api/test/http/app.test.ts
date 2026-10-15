@@ -35,9 +35,14 @@ class FakeReader implements Pick<PublishedIndexReader, 'list' | 'findBySuffix' |
 
 class FakeStorage implements StorageReader {
   files = new Map<string, string>();
+  bytes = new Map<string, Buffer>();
 
   async read(relPath: string): Promise<string | null> {
     return this.files.get(relPath) ?? null;
+  }
+
+  async readBytes(relPath: string): Promise<Buffer | null> {
+    return this.bytes.get(relPath) ?? null;
   }
 }
 
@@ -270,6 +275,41 @@ describe('GET /entries/:slug', () => {
   it('never resolves an entry slug against a document row, or vice versa', async () => {
     reader.rows = [{ sourceType: 'document', sourceId: '01K3F9X2VQ8N7M4TQXYZABCDEF', mirrorKey: 'public/documents/x.json' }];
     const response = await app.request('/entries/2026-08-27-abcdef');
+    expect(response.status).toBe(404);
+  });
+});
+
+describe('GET /entries/:slug/attachments/:filename (`plan.md` M19)', () => {
+  const ROW: PublishedRow = {
+    sourceType: 'entry',
+    sourceId: '01K3F9X2VQ8N7M4TQXYZABCDEF',
+    mirrorKey: 'public/entries/x.json',
+  };
+
+  it("serves a published entry's mirrored attachment with a content type inferred from its extension", async () => {
+    reader.rows = [ROW];
+    storage.bytes.set('public/entry-attachments/01K3F9X2VQ8N7M4TQXYZABCDEF/photo.jpg', Buffer.from([1, 2, 3]));
+
+    const response = await app.request('/entries/2026-08-27-abcdef/attachments/photo.jpg');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('404s for a slug matching no published entry', async () => {
+    const response = await app.request('/entries/2026-08-27-zzzzzz/attachments/photo.jpg');
+    expect(response.status).toBe(404);
+  });
+
+  it('404s for an attachment never mirrored under that entry', async () => {
+    reader.rows = [ROW];
+    const response = await app.request('/entries/2026-08-27-abcdef/attachments/missing.jpg');
+    expect(response.status).toBe(404);
+  });
+
+  it('404s a path traversal attempt rather than resolving it against storage', async () => {
+    reader.rows = [ROW];
+    const response = await app.request('/entries/2026-08-27-abcdef/attachments/..%2F..%2Fetc%2Fpasswd');
     expect(response.status).toBe(404);
   });
 });

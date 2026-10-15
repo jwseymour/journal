@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { attachmentContentType } from '../attachment-content-type.js';
+import { isValidAttachmentFilename, publicAttachmentKey } from '../attachment-key.js';
 import type { PublicApiConfig } from '../config.js';
 import type { PublicSourceType, PublishedIndexReader } from '../index-reader.js';
 import type { PublicSearchReader } from '../public-search-reader.js';
@@ -198,6 +200,30 @@ export function createApp(
       body: snapshot.body,
     };
     return c.json(response);
+  });
+
+  /** A published entry's own mirrored attachment, by filename (`plan.md`
+   * M19) — the public twin of `apps/api`'s `GET /entries/:id/attachments/
+   * :filename`. Resolves the slug the same way `GET /entries/:slug` does;
+   * an entry that has never been published (or was, and no longer is) 404s
+   * here exactly as it does there, since `findBySuffix` only ever knows
+   * about rows in `published`. */
+  app.get('/entries/:slug/attachments/:filename', async (c) => {
+    const slug = c.req.param('slug');
+    const filename = c.req.param('filename');
+    const suffix = suffixFromSlug(slug);
+    const row = suffix ? reader.findBySuffix('entry', suffix) : null;
+    if (!row || !isValidAttachmentFilename(filename)) return c.json(notFound('entry', slug), 404);
+
+    const data = await storage.readBytes(publicAttachmentKey(row.sourceId, filename));
+    if (!data) return c.json(notFound('entry', slug), 404);
+
+    return c.body(new Uint8Array(data), 200, {
+      'Content-Type': attachmentContentType(filename),
+      // Public and write-once, the same reasoning `GET /media/:id/file`
+      // gives on the private side — safe to cache hard.
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    });
   });
 
   app.get('/search', async (c) => {

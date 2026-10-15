@@ -290,6 +290,18 @@ export interface AddAttachmentResponse {
 }
 
 /**
+ * Attaching an item already in the media library to an entry, rather than
+ * uploading fresh bytes (`requirements.md` §4.6, M19's connecting piece).
+ * The bytes are copied server-side from the library into the entry's own
+ * attachment directory — `EntryStore.addAttachment`'s write-once contract
+ * applies identically either way, so the response is the very same
+ * `AddAttachmentResponse` a direct upload gets back.
+ */
+export interface AttachMediaRequest {
+  mediaId: string;
+}
+
+/**
  * Everything a document records about itself (`requirements.md` §9).
  *
  * A document is not an entry: it has a title, it is revised repeatedly over
@@ -1359,6 +1371,317 @@ export interface ChatResponse {
   citedEntryIds: string[];
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Layout control (`requirements.md` §8 "Layout control", `docs/format.md` §8)
+//
+// The analysis surface is arranged from a *layout* the user owns: a small,
+// app-specific language they read and hand-edit, and which an AI compiles a
+// prose description into. Same stance as `ChartSpec` above — the model never
+// emits layout or code, only fills a closed vocabulary whose identifiers are
+// checked against live catalog state, and the backend builds the real thing
+// (`apps/api/src/model/chat-orchestrator.ts`). Two representations of one
+// model: the DSL text is canonical and authored (stored durably under
+// `derived/layouts/`); `RawLayoutSpec` is its grammar-level parse, cached in
+// the index and rebuildable from the text alone. `ResolvedLayout` is what the
+// executor returns for the frontend to render with one `switch`.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Which surface a layout arranges. `'home'` is the public blog/home surface,
+ * a later milestone — the engine is generic over a per-surface resource
+ * catalog so the machinery is shared. */
+export type LayoutSurface = 'analysis' | 'home';
+
+/**
+ * The grammar-level parse of a layout's DSL text: view kinds and option keys
+ * are a closed set (static), resource identifiers are strings exactly as
+ * written. Produced without touching the database, so the index can cache it
+ * and `rebuild` can reproduce it from the `.dsl` text alone — catalog
+ * validation is deferred to render time, so a removed metric can never rot a
+ * stored spec.
+ */
+export interface RawLayoutSpec {
+  version: 1;
+  surface: LayoutSurface;
+  /** The layout's name, from the DSL's first line (`layout "…"`). Canonical
+   * here; `Layout.name` / `LayoutSummary.name` mirror it and the store keeps
+   * them in step. A layout is renamed by editing that line. */
+  name: string;
+  /** The layout's own default time window; `null` means "use the caller's
+   * window / the surface default". A per-device override sits on top of this
+   * client-side. */
+  window: { days: number } | null;
+  sections: RawLayoutSection[];
+}
+
+export interface RawLayoutSection {
+  title: string;
+  panels: RawLayoutPanel[];
+}
+
+export interface RawLayoutPanel {
+  /** One of the surface catalog's view kinds — the parser rejects anything
+   * else. */
+  view: string;
+  /** Keys are drawn from that view's fixed option set; values are as written
+   * (a bare identifier, a number, or a comma-separated list). */
+  options: Record<string, string | number | string[]>;
+}
+
+/** A parse problem, anchored to a 1-indexed line and column of the DSL text.
+ * The parser never throws on bad input — it collects these instead, so the
+ * editor can show every problem at once. */
+export interface LayoutDiagnostic {
+  line: number;
+  column: number;
+  message: string;
+}
+
+/** A stored, named layout in full. `syntax` is canonical (re-serialised on
+ * every save); `spec` is its cached parse; `prose` is the last description it
+ * was compiled from, kept as provenance and never re-executed once `syntax`
+ * is hand-edited. */
+export interface Layout {
+  id: string;
+  surface: LayoutSurface;
+  name: string;
+  prose: string | null;
+  syntax: string;
+  spec: RawLayoutSpec;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LayoutSummary {
+  id: string;
+  surface: LayoutSurface;
+  name: string;
+  isDefault: boolean;
+  updatedAt: string;
+}
+
+export interface LayoutsResponse {
+  layouts: LayoutSummary[];
+  defaultId: string | null;
+}
+
+/** Prose → DSL + spec. Does not save — the user reviews the result and saves
+ * it themselves (`requirements.md` §6.1: nothing commits unseen). */
+export interface CompileLayoutRequest {
+  surface: LayoutSurface;
+  prose: string;
+  /** What to call the compiled layout — becomes its `layout "…"` line. The
+   * model is not asked to name it. */
+  name: string;
+  /** The layout being revised, if any — its current DSL, so the model edits
+   * rather than starts over. */
+  currentSyntax?: string;
+}
+
+export interface CompileLayoutResponse {
+  syntax: string;
+  spec: RawLayoutSpec;
+  /** Anything the prose asked for that the vocabulary cannot express —
+   * surfaced plainly rather than silently dropped. */
+  unresolved: string[];
+}
+
+/** Live validation for the syntax editor — parse + re-serialise, no save. */
+export interface ParseLayoutRequest {
+  surface: LayoutSurface;
+  syntax: string;
+}
+
+export interface ParseLayoutResponse {
+  spec: RawLayoutSpec;
+  canonicalSyntax: string;
+  diagnostics: LayoutDiagnostic[];
+}
+
+export interface CreateLayoutRequest {
+  surface: LayoutSurface;
+  /** The layout name — becomes the DSL's `layout "…"` line whether the body
+   * carries `syntax` or `prose`. */
+  name: string;
+  /** Exactly one of `syntax` / `prose` — the DSL directly, or a description
+   * to compile first. */
+  syntax?: string;
+  prose?: string;
+}
+
+export interface UpdateLayoutRequest {
+  /** The full replacement DSL. The name is part of it (`layout "…"`); rename
+   * by editing that line. `prose` alongside records what it was compiled
+   * from. */
+  syntax?: string;
+  prose?: string;
+  /** The `updatedAt` the caller last saw. A mismatch means the layout changed
+   * underneath them — the write is rejected with `edit_conflict`, the same
+   * shape an entry `PUT` uses. */
+  expectedUpdatedAt: string;
+}
+
+export interface SetDefaultLayoutResponse {
+  defaultId: string;
+}
+
+/** Render a layout to fully-resolved panels. `layoutId` names a stored
+ * layout; `syntax` renders an unsaved draft; neither renders the surface's
+ * built-in default. `windowDays` overrides the layout's own `window`. */
+export interface RenderLayoutRequest {
+  layoutId?: string;
+  syntax?: string;
+  windowDays?: number;
+}
+
+/**
+ * The executor's output: every panel with its data already assembled, ready
+ * for a single `switch` on the frontend
+ * (`apps/web/components/analysis/resolved-layout.tsx`). No aggregation or
+ * record-shaping is left for the client (`requirements.md` §7.1).
+ */
+export interface ResolvedLayout {
+  /** `null` when this is the surface's built-in default (nothing stored). */
+  layoutId: string | null;
+  name: string;
+  /** The canonical DSL text this render came from — re-serialised from the
+   * parsed spec, so it is exactly what the syntax editor should show and what
+   * a save would store. */
+  syntax: string;
+  window: { days: number };
+  sections: ResolvedLayoutSection[];
+}
+
+export interface ResolvedLayoutSection {
+  title: string;
+  panels: ResolvedPanel[];
+}
+
+export interface LayoutMetricSeries {
+  name: string;
+  days: DayCount[];
+}
+
+export interface LayoutRegisterRow {
+  field: string;
+  unit: string | null;
+  count: number;
+  total: number;
+  average: number;
+  days: DayValue[];
+}
+
+export interface LayoutHorizonSeries {
+  label: string;
+  unit: string | null;
+  days: DayValue[];
+}
+
+export interface LayoutFieldBreakdown {
+  metric: string;
+  numericLabel: string;
+  unit: string | null;
+  enumLabel: string;
+  bars: { label: string; value: number }[];
+}
+
+export interface LayoutScatterPoint {
+  x: number;
+  y: number;
+  entryId: string;
+  label: string;
+}
+
+export interface LayoutCorrelation {
+  metric: string;
+  xLabel: string;
+  yLabel: string;
+  points: LayoutScatterPoint[];
+}
+
+export interface LayoutReviewRow {
+  title: string;
+  medium: string;
+  eventTime: string;
+  rating: number | null;
+  note: string;
+  entryId: string;
+}
+
+export interface LayoutRatingAverage {
+  label: string;
+  value: number;
+}
+
+export interface LayoutStripLane {
+  medium: string;
+  ratings: number[];
+}
+
+export interface LayoutFeedItem {
+  id: string;
+  when: string;
+  text: string;
+  entryId: string | null;
+}
+
+export interface LayoutAgingRow {
+  label: string;
+  value: number;
+  entryId: string | null;
+}
+
+/**
+ * The fixed panel vocabulary — one variant per view kind, plus `error` for a
+ * panel whose identifiers did not resolve against the live catalog (degrade,
+ * never throw — `chat-orchestrator.ts`'s stance). A panel that today renders
+ * nothing when empty is simply omitted by the executor, and a section left
+ * with no panels is omitted too.
+ */
+export type ResolvedPanel =
+  | { view: 'presence'; title: string; seeAllHref: string | null; metrics: LayoutMetricSeries[] }
+  | { view: 'register'; title: string; seeAllHref: string | null; rows: LayoutRegisterRow[] }
+  | { view: 'horizon'; title: string; seeAllHref: string | null; series: LayoutHorizonSeries[] }
+  | { view: 'matrix'; title: string; seeAllHref: string | null; metrics: LayoutMetricSeries[] }
+  | { view: 'breakdown'; title: string; seeAllHref: string | null; breakdowns: LayoutFieldBreakdown[] }
+  | { view: 'correlation'; title: string; seeAllHref: string | null; correlations: LayoutCorrelation[] }
+  | {
+      view: 'reviews';
+      title: string;
+      seeAllHref: string | null;
+      tally: ReviewMediumSummary[];
+      rows: LayoutReviewRow[];
+    }
+  | {
+      view: 'rating-distribution';
+      title: string;
+      seeAllHref: string | null;
+      overall: ReviewRatingBucket[];
+      byMedium: ReviewMediumHistogram[];
+      averages: LayoutRatingAverage[];
+    }
+  | { view: 'rating-spread'; title: string; seeAllHref: string | null; lanes: LayoutStripLane[] }
+  | {
+      view: 'questions';
+      title: string;
+      seeAllHref: string | null;
+      openCount: number;
+      closedCount: number;
+      items: LayoutFeedItem[];
+    }
+  | {
+      view: 'todos';
+      title: string;
+      seeAllHref: string | null;
+      openCount: number;
+      closedCount: number;
+      items: LayoutFeedItem[];
+    }
+  | { view: 'lists'; title: string; seeAllHref: string | null; rows: ListTypeSummary[] }
+  | { view: 'concepts'; title: string; seeAllHref: string | null; rows: OpinionSubjectSummary[] }
+  | { view: 'aging'; title: string; seeAllHref: string | null; rows: LayoutAgingRow[] }
+  | { view: 'error'; title: string; seeAllHref: null; message: string };
+
 /**
  * Stable, machine-readable failure codes.
  *
@@ -1433,6 +1756,24 @@ export type ApiErrorCode =
    * (`requirements.md` §7.6).
    */
   | 'chat_failed'
+  /**
+   * A layout route named an `id` (or a default pointer) that does not exist
+   * (`requirements.md` §8). Unlike the tolerant no-op `DELETE`, a `GET`/`PUT`
+   * that lands nowhere is worth telling the caller about — same reasoning as
+   * `record_not_found`.
+   */
+  | 'layout_not_found'
+  /**
+   * A layout's DSL text did not parse, or referenced a view kind that does
+   * not exist for its surface. The stored layout, if any, is unchanged.
+   */
+  | 'layout_invalid'
+  /**
+   * The AI Gateway is not configured, unreachable, or returned a layout that
+   * could not be validated. Never blocks the hand-edit path — the syntax
+   * editor works without a model (`requirements.md` §8, §7.6).
+   */
+  | 'layout_compile_failed'
   /**
    * The request carried no valid session cookie or bearer token
    * (`plan.md` M11). Sign in via `POST /auth/google/start` or

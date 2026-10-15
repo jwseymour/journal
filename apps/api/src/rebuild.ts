@@ -1,5 +1,7 @@
 import { ConfigError, loadConfig } from './config.js';
 import { createTouchedMirror } from './durable/create-touched-mirror.js';
+import { createLayoutStore } from './store/create-layout-store.js';
+import { LayoutsIndex } from './index/layouts-index.js';
 import { DocumentsIndex } from './index/documents-index.js';
 import { ListsIndex } from './index/lists-index.js';
 import { MediaIndex } from './index/media-index.js';
@@ -126,6 +128,16 @@ async function main(): Promise<void> {
       `${restored.opinion_statement} opinion statements, ${restored.question} questions, ${restored.todo} todos`,
   );
 
+  // The user's analysis layouts (`format.md` §8) — authored, not a function
+  // of any entry, so `derived/layouts/` is their durable home and this
+  // reprojects it into the freshly-rebuilt index, the same recovery shape as
+  // the touched mirror above.
+  const layoutsIndex = new LayoutsIndex(config.indexDbPath);
+  const layoutStore = createLayoutStore(config, layoutsIndex);
+  const layoutsBefore = Date.now();
+  const { layoutCount } = await layoutStore.rebuild();
+  console.log(`[journal] layouts restored in ${Date.now() - layoutsBefore}ms: ${layoutCount} layouts`);
+
   searchIndex.close();
   index.close();
   documentsIndex.close();
@@ -136,6 +148,7 @@ async function main(): Promise<void> {
   opinionStatementsIndex.close();
   questionsIndex.close();
   todosIndex.close();
+  layoutsIndex.close();
 }
 
 main().catch((error: unknown) => {

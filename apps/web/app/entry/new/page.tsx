@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Coordinates } from '@journal/contract';
 import { Composer } from '@/components/composer';
-import { addAttachment, API_BASE, ApiRequestError, createEntry, updateEntry } from '@/lib/api';
+import { addAttachment, API_BASE, ApiRequestError, attachMediaToEntry, createEntry, updateEntry } from '@/lib/api';
 import { nowRfc3339 } from '@/lib/format';
 import { captureLocationOnce } from '@/lib/location';
 import styles from './page.module.css';
@@ -53,6 +53,10 @@ export default function NewEntryPage() {
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  // Mirrors `entryIdRef` below, but as real state — the preview's `Markdown`
+  // needs to re-render once an id exists so it can resolve attachment URLs,
+  // which a ref update alone would never trigger.
+  const [entryId, setEntryId] = useState<string | null>(null);
 
   // Mutable, read-after-write state for the save loop. React state is the
   // wrong tool here: the loop needs the true latest body synchronously,
@@ -116,6 +120,7 @@ export default function NewEntryPage() {
             });
             entryIdRef.current = created.id;
             savedHashRef.current = created.contentHash;
+            setEntryId(created.id);
           } else {
             const updated = await updateEntry(entryIdRef.current, {
               body: toSave,
@@ -226,6 +231,21 @@ export default function NewEntryPage() {
     [flush],
   );
 
+  /** "Attach photo" — the same real-entry precondition as `attachAudio`
+   * above (`plan.md` M19): an attachment needs a real entry to sit beside,
+   * so this flushes one into existence first if writing has not produced
+   * one yet. */
+  const attachFromLibrary = useCallback(
+    async (mediaId: string): Promise<string> => {
+      if (!entryIdRef.current) await flush();
+      const id = entryIdRef.current;
+      if (!id) throw new Error('Could not create the entry to attach a photo to.');
+      const { relativeLink } = await attachMediaToEntry(id, mediaId);
+      return relativeLink;
+    },
+    [flush],
+  );
+
   const finish = useCallback(async () => {
     if (finishing || !hasWriting || conflictRef.current) return;
     setFinishing(true);
@@ -298,9 +318,11 @@ export default function NewEntryPage() {
         onSave={() => void flush()}
         onFinish={() => void finish()}
         onAttachAudio={attachAudio}
+        onAttachFromLibrary={attachFromLibrary}
         disabled={conflict}
         autoFocus
         ariaLabel="Entry"
+        entryId={entryId ?? undefined}
       />
 
       <footer className={styles.footer}>

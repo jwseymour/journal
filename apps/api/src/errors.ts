@@ -77,6 +77,23 @@ export const extractionFailed = (message: string, cause?: unknown): AppError =>
 export const chatFailed = (message: string, cause?: unknown): AppError =>
   new AppError('chat_failed', message, 503, cause === undefined ? undefined : { cause });
 
+/** A layout route named an id (or default pointer) that does not exist
+ * (`requirements.md` §8) — same "an operation that lands nowhere is worth
+ * reporting" reasoning as `recordNotFound`. */
+export const layoutNotFound = (id: string): AppError =>
+  new AppError('layout_not_found', `No layout with id ${id}.`, 404);
+
+/** A layout's DSL text did not parse, or named a view kind that does not
+ * exist for its surface. The stored layout, if any, is left untouched. */
+export const layoutInvalid = (message: string): AppError =>
+  new AppError('layout_invalid', message, 422);
+
+/** The model could not turn a prose description into a layout — gateway
+ * unconfigured, unreachable, or output that would not validate. Never blocks
+ * hand-editing the syntax (`requirements.md` §8, §7.6). */
+export const layoutCompileFailed = (message: string, cause?: unknown): AppError =>
+  new AppError('layout_compile_failed', message, 503, cause === undefined ? undefined : { cause });
+
 /** No valid session cookie or bearer token, or a Google/password sign-in
  * attempt that did not check out (`plan.md` M11). Message is always
  * generic — never distinguishes "wrong password" from "unknown account"

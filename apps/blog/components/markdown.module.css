@@ -103,6 +103,15 @@
   line-height: var(--leading-normal);
 }
 
+.image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: var(--space-sm) 0;
+  border: var(--hairline) solid var(--rule);
+  border-radius: var(--radius-sm);
+}
+
 .strong {
   font-weight: var(--weight-emphasis);
 }

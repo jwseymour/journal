@@ -60,6 +60,21 @@ function resolveBase(): string {
   return '/api';
 }
 
+/**
+ * The URL a published entry's mirrored attachment is served from
+ * (`plan.md` M19) — for an `<img>` element's `src` directly, never through
+ * `request()`. Deliberately **always** the browser-facing base, unlike
+ * `resolveBase()` above: the article page that builds this is a Server
+ * Component, so the HTML it renders (this `src` included) is what the
+ * browser itself receives and has to resolve — the same reasoning
+ * `apps/web/lib/api.ts`'s own `API_BASE` comment gives for its Google
+ * sign-in `href`.
+ */
+export function publicAttachmentFileUrl(slug: string, filename: string): string {
+  const base = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+  return `${base}/entries/${encodeURIComponent(slug)}/attachments/${encodeURIComponent(filename)}`;
+}
+
 async function request<T>(path: string): Promise<T> {
   const response = await fetch(`${resolveBase()}${path}`, { cache: 'no-store' });
   if (!response.ok) {

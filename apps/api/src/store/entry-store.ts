@@ -83,6 +83,19 @@ export interface AddAttachmentResult {
   relativeLink: string;
 }
 
+export interface AttachmentInfo {
+  /** A bare filename, the same shape `AddAttachmentInput.filename` takes. */
+  filename: string;
+}
+
+export interface AttachmentBytes {
+  data: Buffer;
+  /** Inferred from the filename's extension at read time — an attachment
+   * carries no stored content type of its own, the same way its bytes carry
+   * no stored filename beyond the name itself (`format.md` §4). */
+  contentType: string;
+}
+
 export interface EntryStore {
   /** Write a new entry. The only way anything is ever written (`requirements.md` §4.4). */
   create(input: CreateEntryInput): Promise<StoredEntry>;
@@ -119,6 +132,17 @@ export interface EntryStore {
    * collision is refused rather than silently overwritten.
    */
   addAttachment(entryId: string, input: AddAttachmentInput): Promise<AddAttachmentResult>;
+
+  /** Every attachment currently sitting beside this entry, in no particular
+   * order. Empty for an entry with none, or one that does not exist —
+   * a read, so there is nothing to 404 about (`plan.md` M19). */
+  listAttachments(entryId: string): Promise<AttachmentInfo[]>;
+
+  /** One attachment's raw bytes, or `null` if the entry or the filename
+   * within it does not exist — `GET /entries/:id/attachments/:filename`'s
+   * one job, the entry-attachment twin of `MediaStore.getBytes` (`plan.md`
+   * M19). */
+  getAttachment(entryId: string, filename: string): Promise<AttachmentBytes | null>;
 
   /** One page of entries, newest first. */
   list(options: ListOptions): Promise<ListResult>;

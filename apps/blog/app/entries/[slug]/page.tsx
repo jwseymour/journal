@@ -19,7 +19,7 @@ export default async function EntryPage({ params }: { params: Promise<{ slug: st
       <time dateTime={entry.created} className={styles.when}>
         {formatDate(entry.created)}
       </time>
-      <Markdown>{entry.body}</Markdown>
+      <Markdown slug={entry.slug}>{entry.body}</Markdown>
     </article>
   );
 }

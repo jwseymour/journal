@@ -34,6 +34,10 @@ import type {
   PublishQueueResponse,
   QuestionsResponse,
   QuestionsSummaryResponse,
+  Layout,
+  LayoutsResponse,
+  RawLayoutSpec,
+  ResolvedLayout,
   Review,
   ReviewsResponse,
   ReviewsSummaryResponse,
@@ -54,7 +58,7 @@ import type {
   VisibilityDefaultsResponse,
 } from '@journal/contract';
 import type { Config } from '../../src/config.js';
-import { chatFailed, extractionFailed, transcriptionFailed } from '../../src/errors.js';
+import { chatFailed, extractionFailed, layoutCompileFailed, transcriptionFailed } from '../../src/errors.js';
 import { TouchedMirror, type DurableBlobStore } from '../../src/durable/touched-mirror.js';
 import { createApp } from '../../src/http/app.js';
 import type { CategoriesReader, CategorySuggestion, SuggestionStatus } from '../../src/index/categories-index.js';
@@ -131,6 +135,9 @@ import { PublicSearchIndex } from '../../src/index/public-search-index.js';
 import { PublishedIndex } from '../../src/index/published-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
 import { VisibilityDefaultsIndex } from '../../src/index/visibility-defaults-index.js';
+import { LayoutsIndex } from '../../src/index/layouts-index.js';
+import { DurableLayoutStore, type LayoutBlobStore } from '../../src/store/layout-store.js';
+import type { LayoutCompiling } from '../../src/layout/compile.js';
 import type { ChatAnswerer } from '../../src/model/chat-orchestrator.js';
 import type { PendingItemApplying } from '../../src/model/pending-item-applier.js';
 import type { LivePendingProcessing } from '../../src/model/pending-processor.js';
@@ -942,6 +949,29 @@ class FakeDurableBlobStore implements DurableBlobStore {
   }
 }
 
+/** In-memory `LayoutBlobStore` — the `derived/layouts/` durable store with no
+ * real filesystem, so the `/layouts` routes run against a real
+ * `DurableLayoutStore` + `:memory:` `LayoutsIndex`. */
+class FakeLayoutBlobStore implements LayoutBlobStore {
+  files = new Map<string, string>();
+
+  async put(key: string, body: string): Promise<void> {
+    this.files.set(key, body);
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.files.get(key) ?? null;
+  }
+
+  async delete(key: string): Promise<void> {
+    this.files.delete(key);
+  }
+
+  async listKeys(prefix: string): Promise<string[]> {
+    return [...this.files.keys()].filter((key) => key.startsWith(prefix));
+  }
+}
+
 /** Records calls and returns a canned response — these tests exercise the
  * route's own contract (validation, status codes, passthrough), never the
  * model's judgement (that is `chat-orchestrator.test.ts`'s job). */
@@ -953,6 +983,29 @@ class FakeChatAnswerer implements ChatAnswerer {
     this.calls.push(messages);
     if (this.response === 'FAIL') throw chatFailed('the gateway is not configured');
     return this.response;
+  }
+}
+
+/** The `/layouts/compile` route's contract only — the model's judgement is
+ * not exercised here. */
+class FakeLayoutCompiler implements LayoutCompiling {
+  calls: Array<{ prose: string; name: string; currentSyntax?: string }> = [];
+  result: { syntax: string; spec: RawLayoutSpec; unresolved: string[] } | 'FAIL' = {
+    syntax: 'layout "Compiled"\n\nsection "S"\n  panel todos\n',
+    spec: {
+      version: 1,
+      surface: 'analysis',
+      name: 'Compiled',
+      window: null,
+      sections: [{ title: 'S', panels: [{ view: 'todos', options: {} }] }],
+    },
+    unresolved: [],
+  };
+
+  async compile(prose: string, _catalog: unknown, name: string, currentSyntax?: string) {
+    this.calls.push({ prose, name, ...(currentSyntax !== undefined ? { currentSyntax } : {}) });
+    if (this.result === 'FAIL') throw layoutCompileFailed('gateway unconfigured');
+    return this.result;
   }
 }
 
@@ -1072,6 +1125,9 @@ let documentsIndex: DocumentsIndex;
 let mediaIndex: MediaIndex;
 let publishedIndex: PublishedIndex;
 let visibilityDefaultsIndex: VisibilityDefaultsIndex;
+let layoutsIndex: LayoutsIndex;
+let layoutStore: DurableLayoutStore;
+let layoutCompiler: FakeLayoutCompiler;
 
 const config = (journalDir: string): Config => ({
   journalDir,
@@ -1127,6 +1183,9 @@ beforeEach(async () => {
   mediaIndex = new MediaIndex(':memory:');
   publishedIndex = new PublishedIndex(':memory:');
   visibilityDefaultsIndex = new VisibilityDefaultsIndex(':memory:');
+  layoutsIndex = new LayoutsIndex(':memory:');
+  layoutStore = new DurableLayoutStore(new FakeLayoutBlobStore(), layoutsIndex);
+  layoutCompiler = new FakeLayoutCompiler();
   const entryStore = new FsEntryStore(root, index);
   const documentStore = new FsDocumentStore(root, documentsIndex);
   const mediaStore = new FsMediaStore(root, mediaIndex);
@@ -1175,6 +1234,9 @@ beforeEach(async () => {
     publisher,
     visibilityDefaultsIndex,
     touchedMirror,
+    layoutStore,
+    layoutsIndex,
+    layoutCompiler,
   );
 });
 
@@ -1184,6 +1246,7 @@ afterEach(async () => {
   mediaIndex.close();
   publishedIndex.close();
   visibilityDefaultsIndex.close();
+  layoutsIndex.close();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -1616,6 +1679,100 @@ describe('POST /entries/:id/attachments', () => {
     const response = await upload(created.id, '../../etc/passwd', 'x');
     expect(response.status).toBe(400);
     expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+});
+
+describe('GET /entries/:id/attachments/:filename', () => {
+  it("serves an attachment's raw bytes with a content type inferred from its extension", async () => {
+    const created = (await (await post({ body: 'A photo from today.' })).json()) as CreateEntryResponse;
+    const form = new FormData();
+    form.set('file', new File([new Uint8Array([1, 2, 3])], 'photo.jpg', { type: 'image/jpeg' }));
+    await app.request(`/entries/${created.id}/attachments`, { method: 'POST', body: form });
+
+    const response = await app.request(`/entries/${created.id}/attachments/photo.jpg`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('reports a missing entry as not found', async () => {
+    const response = await app.request('/entries/01ARZ3NDEKTSV4RRFFQ69G5FAV/attachments/photo.jpg');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
+  });
+
+  it('reports a filename that was never attached as not found', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const response = await app.request(`/entries/${created.id}/attachments/missing.jpg`);
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('record_not_found');
+  });
+});
+
+describe('POST /entries/:id/attachments/from-media', () => {
+  async function uploadToLibrary(filename = 'photo.jpg', type = 'image/jpeg'): Promise<UploadMediaResponse> {
+    const form = new FormData();
+    form.set('file', new File([new Uint8Array([9, 9, 9])], filename, { type }));
+    const response = await app.request('/media', { method: 'POST', body: form });
+    return (await response.json()) as UploadMediaResponse;
+  }
+
+  function attachFromMedia(entryId: string, mediaId: string) {
+    return app.request(`/entries/${entryId}/attachments/from-media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mediaId }),
+    });
+  }
+
+  it("copies the library item's bytes into the entry's own attachment directory", async () => {
+    const created = (await (await post({ body: 'A photo from today.' })).json()) as CreateEntryResponse;
+    const media = await uploadToLibrary();
+
+    const response = await attachFromMedia(created.id, media.id);
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as AddAttachmentResponse;
+    expect(body.relativeLink).toMatch(new RegExp(`^[0-9a-z-]+/${media.id}\\.jpg$`));
+
+    const served = await app.request(`/entries/${created.id}/attachments/${media.id}.jpg`);
+    expect(served.status).toBe(200);
+    expect(served.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(new Uint8Array(await served.arrayBuffer())).toEqual(new Uint8Array([9, 9, 9]));
+  });
+
+  it('reports a missing entry as not found', async () => {
+    const media = await uploadToLibrary();
+    const response = await attachFromMedia('01ARZ3NDEKTSV4RRFFQ69G5FAV', media.id);
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('entry_not_found');
+  });
+
+  it('reports a missing media item as not found', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const response = await attachFromMedia(created.id, '01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('record_not_found');
+  });
+
+  it('rejects a request with no mediaId', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const response = await app.request(`/entries/${created.id}/attachments/from-media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(400);
+    expect((await errorOf(response)).code).toBe('invalid_request');
+  });
+
+  it('rejects attaching the same media item to the same entry twice', async () => {
+    const created = (await (await post({ body: 'x' })).json()) as CreateEntryResponse;
+    const media = await uploadToLibrary();
+    expect((await attachFromMedia(created.id, media.id)).status).toBe(201);
+
+    const response = await attachFromMedia(created.id, media.id);
+    expect(response.status).toBe(409);
+    expect((await errorOf(response)).code).toBe('attachment_conflict');
   });
 });
 
@@ -2294,6 +2451,246 @@ describe('GET /analysis/todos', () => {
     todos.summary = { openCount: 4, doneCount: 1 };
     const response = await app.request('/analysis/todos');
     expect((await response.json()) as TodosSummaryResponse).toEqual({ openCount: 4, doneCount: 1 });
+  });
+});
+
+describe('POST /analysis/render', () => {
+  const render = (body: unknown) =>
+    app.request('/analysis/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('renders the built-in default when no layout is named', async () => {
+    const response = await render({});
+    expect(response.status).toBe(200);
+    const layout = (await response.json()) as ResolvedLayout;
+    expect(layout.layoutId).toBeNull();
+    expect(layout.name).toBe('Analysis');
+    expect(layout.window).toEqual({ days: 30 });
+    // Its canonical DSL comes back for the (read-only, this milestone) editor.
+    expect(layout.syntax).toContain('layout "Analysis"');
+    expect(layout.syntax).toContain('panel presence');
+    // Every panel is one of the closed vocabulary's variants.
+    for (const section of layout.sections) {
+      for (const panel of section.panels) {
+        expect(typeof panel.view).toBe('string');
+        expect(panel).toHaveProperty('title');
+      }
+    }
+  });
+
+  it('threads a windowDays override through to the resolved window and the readers', async () => {
+    const response = await render({ windowDays: 90 });
+    const layout = (await response.json()) as ResolvedLayout;
+    expect(layout.window).toEqual({ days: 90 });
+    expect(metrics.summarizeCalls.at(-1)?.windowDays).toBe(90);
+  });
+
+  it('renders a caller-supplied inline layout, echoing it back canonicalised', async () => {
+    const response = await render({
+      syntax: 'layout "Scratch"\n\nsection "Just todos"\n  panel todos\n',
+    });
+    expect(response.status).toBe(200);
+    const layout = (await response.json()) as ResolvedLayout;
+    expect(layout.name).toBe('Scratch');
+    expect(layout.sections.map((s) => s.title)).toEqual(['Just todos']);
+    expect(layout.syntax).toBe('layout "Scratch"\n\nsection "Just todos"\n  panel todos\n');
+  });
+
+  it('rejects an inline layout that does not parse with layout_invalid (422)', async () => {
+    const response = await render({ syntax: 'layout "Bad"\n\nsection "S"\n  panel nonsense\n' });
+    expect(response.status).toBe(422);
+    expect((await errorOf(response)).code).toBe('layout_invalid');
+  });
+
+  it('degrades a panel naming an unknown metric to an error panel — never a 500', async () => {
+    categories.approved.metric = ['sleep'];
+    const response = await render({
+      syntax: 'layout "A"\n\nsection "S"\n  panel correlation\n    metric: cycling\n',
+    });
+    expect(response.status).toBe(200);
+    const layout = (await response.json()) as ResolvedLayout;
+    expect(layout.sections[0]?.panels[0]).toMatchObject({ view: 'error' });
+  });
+
+  it('rejects a non-JSON body', async () => {
+    const response = await app.request('/analysis/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not json',
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects an unknown body field', async () => {
+    const response = await render({ layoutId: 'x', bogus: true });
+    expect(response.status).toBe(400);
+  });
+
+  it('renders a stored layout by id, and the surface default when nothing is named', async () => {
+    const created = (await (
+      await app.request('/layouts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ surface: 'analysis', name: 'Mine', syntax: 'layout "x"\n\nsection "Only"\n  panel todos\n' }),
+      })
+    ).json()) as Layout;
+
+    const byId = (await (await render({ layoutId: created.id })).json()) as ResolvedLayout;
+    expect(byId.layoutId).toBe(created.id);
+    expect(byId.sections.map((s) => s.title)).toEqual(['Only']);
+
+    // No layoutId, no syntax → the stored default (the one just created).
+    const byDefault = (await (await render({})).json()) as ResolvedLayout;
+    expect(byDefault.layoutId).toBe(created.id);
+    expect(byDefault.name).toBe('Mine');
+  });
+
+  it('reports an unknown layoutId as layout_not_found', async () => {
+    const response = await render({ layoutId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe('layout_not_found');
+  });
+});
+
+describe('/layouts CRUD', () => {
+  const jsonReq = (path: string, method: string, body: unknown) =>
+    app.request(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const create = (body: unknown) => jsonReq('/layouts', 'POST', body);
+  const validSyntax = 'layout "x"\n\nsection "S"\n  panel todos\n';
+
+  it('creates a layout, canonicalising the syntax and forcing the request name in', async () => {
+    const response = await create({ surface: 'analysis', name: 'Board one', syntax: 'section "S"\n  panel todos\n' });
+    expect(response.status).toBe(201);
+    const layout = (await response.json()) as Layout;
+    expect(layout.name).toBe('Board one');
+    expect(layout.syntax).toBe('layout "Board one"\n\nsection "S"\n  panel todos\n');
+    expect(layout.isDefault).toBe(true);
+  });
+
+  it('rejects a create whose syntax does not parse', async () => {
+    const response = await create({ surface: 'analysis', name: 'Bad', syntax: 'section "S"\n  panel nope\n' });
+    expect(response.status).toBe(422);
+    expect((await errorOf(response)).code).toBe('layout_invalid');
+  });
+
+  it('rejects a create carrying prose (compile is a later milestone) and one missing a name', async () => {
+    expect((await create({ surface: 'analysis', name: 'P', prose: 'make it nice' })).status).toBe(400);
+    expect((await create({ surface: 'analysis', syntax: validSyntax })).status).toBe(400);
+  });
+
+  it('lists layouts for a surface with the default pointer; rejects a bad surface', async () => {
+    await create({ surface: 'analysis', name: 'one', syntax: validSyntax });
+    await create({ surface: 'analysis', name: 'two', syntax: validSyntax });
+    const list = (await (await app.request('/layouts?surface=analysis')).json()) as LayoutsResponse;
+    expect(list.layouts.map((l) => l.name).sort()).toEqual(['one', 'two']);
+    expect(list.defaultId).toBe(list.layouts.find((l) => l.name === 'one')!.id);
+    expect((await app.request('/layouts?surface=bogus')).status).toBe(400);
+  });
+
+  it('gets one layout, 404s an unknown id', async () => {
+    const created = (await (await create({ surface: 'analysis', name: 'g', syntax: validSyntax })).json()) as Layout;
+    expect((await (await app.request(`/layouts/${created.id}`)).json()) as Layout).toMatchObject({ id: created.id });
+    expect((await app.request('/layouts/01ARZ3NDEKTSV4RRFFQ69G5FAV')).status).toBe(404);
+  });
+
+  it('updates via PUT, guards on expectedUpdatedAt, 404s an unknown id', async () => {
+    const created = (await (await create({ surface: 'analysis', name: 'u', syntax: validSyntax })).json()) as Layout;
+
+    const stale = await jsonReq(`/layouts/${created.id}`, 'PUT', {
+      syntax: 'layout "u2"\n\nsection "S"\n  panel lists\n',
+      expectedUpdatedAt: 'wrong',
+    });
+    expect(stale.status).toBe(409);
+    expect((await errorOf(stale)).code).toBe('edit_conflict');
+
+    const ok = await jsonReq(`/layouts/${created.id}`, 'PUT', {
+      syntax: 'layout "u2"\n\nsection "S"\n  panel lists\n',
+      expectedUpdatedAt: created.updatedAt,
+    });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()) as Layout).toMatchObject({ name: 'u2' });
+
+    expect((await jsonReq('/layouts/01ARZ3NDEKTSV4RRFFQ69G5FAV', 'PUT', { expectedUpdatedAt: 'x' })).status).toBe(404);
+  });
+
+  it('rejects a PUT whose new syntax does not parse', async () => {
+    const created = (await (await create({ surface: 'analysis', name: 'p', syntax: validSyntax })).json()) as Layout;
+    const response = await jsonReq(`/layouts/${created.id}`, 'PUT', {
+      syntax: 'layout "p"\n\nsection "S"\n  panel ghost\n',
+      expectedUpdatedAt: created.updatedAt,
+    });
+    expect(response.status).toBe(422);
+  });
+
+  it('moves the default pointer with POST /layouts/:id/default', async () => {
+    const a = (await (await create({ surface: 'analysis', name: 'a', syntax: validSyntax })).json()) as Layout;
+    const b = (await (await create({ surface: 'analysis', name: 'b', syntax: validSyntax })).json()) as Layout;
+    const response = await app.request(`/layouts/${b.id}/default`, { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect((await response.json()) as { defaultId: string }).toEqual({ defaultId: b.id });
+    expect(((await (await app.request('/layouts?surface=analysis')).json()) as LayoutsResponse).defaultId).toBe(b.id);
+    void a;
+  });
+
+  it('deletes a layout (204) and is a tolerant no-op for an unknown id', async () => {
+    const created = (await (await create({ surface: 'analysis', name: 'd', syntax: validSyntax })).json()) as Layout;
+    expect((await app.request(`/layouts/${created.id}`, { method: 'DELETE' })).status).toBe(204);
+    expect((await app.request(`/layouts/${created.id}`)).status).toBe(404);
+    expect((await app.request('/layouts/01ARZ3NDEKTSV4RRFFQ69G5FAV', { method: 'DELETE' })).status).toBe(204);
+  });
+
+  it('POST /layouts/parse validates and canonicalises without saving', async () => {
+    const response = await jsonReq('/layouts/parse', 'POST', {
+      surface: 'analysis',
+      syntax: 'layout   "Draft"\n\n\nsection "S"\n  panel todos\n    show: all\n\n',
+    });
+    const body = (await response.json()) as { canonicalSyntax: string; diagnostics: unknown[] };
+    expect(body.diagnostics).toEqual([]);
+    expect(body.canonicalSyntax).toBe('layout "Draft"\n\nsection "S"\n  panel todos\n    show: all\n');
+    // Nothing was stored.
+    expect(((await (await app.request('/layouts?surface=analysis')).json()) as LayoutsResponse).layouts).toEqual([]);
+  });
+
+  it('POST /layouts/import-legacy-prefs stores a default "My layout" from old prefs', async () => {
+    const response = await jsonReq('/layouts/import-legacy-prefs', 'POST', {
+      prefs: { windowDays: 90, hidden: ['horizon', 'matrix'] },
+    });
+    expect(response.status).toBe(201);
+    const layout = (await response.json()) as Layout;
+    expect(layout.name).toBe('My layout');
+    expect(layout.isDefault).toBe(true);
+    expect(layout.syntax).toContain('window: 90d');
+    expect(layout.syntax).not.toContain('panel horizon');
+  });
+
+  it('POST /layouts/compile returns the compiler output and never saves', async () => {
+    const response = await jsonReq('/layouts/compile', 'POST', {
+      surface: 'analysis',
+      name: 'Draft',
+      prose: 'just the open todos',
+      currentSyntax: 'layout "Draft"\n\nsection "Old"\n  panel questions\n',
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { syntax: string; unresolved: string[] };
+    expect(body.syntax).toContain('panel todos');
+    expect(body.unresolved).toEqual([]);
+    expect(layoutCompiler.calls[0]).toMatchObject({ prose: 'just the open todos', name: 'Draft' });
+    // Nothing stored.
+    expect(((await (await app.request('/layouts?surface=analysis')).json()) as LayoutsResponse).layouts).toEqual([]);
+  });
+
+  it('POST /layouts/compile surfaces an unconfigured gateway as layout_compile_failed (503)', async () => {
+    layoutCompiler.result = 'FAIL';
+    const response = await jsonReq('/layouts/compile', 'POST', { surface: 'analysis', name: 'x', prose: 'anything' });
+    expect(response.status).toBe(503);
+    expect((await errorOf(response)).code).toBe('layout_compile_failed');
+  });
+
+  it('POST /layouts/compile rejects an empty prose', async () => {
+    expect((await jsonReq('/layouts/compile', 'POST', { surface: 'analysis', name: 'x', prose: '   ' })).status).toBe(400);
   });
 });
 

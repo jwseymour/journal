@@ -19,6 +19,9 @@ import { SearchIndex } from './index/search-index.js';
 import { SqliteIndex } from './index/sqlite-index.js';
 import { TodosIndex } from './index/todos-index.js';
 import { VisibilityDefaultsIndex } from './index/visibility-defaults-index.js';
+import { LayoutsIndex } from './index/layouts-index.js';
+import { createLayoutStore } from './store/create-layout-store.js';
+import { LayoutCompiler } from './layout/compile.js';
 import { ChatOrchestrator } from './model/chat-orchestrator.js';
 import { Extractor } from './model/extractor.js';
 import { GatewayChatClient, UnconfiguredChatClient } from './model/gateway-chat-client.js';
@@ -102,6 +105,12 @@ async function main(): Promise<void> {
   // disposable settings cache, unlike `publishedIndex` itself: losing it
   // only means re-ticking a default, never losing a publish decision.
   const visibilityDefaultsIndex = new VisibilityDefaultsIndex(config.indexDbPath);
+  // The user's analysis layouts (`requirements.md` §8, M20). The index is a
+  // disposable projection like `visibilityDefaultsIndex`; the durable copy
+  // lives under `derived/layouts/`. Boot never rebuilds it — the store
+  // self-heals a cold projection on first read (`layout-store.ts`).
+  const layoutsIndex = new LayoutsIndex(config.indexDbPath);
+  const layoutStore = createLayoutStore(config, layoutsIndex);
   // The public search index (`plan.md` M17) — a disposable cache exactly
   // like `searchIndex`, just scoped to whatever `Publisher` has mirrored to
   // `public/`. Lives in the same `index.db` file as everything else so the
@@ -173,6 +182,10 @@ async function main(): Promise<void> {
   const modelClient = config.aiGatewayApiKey
     ? new GatewayModelClient(config.aiGatewayApiKey, config.extractionModel)
     : new UnconfiguredModelClient();
+  // Prose → layout (`requirements.md` §8, M20). Uses the same one model seam;
+  // an unconfigured gateway just means `/layouts/compile` returns
+  // `layout_compile_failed` and the hand-edit path still works.
+  const layoutCompiler = new LayoutCompiler(modelClient);
   // The live, one-entry pending-item pipeline (`plan.md` M18) — replaces
   // the pre-M18 `EntryProcessor`, which committed directly. Nothing here
   // commits on its own; see `LivePendingProcessor`'s own doc comment.
@@ -227,6 +240,9 @@ async function main(): Promise<void> {
     publisher,
     visibilityDefaultsIndex,
     touchedMirror,
+    layoutStore,
+    layoutsIndex,
+    layoutCompiler,
   );
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {

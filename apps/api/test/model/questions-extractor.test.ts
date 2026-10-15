@@ -60,6 +60,12 @@ class FakeEntryStore implements EntryStore {
   addAttachment(): Promise<never> {
     throw new Error('not used in these tests');
   }
+  listAttachments(): Promise<never> {
+    throw new Error('not used in these tests');
+  }
+  getAttachment(): Promise<never> {
+    throw new Error('not used in these tests');
+  }
   listPeriods(): Promise<never> {
     throw new Error('not used in these tests');
   }

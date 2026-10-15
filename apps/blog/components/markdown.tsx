@@ -1,4 +1,5 @@
 import ReactMarkdown, { type Components } from 'react-markdown';
+import { publicAttachmentFileUrl } from '@/lib/api';
 import styles from './markdown.module.css';
 
 /**
@@ -8,8 +9,14 @@ import styles from './markdown.module.css';
  * deployable with its own token file. Renders to real React elements, never
  * `dangerouslySetInnerHTML`, so nothing in a document's body can inject
  * markup into the page.
+ *
+ * `slug` resolves a `![](stem/photo.jpg)` attachment link (`format.md` §4)
+ * against `apps/public-api`'s mirrored copy (`plan.md` M19) — a document
+ * has no attachments of its own, so this is only ever given for an entry.
+ * With no `slug`, an image link renders nothing rather than guessing at a
+ * URL, the same fallback `apps/web`'s own `Markdown` takes.
  */
-const components: Components = {
+const baseComponents: Components = {
   h1: (props) => <h1 className={styles.h1} {...props} />,
   h2: (props) => <h2 className={styles.h2} {...props} />,
   h3: (props) => <h3 className={styles.h3} {...props} />,
@@ -34,7 +41,19 @@ const components: Components = {
   em: (props) => <em className={styles.em} {...props} />,
 };
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({ children, slug }: { children: string; slug?: string }) {
+  const components: Components = slug
+    ? {
+        ...baseComponents,
+        img: ({ src, alt }) => {
+          if (typeof src !== 'string') return null;
+          const filename = src.slice(src.lastIndexOf('/') + 1);
+          // eslint-disable-next-line @next/next/no-img-element -- served by apps/public-api, not Next's own image pipeline
+          return <img src={publicAttachmentFileUrl(slug, filename)} alt={alt ?? ''} className={styles.image} />;
+        },
+      }
+    : baseComponents;
+
   return (
     <div className={styles.root}>
       <ReactMarkdown components={components}>{children}</ReactMarkdown>

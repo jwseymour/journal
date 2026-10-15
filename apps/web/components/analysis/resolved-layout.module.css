@@ -1,0 +1,180 @@
+/* No literal values — every rule references a token (`design.md` §6.2). These
+ * classes are the panel-body markup that used to live inline in
+ * `app/analysis/page.module.css` before M20 moved the analysis page onto a
+ * server-resolved layout: the yearbook tables, the field-breakdown bars, and
+ * the short raw-record feed. The denser chart primitives stay in
+ * `components/analysis-charts.module.css`. */
+
+.section {
+  margin-top: var(--space-lg);
+}
+
+.section:first-child {
+  margin-top: var(--space-md);
+}
+
+.registerHeading {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-emphasis);
+  margin: 0 0 var(--space-sm);
+  padding-bottom: var(--space-2xs);
+  border-bottom: var(--hairline) solid var(--rule-strong);
+}
+
+.panelStack {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.registerGap {
+  margin-top: var(--space-md);
+}
+
+/* Small multiples — a wide grid of tiles, sized for the denser chart shapes
+ * (a scatter wants to be roughly square). */
+.wideTiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-3xl) * 3), 1fr));
+  gap: var(--space-lg);
+  margin-top: var(--space-md);
+}
+
+.tileHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.tileName {
+  color: var(--ink);
+  font-size: var(--text-sm);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+/* Field breakdowns — a numeric field's total split by a sibling enum field's
+ * approved values. Plain horizontal bars, flat fill, no gradients. */
+.breakdown {
+  padding-top: var(--space-sm);
+  border-top: var(--hairline) solid var(--rule-strong);
+}
+
+.breakdownRow {
+  display: grid;
+  grid-template-columns: minmax(0, var(--space-3xl)) 1fr auto;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-2xs);
+  font-size: var(--text-sm);
+}
+
+.breakdownLabel {
+  overflow: hidden;
+  color: var(--ink-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.breakdownBarTrack {
+  display: block;
+  height: var(--space-2xs);
+  border: var(--hairline) solid var(--rule);
+}
+
+.breakdownBarFill {
+  display: block;
+  height: 100%;
+  background-color: var(--accent);
+}
+
+.breakdownValue {
+  color: var(--ink-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A short feed of raw records — the analysis surface showing actual recent
+ * items rather than only an aggregate count. */
+.feed {
+  margin-top: var(--space-sm);
+  list-style: none;
+  padding: 0;
+}
+
+.feed > li + li {
+  border-top: var(--hairline) solid var(--rule);
+}
+
+.feedRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) 0;
+}
+
+.feedWhen {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+.feedText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.link {
+  flex-shrink: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+
+/* Reviews and lists: a plain table, hairline rules, no gridlines, no shading. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th {
+  padding-bottom: var(--space-2xs);
+  border-bottom: var(--hairline) solid var(--rule-strong);
+  color: var(--ink-muted);
+  font-weight: var(--weight-normal);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.table td {
+  padding: var(--space-2xs) 0;
+  border-bottom: var(--hairline) solid var(--rule);
+}
+
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.numeric {
+  text-align: right;
+  color: var(--ink-muted);
+}
+
+.rating {
+  text-align: right;
+  color: var(--accent);
+}
+
+.empty {
+  color: var(--ink-muted);
+}
+
+.panelMessage {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}

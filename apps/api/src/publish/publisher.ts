@@ -114,11 +114,29 @@ export function publicMirrorKey(sourceType: PublishableSourceType, sourceId: str
   return `public/${sourceType}s/${sourceId}.json`;
 }
 
+/**
+ * Where a published entry's own attachment, once mirrored, lives relative
+ * to the storage root/bucket (`plan.md` M19). Deliberately a separate tree
+ * from `publicMirrorKey`'s `public/entrys/<id>.json` rather than nested
+ * under it, since an attachment is a binary blob a `StorageReader.read()`
+ * (text-only, on the public-api side) must never be asked to parse as JSON.
+ * `apps/public-api` computes this exact same key by hand to read it back —
+ * see that app's own `attachment-key.ts` — so a change here is a change
+ * there too.
+ */
+export function publicAttachmentKey(entryId: string, filename: string): string {
+  return `public/entry-attachments/${entryId}/${filename}`;
+}
+
 /** The one write surface a publisher needs against the `public/` prefix —
  * deliberately smaller than a full storage interface, since this is the
- * only thing ever written there. */
+ * only thing ever written there. `put`/`delete` handle a snapshot's JSON;
+ * `putBytes` handles a mirrored attachment's binary (`plan.md` M19) — `delete`
+ * itself is already content-agnostic (it just removes whatever is at a key),
+ * so there is no `deleteBytes` twin. */
 export interface PublicBlobStore {
   put(key: string, json: string): Promise<void>;
+  putBytes(key: string, data: Buffer, contentType: string): Promise<void>;
   delete(key: string): Promise<void>;
 }
 
@@ -189,6 +207,7 @@ export class Publisher {
       sourceHashAtPublish: rendered.contentHash,
     });
     this.#reindexForPublicSearch(sourceType, sourceId, rendered.snapshot);
+    if (sourceType === 'entry') await this.#syncEntryAttachments(sourceId);
   }
 
   /** Removes the mirror object and the record of it. A no-op if it was
@@ -200,6 +219,7 @@ export class Publisher {
     this.#index.remove(sourceType, sourceId);
     const searchType = toPublicSearchSourceType(sourceType);
     if (searchType) this.#publicSearchIndex.removeSource(searchType, sourceId);
+    if (sourceType === 'entry') await this.#removeEntryAttachments(sourceId);
   }
 
   /**
@@ -225,6 +245,40 @@ export class Publisher {
       sourceHashAtPublish: rendered.contentHash,
     });
     this.#reindexForPublicSearch(sourceType, sourceId, rendered.snapshot);
+    // A body edit is the only way an entry's attachments can change (a new
+    // `![](...)` link means a new call to `EntryStore.addAttachment`, which
+    // always changes the body too) — so re-syncing here, gated on the same
+    // "did the content hash actually move" check just above, catches a
+    // newly-attached photo on an already-published entry for free, with no
+    // separate trigger of its own.
+    if (sourceType === 'entry') await this.#syncEntryAttachments(sourceId);
+  }
+
+  /** Copies every attachment currently on this entry into `public/`
+   * (`plan.md` M19) — the whole directory, not only whatever the body
+   * happens to link to: an attachment belongs to the entry the moment it is
+   * written (`format.md` §4), and publishing an entry means publishing what
+   * belongs to it, the same as the body itself. Attachments are write-once,
+   * so re-copying an already-mirrored one is redundant but harmless — there
+   * is no drift to detect here the way `resyncIfPublished` detects it for a
+   * body that can change. */
+  async #syncEntryAttachments(entryId: string): Promise<void> {
+    const attachments = await this.#entryStore.listAttachments(entryId);
+    for (const { filename } of attachments) {
+      const bytes = await this.#entryStore.getAttachment(entryId, filename);
+      if (!bytes) continue; // Vanished between listing and reading — nothing to mirror.
+      await this.#blobs.putBytes(publicAttachmentKey(entryId, filename), bytes.data, bytes.contentType);
+    }
+  }
+
+  /** The `unpublish` twin of `#syncEntryAttachments` — an attachment is
+   * never deleted from the private side (`format.md` §4), so the only way
+   * its public mirror goes away is unpublishing the entry it belongs to. */
+  async #removeEntryAttachments(entryId: string): Promise<void> {
+    const attachments = await this.#entryStore.listAttachments(entryId);
+    for (const { filename } of attachments) {
+      await this.#blobs.delete(publicAttachmentKey(entryId, filename));
+    }
   }
 
   /** Keeps the public search index (`plan.md` M17) in step with every

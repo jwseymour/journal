@@ -28,6 +28,10 @@ import type {
   ListItemsResponse,
   ListItemUpdateSuggestionsResponse,
   ListsSummaryResponse,
+  CompileLayoutResponse,
+  Layout,
+  LayoutsResponse,
+  LayoutSurface,
   MediaPage,
   MetricFieldsResponse,
   MetricFieldSummaryResponse,
@@ -47,6 +51,9 @@ import type {
   QuestionsResponse,
   QuestionsSummaryResponse,
   QuestionUpdateSuggestionsResponse,
+  ParseLayoutResponse,
+  ResolvedLayout,
+  SetDefaultLayoutResponse,
   ReviewsHistogramResponse,
   ReviewsResponse,
   ReviewsSummaryResponse,
@@ -67,7 +74,23 @@ import type {
   UploadMediaResponse,
 } from '@journal/contract';
 import type { Config } from '../config.js';
-import { AppError, invalidRequest, recordNotFound, unauthorized, unsupportedMediaType } from '../errors.js';
+import {
+  AppError,
+  editConflict,
+  invalidRequest,
+  layoutInvalid,
+  layoutNotFound,
+  recordNotFound,
+  unauthorized,
+  unsupportedMediaType,
+} from '../errors.js';
+import { buildAnalysisCatalog } from '../layout/catalog.js';
+import type { LayoutCompiling } from '../layout/compile.js';
+import { parseLayout } from '../layout/parse.js';
+import { legacyPrefsToSyntax, type LegacyAnalysisPrefs } from '../layout/legacy-prefs.js';
+import { parseAndCanonicalise, renderAnalysisLayout } from '../layout/render.js';
+import type { LayoutsReader } from '../index/layouts-index.js';
+import type { LayoutStore } from '../store/layout-store.js';
 import type { CategoriesReader, CoreStructureType } from '../index/categories-index.js';
 import type { EntryProcessingStatusReader } from '../index/entry-processing-status-index.js';
 import type { ListItemsReader } from '../index/lists-index.js';
@@ -86,8 +109,9 @@ import type { ChatAnswerer } from '../model/chat-orchestrator.js';
 import type { PendingItemApplying } from '../model/pending-item-applier.js';
 import type { LivePendingProcessing } from '../model/pending-processor.js';
 import type { Publisher } from '../publish/publisher.js';
+import { attachmentContentType } from '../record/attachment-content-type.js';
 import { isUlid, ulid } from '../record/id.js';
-import { isSupportedMediaContentType } from '../record/media-filename.js';
+import { isSupportedMediaContentType, mediaRelativePath } from '../record/media-filename.js';
 import { nowTimestamp, parseTimestamp } from '../record/time.js';
 import type { Searcher } from '../search/searcher.js';
 import type { Transcriber } from '../transcribe/transcriber.js';
@@ -226,6 +250,18 @@ const UpdateDocumentSchema = z
     body: z.string(),
     citedEntries: z.array(z.string()).optional(),
     contentHash: z.string().min(1),
+  })
+  .strict();
+
+/** Attaching an existing media-library item to an entry, rather than
+ * uploading fresh bytes (`plan.md` M19). */
+const AttachMediaSchema = z.object({ mediaId: z.string().min(1) }).strict();
+
+const RenderLayoutRequestSchema = z
+  .object({
+    layoutId: z.string().min(1).optional(),
+    syntax: z.string().optional(),
+    windowDays: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -442,6 +478,16 @@ function errorBody(code: ApiError['error']['code'], message: string): ApiError {
   return { error: { code, message } };
 }
 
+/** The bare filename a media-library item lands under once attached to an
+ * entry (`plan.md` M19) — `<id>.<ext>`, never the uploader's own
+ * `originalFilename`, so this is always a valid attachment filename with no
+ * validation surface to get wrong (`mediaRelativePath` already threw at
+ * upload time if the content type were unsupported). */
+function attachmentFilenameForMedia(media: { id: string; contentType: string }): string {
+  const path = mediaRelativePath(media.id, media.contentType);
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
 const SESSION_COOKIE = 'journal_session';
 const FLOW_COOKIE = 'journal_oauth_flow';
 /** Whether cookies this process sets should carry the `Secure` attribute.
@@ -490,6 +536,9 @@ export function createApp(
   publisher: Publisher,
   visibilityDefaults: VisibilityDefaultsReader,
   touchedMirror: TouchedMirror,
+  layoutStore: LayoutStore,
+  layouts: LayoutsReader,
+  layoutCompiler: LayoutCompiling,
 ): Hono {
   const app = new Hono();
   const origins = new Set(config.allowedOrigins);
@@ -854,6 +903,52 @@ export function createApp(
     const result = await store.addAttachment(id, { filename: file.name, data });
     const response: AddAttachmentResponse = result;
     return c.json(response, 201);
+  });
+
+  /**
+   * Attach a media-library item to an entry (`plan.md` M19) — the bytes are
+   * copied server-side, entirely in-process, from `mediaStore` into the
+   * entry's own attachment directory via the very same `addAttachment` a
+   * direct upload goes through. Nothing about the attachment's own
+   * write-once/self-contained contract (`format.md` §4) changes depending on
+   * where the bytes came from; only the source of the bytes differs.
+   */
+  app.post('/entries/:id/attachments/from-media', async (c) => {
+    const id = c.req.param('id');
+    if (!isUlid(id)) {
+      return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
+    }
+
+    const { mediaId } = await parseUpdateBody(c, AttachMediaSchema);
+    if (!isUlid(mediaId)) throw recordNotFound('media', mediaId);
+    const media = await mediaStore.get(mediaId);
+    if (!media) throw recordNotFound('media', mediaId);
+    const bytes = await mediaStore.getBytes(mediaId);
+    if (!bytes) throw recordNotFound('media', mediaId);
+
+    const filename = attachmentFilenameForMedia(media);
+    const result = await store.addAttachment(id, { filename, data: bytes.data });
+    const response: AddAttachmentResponse = result;
+    return c.json(response, 201);
+  });
+
+  /** An attachment's raw bytes, for `<img>`/`<audio>` `src` (`plan.md`
+   * M19) — the entry-attachment twin of `GET /media/:id/file`. Attachments
+   * are write-once, so this is safe to cache hard, the same as media. */
+  app.get('/entries/:id/attachments/:filename', async (c) => {
+    const id = c.req.param('id');
+    const filename = c.req.param('filename');
+    const entry = isUlid(id) ? await store.get(id) : null;
+    if (!entry) {
+      return c.json(errorBody('entry_not_found', `No entry with id ${id}.`), 404);
+    }
+
+    const bytes = await store.getAttachment(id, filename);
+    if (!bytes) throw recordNotFound('attachment', filename);
+    return c.body(new Uint8Array(bytes.data), 200, {
+      'Content-Type': bytes.contentType,
+      'Cache-Control': 'private, max-age=31536000, immutable',
+    });
   });
 
   /**
@@ -2331,6 +2426,221 @@ export function createApp(
   app.get('/analysis/todos', async (c) => {
     const response: TodosSummaryResponse = todos.summarize();
     return c.json(response);
+  });
+
+  const layoutExecutorDeps = () => ({
+    metrics,
+    metricFields,
+    reviews,
+    lists,
+    categories,
+    opinionStatements,
+    questions,
+    todos,
+  });
+
+  // One round trip replaces the ~15 `/analysis/*` calls the pre-M20 page
+  // stitched together itself — letting the frontend read a spec to decide
+  // which calls to make *is* spec execution in the frontend, the thing
+  // `requirements.md` §7.1 forbids. `layoutId` names a stored layout;
+  // `syntax` renders an unsaved draft; neither renders the stored default,
+  // and failing that the built-in `DEFAULT_ANALYSIS_LAYOUT`.
+  app.post('/analysis/render', async (c) => {
+    let json: unknown;
+    try {
+      json = await c.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+    const parsed = RenderLayoutRequestSchema.safeParse(json ?? {});
+    if (!parsed.success) throw invalidRequest('Expected { layoutId?, syntax?, windowDays? }.');
+
+    const { layoutId, syntax, windowDays } = parsed.data;
+
+    // Resolve which DSL to render. An explicit draft wins; then a named
+    // layout; then the surface's stored default; then nothing (built-in).
+    let effectiveSyntax = syntax;
+    let effectiveLayoutId: string | null = null;
+    let callerSuppliedSyntax = syntax !== undefined;
+    if (effectiveSyntax === undefined && layoutId !== undefined) {
+      const stored = await layoutStore.get(layoutId);
+      if (!stored) throw layoutNotFound(layoutId);
+      effectiveSyntax = stored.syntax;
+      effectiveLayoutId = stored.id;
+    } else if (effectiveSyntax === undefined) {
+      const { defaultId } = await layoutStore.list('analysis');
+      if (defaultId) {
+        const stored = await layoutStore.get(defaultId);
+        if (stored) {
+          effectiveSyntax = stored.syntax;
+          effectiveLayoutId = stored.id;
+        }
+      }
+    }
+
+    const options: { syntax?: string; windowDays?: number; layoutId?: string | null } = {};
+    if (effectiveSyntax !== undefined) options.syntax = effectiveSyntax;
+    if (windowDays !== undefined) options.windowDays = windowDays;
+    options.layoutId = effectiveLayoutId;
+
+    const rendered = renderAnalysisLayout(layoutExecutorDeps(), options);
+    // A caller-supplied draft that did not fully parse is a client error
+    // worth reporting; a stored layout parsed clean when it was saved, and
+    // the built-in default never produces diagnostics.
+    if (callerSuppliedSyntax && rendered.diagnostics.length > 0) {
+      const first = rendered.diagnostics[0]!;
+      throw layoutInvalid(`Line ${first.line}: ${first.message}`);
+    }
+    const response: ResolvedLayout = rendered.layout;
+    return c.json(response);
+  });
+
+  // ── Named, durable layouts (`requirements.md` §8, `format.md` §8) ────────
+  //
+  // The DSL text is canonical and authored; the parsed spec is a disposable
+  // projection. Parsing, validation, and canonicalisation all run here —
+  // the frontend edits text and renders a resolved structure, nothing more
+  // (`requirements.md` §7.1).
+
+  const readLayoutBody = async (c2: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> => {
+    let body: unknown;
+    try {
+      body = await c2.req.json();
+    } catch {
+      throw invalidRequest('The request body is not valid JSON.');
+    }
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      throw invalidRequest('Expected a JSON object.');
+    }
+    return body as Record<string, unknown>;
+  };
+
+  const isLayoutSurface = (value: unknown): value is LayoutSurface => value === 'analysis' || value === 'home';
+
+  /** Parse `syntax` on a `surface`, throwing `layout_invalid` with the first
+   * diagnostic if it does not fully parse. */
+  const requireParsed = (syntax: string, surface: LayoutSurface) => {
+    const { diagnostics } = parseLayout(syntax, surface);
+    if (diagnostics.length > 0) {
+      const first = diagnostics[0]!;
+      throw layoutInvalid(`Line ${first.line}: ${first.message}`);
+    }
+  };
+
+  app.get('/layouts', async (c) => {
+    const surface = c.req.query('surface');
+    if (!isLayoutSurface(surface)) throw invalidRequest("A '?surface=analysis' query is required.");
+    const { layouts: list, defaultId } = await layoutStore.list(surface);
+    const response: LayoutsResponse = { layouts: list, defaultId };
+    return c.json(response);
+  });
+
+  app.get('/layouts/:id', async (c) => {
+    const layout = await layoutStore.get(c.req.param('id'));
+    if (!layout) throw layoutNotFound(c.req.param('id'));
+    return c.json<Layout>(layout);
+  });
+
+  app.post('/layouts', async (c) => {
+    const body = await readLayoutBody(c);
+    if (!isLayoutSurface(body['surface'])) throw invalidRequest("'surface' must be 'analysis' or 'home'.");
+    const name = typeof body['name'] === 'string' ? body['name'].trim() : '';
+    if (name === '') throw invalidRequest("'name' is required.");
+    if ('prose' in body && body['prose'] !== undefined && body['prose'] !== null) {
+      throw invalidRequest('Compiling prose into a layout is not available yet — supply `syntax`.');
+    }
+    if (typeof body['syntax'] !== 'string') throw invalidRequest("'syntax' is required.");
+
+    // The create form carries the name separately, so a body that is just
+    // sections is fine — synthesise the header the store would rewrite anyway
+    // before validating, so a real error still surfaces.
+    const withHeader = /^\s*layout\s/.test(body['syntax'])
+      ? body['syntax']
+      : `layout "${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\n\n${body['syntax'].replace(/^\n+/, '')}`;
+    requireParsed(withHeader, body['surface']);
+    const layout = await layoutStore.create({ surface: body['surface'], name, syntax: withHeader });
+    return c.json<Layout>(layout, 201);
+  });
+
+  app.put('/layouts/:id', async (c) => {
+    const id = c.req.param('id');
+    const existing = await layoutStore.get(id);
+    if (!existing) throw layoutNotFound(id);
+
+    const body = await readLayoutBody(c);
+    if (typeof body['expectedUpdatedAt'] !== 'string') throw invalidRequest("'expectedUpdatedAt' is required.");
+    const patch: { syntax?: string; prose?: string | null } = {};
+    if ('syntax' in body) {
+      if (typeof body['syntax'] !== 'string') throw invalidRequest("'syntax' must be a string.");
+      requireParsed(body['syntax'], existing.surface);
+      patch.syntax = body['syntax'];
+    }
+    if ('prose' in body) {
+      if (body['prose'] !== null && typeof body['prose'] !== 'string') {
+        throw invalidRequest("'prose' must be a string or null.");
+      }
+      patch.prose = body['prose'] as string | null;
+    }
+
+    const updated = await layoutStore.update(id, patch, body['expectedUpdatedAt']);
+    if (!updated) throw editConflict('layout');
+    return c.json<Layout>(updated);
+  });
+
+  app.post('/layouts/:id/default', async (c) => {
+    const id = c.req.param('id');
+    const layout = await layoutStore.get(id);
+    if (!layout) throw layoutNotFound(id);
+    const defaultId = await layoutStore.setDefault(layout.surface, id);
+    return c.json<SetDefaultLayoutResponse>({ defaultId });
+  });
+
+  app.delete('/layouts/:id', async (c) => {
+    await layoutStore.remove(c.req.param('id'));
+    return c.body(null, 204);
+  });
+
+  // Prose → DSL + spec, no save (`requirements.md` §6.1). The model fills a
+  // closed, catalog-derived schema (`layout/schema.ts`); an unconfigured or
+  // unreachable gateway is `layout_compile_failed` and never blocks the
+  // hand-edit path.
+  app.post('/layouts/compile', async (c) => {
+    const body = await readLayoutBody(c);
+    if (!isLayoutSurface(body['surface'])) throw invalidRequest("'surface' must be 'analysis' or 'home'.");
+    if (typeof body['prose'] !== 'string' || body['prose'].trim() === '') throw invalidRequest("'prose' is required.");
+    const name = typeof body['name'] === 'string' && body['name'].trim() !== '' ? body['name'].trim() : 'Untitled';
+    const currentSyntax = typeof body['currentSyntax'] === 'string' ? body['currentSyntax'] : undefined;
+
+    const catalog = buildAnalysisCatalog(categories, metricFields);
+    const { syntax, spec, unresolved } = await layoutCompiler.compile(body['prose'], catalog, name, currentSyntax);
+    const response: CompileLayoutResponse = { syntax, spec, unresolved };
+    return c.json(response);
+  });
+
+  app.post('/layouts/parse', async (c) => {
+    const body = await readLayoutBody(c);
+    if (!isLayoutSurface(body['surface'])) throw invalidRequest("'surface' must be 'analysis' or 'home'.");
+    if (typeof body['syntax'] !== 'string') throw invalidRequest("'syntax' is required.");
+    const { spec, canonicalSyntax, diagnostics } = parseAndCanonicalise(body['syntax'], body['surface']);
+    const response: ParseLayoutResponse = { spec, canonicalSyntax, diagnostics };
+    return c.json(response);
+  });
+
+  // One-shot: the pre-M20 client-only `journal:analysis-prefs` customization,
+  // translated server-side (`layout/legacy-prefs.ts`) into a durable
+  // "My layout" set as the analysis default. The client calls this once on
+  // first load and then drops the key. Silent (`design.md` §4).
+  app.post('/layouts/import-legacy-prefs', async (c) => {
+    const body = await readLayoutBody(c);
+    const prefs = body['prefs'];
+    if (typeof prefs !== 'object' || prefs === null) throw invalidRequest("'prefs' must be an object.");
+    const name = typeof body['name'] === 'string' && body['name'].trim() !== '' ? body['name'].trim() : 'My layout';
+
+    const syntax = legacyPrefsToSyntax(prefs as LegacyAnalysisPrefs, name);
+    const layout = await layoutStore.create({ surface: 'analysis', name, syntax });
+    await layoutStore.setDefault('analysis', layout.id);
+    const fresh = await layoutStore.get(layout.id);
+    return c.json<Layout>(fresh ?? layout, 201);
   });
 
   // Ephemeral — no conversation is stored server-side (`plan.md` — v1 has no

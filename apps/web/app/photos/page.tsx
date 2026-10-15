@@ -10,12 +10,10 @@ const LIMIT = 60;
 
 /**
  * The media library (`requirements.md` — photo library, M19): bulk-uploaded
- * photos and video, independent of any entry. The most basic version of
- * this idea — store them, and use whatever timestamp the file itself
- * carries to relate it to things (`GET /entries/:id/media`, surfaced on the
- * entry page itself, not here). No albums, no captions, no per-photo
- * linking into an entry — those are all things to build on top of this once
- * there's a reason to.
+ * photos and video, independent of any entry. Attaching one to a specific
+ * entry happens from that entry's own composer (`plan.md` M21), not here —
+ * this page is purely the upload/browse/delete surface. No albums, no
+ * captions, no cross-entry photo browsing beyond this grid.
  */
 export default function PhotosPage() {
   const [media, setMedia] = useState<MediaMetadata[] | null>(null);

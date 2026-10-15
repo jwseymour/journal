@@ -11,7 +11,7 @@ import { PublishedIndex } from '../../src/index/published-index.js';
 import { QuestionsIndex } from '../../src/index/questions-index.js';
 import { ReviewsIndex } from '../../src/index/reviews-index.js';
 import { SqliteIndex } from '../../src/index/sqlite-index.js';
-import { Publisher, publicMirrorKey, type PublicBlobStore } from '../../src/publish/publisher.js';
+import { Publisher, publicAttachmentKey, publicMirrorKey, type PublicBlobStore } from '../../src/publish/publisher.js';
 import { nowTimestamp } from '../../src/record/time.js';
 import { FsDocumentStore } from '../../src/store/fs-document-store.js';
 import { FsEntryStore } from '../../src/store/fs-entry-store.js';
@@ -25,6 +25,7 @@ import { FsEntryStore } from '../../src/store/fs-entry-store.js';
  */
 class FakeBlobStore implements PublicBlobStore {
   files = new Map<string, string>();
+  bytes = new Map<string, { data: Buffer; contentType: string }>();
   putCalls = 0;
 
   async put(key: string, json: string): Promise<void> {
@@ -32,8 +33,13 @@ class FakeBlobStore implements PublicBlobStore {
     this.files.set(key, json);
   }
 
+  async putBytes(key: string, data: Buffer, contentType: string): Promise<void> {
+    this.bytes.set(key, { data, contentType });
+  }
+
   async delete(key: string): Promise<void> {
     this.files.delete(key);
+    this.bytes.delete(key);
   }
 }
 
@@ -115,6 +121,27 @@ describe('publishing an entry', () => {
     await expect(publisher.publish('entry', '01ARZ3NDEKTSV4RRFFQ69G5FAV')).resolves.toBeUndefined();
     expect(blobs.files.size).toBe(0);
   });
+
+  it('mirrors every attachment on the entry alongside the snapshot (`plan.md` M19)', async () => {
+    const entry = await entryStore.create({ body: 'A photo from today.' });
+    await entryStore.addAttachment(entry.id, { filename: 'photo.jpg', data: Buffer.from([0xff, 0xd8]) });
+    await entryStore.addAttachment(entry.id, { filename: 'voice.wav', data: Buffer.from('sound') });
+
+    await publisher.publish('entry', entry.id);
+
+    const photo = blobs.bytes.get(publicAttachmentKey(entry.id, 'photo.jpg'));
+    expect(photo?.data).toEqual(Buffer.from([0xff, 0xd8]));
+    expect(photo?.contentType).toBe('image/jpeg');
+    const voice = blobs.bytes.get(publicAttachmentKey(entry.id, 'voice.wav'));
+    expect(voice?.data).toEqual(Buffer.from('sound'));
+    expect(voice?.contentType).toBe('audio/wav');
+  });
+
+  it('mirrors nothing extra for an entry with no attachments', async () => {
+    const entry = await entryStore.create({ body: 'Nothing attached.' });
+    await publisher.publish('entry', entry.id);
+    expect(blobs.bytes.size).toBe(0);
+  });
 });
 
 describe('publishing a document', () => {
@@ -149,6 +176,17 @@ describe('unpublish', () => {
 
   it('is a tolerant no-op for a source never published', async () => {
     await expect(publisher.unpublish('document', '01ARZ3NDEKTSV4RRFFQ69G5FAV')).resolves.toBeUndefined();
+  });
+
+  it('removes a published entry\'s mirrored attachments too (`plan.md` M19)', async () => {
+    const entry = await entryStore.create({ body: 'A photo from today.' });
+    await entryStore.addAttachment(entry.id, { filename: 'photo.jpg', data: Buffer.from('x') });
+    await publisher.publish('entry', entry.id);
+    expect(blobs.bytes.size).toBe(1);
+
+    await publisher.unpublish('entry', entry.id);
+
+    expect(blobs.bytes.size).toBe(0);
   });
 });
 
@@ -404,6 +442,26 @@ describe('resyncIfPublished', () => {
     await publisher.resyncIfPublished('document', document.id);
 
     expect(blobs.putCalls).toBe(1);
+  });
+
+  it('mirrors a photo newly attached to an already-published entry (`plan.md` M19)', async () => {
+    const entry = await entryStore.create({ body: 'Before any photo.' });
+    await publisher.publish('entry', entry.id);
+    expect(blobs.bytes.size).toBe(0);
+
+    const { relativeLink } = await entryStore.addAttachment(entry.id, {
+      filename: 'photo.jpg',
+      data: Buffer.from('bytes'),
+    });
+    const updated = await entryStore.update(entry.id, {
+      body: `Look at this. ![](${relativeLink})`,
+      contentHash: entry.contentHash,
+    });
+    await publisher.resyncIfPublished('entry', entry.id);
+
+    expect(blobs.bytes.get(publicAttachmentKey(entry.id, 'photo.jpg'))?.data).toEqual(Buffer.from('bytes'));
+    const snapshot = JSON.parse(blobs.files.get(publicMirrorKey('entry', entry.id))!) as { body: string };
+    expect(snapshot.body).toBe(updated.body);
   });
 });
 

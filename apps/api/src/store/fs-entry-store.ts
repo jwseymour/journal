@@ -10,6 +10,7 @@ import {
   AppError,
 } from '../errors.js';
 import type { IndexRow, SqliteIndex } from '../index/sqlite-index.js';
+import { attachmentContentType } from '../record/attachment-content-type.js';
 import { excerpt } from '../record/excerpt.js';
 import { normaliseBody, parseEntryFile, serialiseEntryFile } from '../record/frontmatter.js';
 import { ENTRIES_DIR, ENTRY_EXTENSION, entryRelativePath } from '../record/filename.js';
@@ -21,6 +22,8 @@ import { decodeCursor, encodeCursor } from './cursor.js';
 import type {
   AddAttachmentInput,
   AddAttachmentResult,
+  AttachmentBytes,
+  AttachmentInfo,
   CreateEntryInput,
   EntryStore,
   ListOptions,
@@ -306,6 +309,39 @@ export class FsEntryStore implements EntryStore {
     }
 
     return { relativeLink: `${stem}/${input.filename}` };
+  }
+
+  async listAttachments(id: string): Promise<AttachmentInfo[]> {
+    await this.#refresh();
+    const cached = this.#index.getById(id);
+    if (!cached) return [];
+
+    const stem = basename(cached.absPath, ENTRY_EXTENSION);
+    const attachmentDir = join(dirname(cached.absPath), stem);
+    let items;
+    try {
+      items = await readdir(attachmentDir, { withFileTypes: true });
+    } catch (cause) {
+      if (isNotFound(cause)) return [];
+      throw journalUnavailable(`Could not read ${relative(this.#journalRoot, attachmentDir)}.`, cause);
+    }
+    return items.filter((item) => item.isFile()).map((item) => ({ filename: item.name }));
+  }
+
+  async getAttachment(id: string, filename: string): Promise<AttachmentBytes | null> {
+    await this.#refresh();
+    const cached = this.#index.getById(id);
+    if (!cached || !isValidAttachmentFilename(filename)) return null;
+
+    const stem = basename(cached.absPath, ENTRY_EXTENSION);
+    const targetPath = join(dirname(cached.absPath), stem, filename);
+    try {
+      const data = await readFile(targetPath);
+      return { data, contentType: attachmentContentType(filename) };
+    } catch (cause) {
+      if (isNotFound(cause)) return null;
+      throw journalUnavailable(`Could not read ${relative(this.#journalRoot, targetPath)}.`, cause);
+    }
   }
 
   async list(options: ListOptions): Promise<ListResult> {

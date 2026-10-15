@@ -34,6 +34,13 @@ class FsPublicBlobStore implements PublicBlobStore {
     await writeFileAtomic(join(this.#root, key), json, this.#root);
   }
 
+  // `writeFileAtomic` already accepts a `Buffer` (`atomic-write.ts`'s own
+  // doc comment — attachments have needed this since M4), so mirroring one
+  // is exactly the same call as `put` with different bytes.
+  async putBytes(key: string, data: Buffer): Promise<void> {
+    await writeFileAtomic(join(this.#root, key), data, this.#root);
+  }
+
   async delete(key: string): Promise<void> {
     try {
       await unlink(join(this.#root, key));
@@ -55,6 +62,12 @@ class S3PublicBlobStore implements PublicBlobStore {
   async put(key: string, json: string): Promise<void> {
     await this.#s3.send(
       new PutObjectCommand({ Bucket: this.#bucket, Key: key, Body: json, ContentType: 'application/json' }),
+    );
+  }
+
+  async putBytes(key: string, data: Buffer, contentType: string): Promise<void> {
+    await this.#s3.send(
+      new PutObjectCommand({ Bucket: this.#bucket, Key: key, Body: data, ContentType: contentType }),
     );
   }
 

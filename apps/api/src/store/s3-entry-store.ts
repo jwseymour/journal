@@ -16,6 +16,7 @@ import {
   AppError,
 } from '../errors.js';
 import type { IndexRow, SqliteIndex } from '../index/sqlite-index.js';
+import { attachmentContentType } from '../record/attachment-content-type.js';
 import { excerpt } from '../record/excerpt.js';
 import { normaliseBody, parseEntryFile, serialiseEntryFile } from '../record/frontmatter.js';
 import { ENTRIES_DIR, ENTRY_EXTENSION, entryRelativePath } from '../record/filename.js';
@@ -26,6 +27,8 @@ import { decodeCursor, encodeCursor } from './cursor.js';
 import type {
   AddAttachmentInput,
   AddAttachmentResult,
+  AttachmentBytes,
+  AttachmentInfo,
   CreateEntryInput,
   EntryStore,
   ListOptions,
@@ -320,6 +323,51 @@ export class S3EntryStore implements EntryStore {
 
     const relativeStem = stem.split('/').pop()!;
     return { relativeLink: `${relativeStem}/${input.filename}` };
+  }
+
+  async listAttachments(id: string): Promise<AttachmentInfo[]> {
+    await this.#refresh();
+    const cached = this.#index.getById(id);
+    if (!cached) return [];
+
+    const prefix = `${cached.absPath.slice(0, -ENTRY_EXTENSION.length)}/`;
+    const found: AttachmentInfo[] = [];
+    let token: string | undefined;
+    try {
+      do {
+        const response = await this.#s3.send(
+          new ListObjectsV2Command({ Bucket: this.#bucket, Prefix: prefix, ContinuationToken: token }),
+        );
+        for (const object of response.Contents ?? []) {
+          if (!object.Key) continue;
+          // Flat only — an attachment directory never has subdirectories
+          // (`format.md` §4), so a key with a further `/` past the prefix
+          // is not one of this entry's own attachments.
+          const rest = object.Key.slice(prefix.length);
+          if (rest.length > 0 && !rest.includes('/')) found.push({ filename: rest });
+        }
+        token = response.IsTruncated ? response.NextContinuationToken : undefined;
+      } while (token);
+    } catch (cause) {
+      throw journalUnavailable(`Could not list objects under '${prefix}'.`, cause);
+    }
+    return found;
+  }
+
+  async getAttachment(id: string, filename: string): Promise<AttachmentBytes | null> {
+    await this.#refresh();
+    const cached = this.#index.getById(id);
+    if (!cached || !isValidAttachmentFilename(filename)) return null;
+
+    const key = `${cached.absPath.slice(0, -ENTRY_EXTENSION.length)}/${filename}`;
+    try {
+      const response = await this.#s3.send(new GetObjectCommand({ Bucket: this.#bucket, Key: key }));
+      const bytes = await (response.Body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
+      return { data: Buffer.from(bytes), contentType: attachmentContentType(filename) };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw journalUnavailable(`Could not read ${key}.`, error);
+    }
   }
 
   async list(options: ListOptions): Promise<ListResult> {

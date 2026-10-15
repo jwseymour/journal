@@ -1,4 +1,5 @@
 import ReactMarkdown, { type Components } from 'react-markdown';
+import { attachmentFileUrl } from '@/lib/api';
 import styles from './markdown.module.css';
 
 /**
@@ -20,9 +21,17 @@ import styles from './markdown.module.css';
  * one definition of what a heading, a list, a quote look like — "one
  * coherent style" (`design.md` §1.3) applied to the one thing in the app
  * that has document structure at all.
+ *
+ * `![](stem/photo.jpg)` — an attachment link (`format.md` §4) — resolves
+ * through `entryId`, not the `stem` fragment the link itself carries: the
+ * link is written to resolve in a plain markdown viewer with no application
+ * involved (`requirements.md` §4.6), but this renderer has an API to call,
+ * so it only ever needs the filename off the end. Given with no `entryId`
+ * (nothing calls it that way today, but nothing requires one either) an
+ * image link simply renders nothing, rather than guessing at a URL.
  */
 
-const components: Components = {
+const baseComponents: Components = {
   h1: (props) => <h1 className={styles.h1} {...props} />,
   h2: (props) => <h2 className={styles.h2} {...props} />,
   h3: (props) => <h3 className={styles.h3} {...props} />,
@@ -49,7 +58,19 @@ const components: Components = {
   em: (props) => <em className={styles.em} {...props} />,
 };
 
-export function Markdown({ children }: { children: string }) {
+export function Markdown({ children, entryId }: { children: string; entryId?: string }) {
+  const components: Components = entryId
+    ? {
+        ...baseComponents,
+        img: ({ src, alt }) => {
+          if (typeof src !== 'string') return null;
+          const filename = src.slice(src.lastIndexOf('/') + 1);
+          // eslint-disable-next-line @next/next/no-img-element -- served by the API, not Next's own image pipeline
+          return <img src={attachmentFileUrl(entryId, filename)} alt={alt ?? ''} className={styles.image} />;
+        },
+      }
+    : baseComponents;
+
   return (
     <div className={styles.root}>
       <ReactMarkdown components={components}>{children}</ReactMarkdown>

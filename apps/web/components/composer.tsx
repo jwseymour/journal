@@ -5,6 +5,7 @@ import { transcribe as transcribeAudio } from '@/lib/api';
 import { encodeWav } from '@/lib/wav';
 import { VoiceRecorder } from '@/lib/recorder';
 import { Markdown } from './markdown';
+import { MediaPicker } from './media-picker';
 import styles from './composer.module.css';
 
 /**
@@ -26,6 +27,11 @@ import styles from './composer.module.css';
  * real entry file), which Composer has no notion of, so that step is
  * delegated to `onAttachAudio`, provided by whichever page knows how to make
  * sure an entry exists first.
+ *
+ * **Attaching a library photo needs the same real-entry precondition**
+ * (`plan.md` M19), so it follows the identical delegation shape as voice:
+ * `onAttachFromLibrary` does the actual attach-and-resolve-a-link work,
+ * Composer only ever owns opening the picker and inserting what comes back.
  */
 
 interface ComposerProps {
@@ -37,6 +43,15 @@ interface ComposerProps {
    * recording still works without this — the transcript is always inserted
    * regardless — but "keep audio" has nothing to do without it. */
   onAttachAudio?: (blob: Blob, suggestedFilename: string) => Promise<string>;
+  /** Attaches an already-uploaded media-library item and resolves to the
+   * relative link to insert (`plan.md` M19). The "Attach photo" control is
+   * only shown when this is provided. */
+  onAttachFromLibrary?: (mediaId: string) => Promise<string>;
+  /** The entry this draft belongs to, if one exists yet — passed through to
+   * the rendered-preview `Markdown` so an attachment just added shows up
+   * there too, not only after a page reload. Absent for a brand-new draft
+   * that has not been flushed into a real entry yet. */
+  entryId?: string;
   disabled?: boolean;
   autoFocus?: boolean;
   ariaLabel: string;
@@ -83,12 +98,16 @@ export function Composer({
   onSave,
   onFinish,
   onAttachAudio,
+  onAttachFromLibrary,
+  entryId,
   disabled,
   autoFocus,
   ariaLabel,
 }: ComposerProps) {
   const [rendered, setRendered] = useState(false);
   const [recording, setRecording] = useState<RecordingState>({ phase: 'idle' });
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recorderRef = useRef<VoiceRecorder | null>(null);
   const insertPositionRef = useRef<number | null>(null);
@@ -142,6 +161,21 @@ export function Composer({
     }
   }, [recording, onAttachAudio, onChange, value]);
 
+  const attachFromLibrary = useCallback(
+    async (mediaId: string) => {
+      if (!onAttachFromLibrary) return;
+      setPickerOpen(false);
+      setAttachError(null);
+      try {
+        const link = await onAttachFromLibrary(mediaId);
+        onChange(insertAt(value, value.length, `![](${link})`));
+      } catch {
+        setAttachError('Could not attach that photo.');
+      }
+    },
+    [onAttachFromLibrary, onChange, value],
+  );
+
   // `⌘⌥R` works regardless of which view currently has focus, the same as
   // `⌘⇧P` below — scoped to this component's lifetime.
   //
@@ -179,13 +213,30 @@ export function Composer({
     <RecordingStatus state={recording} onKeepAudio={() => void keepAudio()} />
   );
 
+  const libraryControl = onAttachFromLibrary && (
+    <>
+      <p className={styles.recordingMuted}>
+        <button type="button" className={styles.keepAudioButton} onClick={() => setPickerOpen(true)}>
+          Attach photo
+        </button>
+      </p>
+      {attachError && (
+        <p className={styles.recordingError} role="alert">
+          {attachError}
+        </p>
+      )}
+      {pickerOpen && <MediaPicker onSelect={(id) => void attachFromLibrary(id)} onClose={() => setPickerOpen(false)} />}
+    </>
+  );
+
   if (rendered) {
     return (
       <>
         <div className={styles.rendered} aria-label={`${ariaLabel} — rendered`}>
-          {value.trim() ? <Markdown>{value}</Markdown> : <p className={styles.empty}>Nothing written yet.</p>}
+          {value.trim() ? <Markdown entryId={entryId}>{value}</Markdown> : <p className={styles.empty}>Nothing written yet.</p>}
         </div>
         {status}
+        {libraryControl}
       </>
     );
   }
@@ -221,6 +272,7 @@ export function Composer({
         }}
       />
       {status}
+      {libraryControl}
     </>
   );
 }
