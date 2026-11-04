@@ -74,7 +74,7 @@ terraform apply \
   -var="key_pair_name=journal-key"
 ```
 
-Review the plan before typing `yes` — it creates: one S3 bucket (versioned, encrypted, private), an instance role + profile scoped to that bucket's `public/*` prefix read-only (what the box gets by default), a second, broader role scoped to `journal/*`/`documents/*`/`public/*` read-write that only that instance role can assume, one security group (80/443 open, 22 restricted to your IP), one EC2 instance, one Elastic IP.
+Review the plan before typing `yes` — it creates: one S3 bucket (versioned, encrypted, private), an instance role + profile scoped to that bucket's `public/*` prefix read-only (what the box gets by default), a second, broader role scoped to `journal/*`/`documents/*`/`public/*`/`media/*`/`derived/*` read-write that only that instance role can assume, one security group (80/443 open, 22 restricted to your IP), one EC2 instance, one Elastic IP.
 
 Note the outputs — you'll need `instance_public_ip`, `bucket_name`, and `s3_assume_role_arn` below. (`terraform output` re-prints them any time.)
 

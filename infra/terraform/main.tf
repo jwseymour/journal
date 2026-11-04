@@ -111,8 +111,9 @@ resource "aws_iam_instance_profile" "journal_api" {
 
 # The broader role only `apps/api` ever assumes (trust policy below allows
 # only the instance role above to assume it — nothing else, on or off this
-# account, can). Read-write on `journal/*`/`documents/*`/`public/*`: the
-# full access the private API and the `Publisher` mirror-writer need.
+# account, can). Read-write on `journal/*`/`documents/*`/`public/*`/`media/*`/
+# `derived/*`: the full access the private API and the `Publisher`
+# mirror-writer need.
 data "aws_iam_policy_document" "assume_by_journal_api" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -139,8 +140,12 @@ data "aws_iam_policy_document" "journal_bucket_access" {
       # `documents/` sits alongside `journal/` at the bucket root
       # (`format.md` §6, `S3DocumentStore`), and `public/` alongside both —
       # the mirror `Publisher` writes rendered snapshots into
-      # (`requirements.md` §11, `plan.md` M15).
-      values = ["journal/*", "documents/*", "public/*"]
+      # (`requirements.md` §11, `plan.md` M15). `media/` is the media library
+      # (`S3MediaStore`, M19); `derived/` holds touched-record mirrors
+      # (`TouchedMirror`) and named layouts (`LayoutStore`, M20) — all three
+      # added after this policy was first applied, and denied until it was
+      # widened to match.
+      values = ["journal/*", "documents/*", "public/*", "media/*", "derived/*"]
     }
   }
 
@@ -151,6 +156,8 @@ data "aws_iam_policy_document" "journal_bucket_access" {
       "${aws_s3_bucket.journal.arn}/journal/*",
       "${aws_s3_bucket.journal.arn}/documents/*",
       "${aws_s3_bucket.journal.arn}/public/*",
+      "${aws_s3_bucket.journal.arn}/media/*",
+      "${aws_s3_bucket.journal.arn}/derived/*",
     ]
   }
 }
@@ -248,6 +255,17 @@ resource "aws_instance" "journal_api" {
   tags = {
     Name    = "${var.project_name}-api"
     Project = var.project_name
+  }
+
+  # `ami` follows `most_recent` above, so once Canonical publishes a newer
+  # image every later `apply` — even one only changing `ssh_allowed_cidr` —
+  # plans to destroy and replace this instance, taking its hand-filled `.env`,
+  # `index.db` and Caddy certificates with it. Found live: an SSH-allowlist
+  # update planned exactly that. The AMI only ever matters at first boot, and
+  # so does `user_data`; replacing the box is a deliberate act (`-replace`),
+  # never a side effect of an unrelated change.
+  lifecycle {
+    ignore_changes = [ami, user_data]
   }
 }
 
