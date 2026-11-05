@@ -471,6 +471,19 @@ a false failure. Fixed by making the endpoint return `204`, matching its sibling
 `POST /categories/suggestions/:id/approve`, since neither hands back anything the
 caller doesn't already know.
 
+## Exporting everything
+
+```sh
+npm run export                     # to ~/journal-export-<today>
+npm run export -- ~/some/folder    # or anywhere else
+```
+
+This copies the whole S3 bucket to a local folder as plain files: entries and
+attachments, documents, photos, corrections and layouts. It's `aws s3 sync` with
+your own AWS credentials, so it doesn't need the app to be running. It refuses
+to write inside this repository, because the repository is public. Running it
+again into the same folder only fetches what's changed.
+
 ## Checks
 
 ```sh

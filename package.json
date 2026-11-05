@@ -16,6 +16,7 @@
     "reprocess": "npm run reprocess -w @journal/api",
     "migrate-to-s3": "npm run migrate-to-s3 -w @journal/api",
     "set-password": "npm run set-password -w @journal/api",
+    "export": "./scripts/export.sh",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
